@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<!-- Infill App — AeroFlex Telemetry HUD design language. Dark-only. -->
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>INFILL // APP — ジャイロイド充填</title>
+  <meta name="description" content="Convert solid parts and cavities into 3D-printable TPMS gyroid infill. PicoGK-powered, runs locally." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23ff5c00' d='M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 2.3 6.5 3.6-6.5 3.6L5.5 7.9 12 4.3Zm-7 5.1 6 3.3v6.6l-6-3.3V9.4Zm14 0v6.6l-6 3.3v-6.6l6-3.3Z'/%3E%3C/svg%3E" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kode+Mono:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1 class="brand-title glow">INFILL <span class="slash">//</span> APP</h1>
+      <div class="brand-sub label jp">ジャイロイド充填 · GYROID CAVITY CONVERTER<span class="cursor">_</span></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="conn" title="Server / worker health">
+      <span id="conn-dot" class="conn-dot"></span>
+      <span id="conn-txt" class="label">connecting</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- 3D viewport -->
+    <section class="viewport" id="viewport">
+      <div class="viewport-hint" id="viewport-hint">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
+        <div class="label vp-hint-title">DROP PARTS HERE</div>
+        <div class="jp regmark">STL · STEP 投入 // クリックで参照</div>
+      </div>
+      <div class="vp-chrome vp-tl regmark">INFILL // GYROID CAVITY CONVERTER · PICOGK</div>
+      <div class="vp-chrome vp-bl">
+        <div class="barcode" data-seed="4412" data-bars="46"></div>
+        <div class="regmark">TPMS // FIELD-DRIVEN LATTICE · ジャイロイド格子</div>
+      </div>
+    </section>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-scroll">
+
+        <!-- (1) Drop zone -->
+        <div class="tile">
+          <div class="thead">
+            <span class="lbls"><span class="label">DROP ZONE</span><span class="jp label">投入</span></span>
+            <span class="tag">STL · STEP</span>
+          </div>
+          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload parts">
+            <input id="file-input" type="file" accept=".stl,.step,.stp" multiple hidden />
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>
+            <div class="dropzone-title label">DROP PARTS HERE</div>
+            <div class="dropzone-hint jp">投入 · クリックで参照</div>
+          </div>
+        </div>
+
+        <!-- (2) Parts list -->
+        <div class="tile">
+          <div class="thead">
+            <span class="lbls"><span class="label">PARTS</span><span class="jp label">部品</span></span>
+            <span class="tag">LOADED <span id="parts-count" class="num">0</span></span>
+          </div>
+          <div id="parts-list" class="parts-list">
+            <div class="parts-empty" id="parts-empty">No parts loaded</div>
+          </div>
+        </div>
+
+        <!-- (3) Parameters -->
+        <div class="tile">
+          <div class="thead">
+            <span class="lbls"><span class="label">PARAMETERS</span><span class="jp label">設定</span></span>
+            <span class="tag">TPMS</span>
+          </div>
+          <div class="param-grid">
+            <label class="param param-wide">
+              <span class="label">Pattern</span>
+              <select id="p-pattern">
+                <option value="gyroid" selected>Gyroid</option>
+                <option value="schwarzP">Schwarz P</option>
+                <option value="schwarzD">Schwarz D</option>
+                <option value="lidinoid">Lidinoid</option>
+                <option value="neovius">Neovius</option>
+              </select>
+            </label>
+            <label class="param">
+              <span class="label">Cell size <em>mm</em></span>
+              <input id="p-cell" type="number" value="8" min="0.5" step="0.5" />
+            </label>
+            <label class="param">
+              <span class="label">Wall thick. <em>mm</em></span>
+              <input id="p-wall" type="number" value="1.2" min="0.1" step="0.1" />
+            </label>
+            <label class="param">
+              <span class="label">Resolution <em>voxel mm</em></span>
+              <input id="p-voxel" type="number" value="0.3" min="0.05" step="0.05" />
+            </label>
+            <label class="param" id="overlap-field">
+              <span class="label">Overlap <em>mm</em></span>
+              <input id="p-overlap" type="number" value="0.3" min="0" step="0.1" disabled />
+            </label>
+            <label class="param">
+              <span class="label">Smoothing <em>mm</em></span>
+              <input id="p-smooth" type="number" value="0" min="0" step="0.1" />
+            </label>
+            <label class="param param-wide">
+              <span class="label">STEP target <em>triangles</em></span>
+              <input id="p-steptris" type="number" value="60000" min="1000" step="5000" />
+            </label>
+          </div>
+        </div>
+
+        <!-- (4) Generate + progress -->
+        <div class="tile">
+          <div class="thead">
+            <span class="lbls"><span class="label">GENERATE</span><span class="jp label">生成</span></span>
+            <span class="regmark">PICOGK // VOXEL</span>
+          </div>
+          <button id="generate-btn" class="btn solid btn-block gen-btn" type="button" disabled>Generate</button>
+          <div id="mode-note" class="mode-note">Upload a part to begin.</div>
+          <div id="progress-wrap" class="progress-wrap hidden">
+            <div class="progress-row">
+              <span id="progress-stage" class="progress-stage">Starting&hellip;</span>
+              <button id="cancel-btn" class="btn cancel-btn" type="button" style="--c:var(--red)">Cancel</button>
+            </div>
+            <div class="bar"><i id="progress-fill" class="progress-fill"></i></div>
+          </div>
+        </div>
+
+        <!-- (5) Result card -->
+        <div class="tile result-card hidden" id="result-card">
+          <div class="thead">
+            <span class="lbls"><span class="label">RESULT</span><span class="jp label">結果</span></span>
+            <span class="tag">GYROID</span>
+          </div>
+          <div class="stats-grid">
+            <div class="stat"><div class="stat-val num" id="stat-volume">&mdash;</div><div class="stat-label label">Volume <em>cm&sup3;</em></div></div>
+            <div class="stat"><div class="stat-val num" id="stat-infill">&mdash;</div><div class="stat-label label">Infill</div></div>
+            <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label">Tris</div></div>
+          </div>
+          <div class="result-actions">
+            <button id="export-stl-btn" class="btn btn-block" type="button">Export STL</button>
+            <button id="export-step-btn" class="btn btn-block" type="button">
+              <span class="btn-label">Export STEP</span>
+              <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div id="step-status" class="step-status hidden"></div>
+        </div>
+
+      </div>
+      <footer class="foot jp">DELTA ROBOTICS ⟢ INFILL APP ⟢ ジャイロイド充填 ⟢ PICOGK</footer>
+    </aside>
+  </main>
+
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+  <!-- decorative chrome generator (cosmetic barcode strips) -->
+  <script>
+    (function () {
+      function rng(s) { let x = s >>> 0; return () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x; }; }
+      document.querySelectorAll('.barcode[data-seed]').forEach((el) => {
+        const r = rng(+el.dataset.seed || 7), n = +el.dataset.bars || 40; let o = '';
+        for (let i = 0; i < n; i++) { const w = 1 + (r() >> 4) % 3, on = (r() >> 8) & 1; o += `<i class="${on ? '' : 'off'}" style="width:${w}px"></i>`; }
+        el.innerHTML = o;
+      });
+    })();
+  </script>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

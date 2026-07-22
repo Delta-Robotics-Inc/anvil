@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    InfillServer — ASP.NET minimal API for the Infill App (milestone M2).
+
+    Deliberately references NEITHER PicoGK NOR the worker project: the server
+    only shells out to InfillWorker.exe (per-job voxel process) and to the
+    Python sidecar (cadconvert.py). This keeps the web host free of the native
+    PicoGK run-once / process-global-voxel-size constraints.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>InfillServer</AssemblyName>
+    <RootNamespace>InfillServer</RootNamespace>
+    <!-- The frontend is plain static files under wwwroot/ (no build step). -->
+    <EnableDefaultContentItems>true</EnableDefaultContentItems>
+  </PropertyGroup>
+
+</Project>

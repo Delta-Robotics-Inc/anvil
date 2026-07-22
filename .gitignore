@@ -1,0 +1,25 @@
+# Build output
+bin/
+obj/
+
+# Runtime data (uploads, jobs, results)
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE / user
+*.user
+.vs/
+.idea/
+
+# NuGet package produced by PicoGK GeneratePackageOnBuild
+*.nupkg
+
+# Publish output (dotnet publish -o ..., or bin/**/publish)
+publish/
+
+# Scratch / temp files
+*.tmp
+scratch/

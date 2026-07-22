@@ -344,6 +344,7 @@ async function pollHealth() {
 }
 
 // ── init ──────────────────────────────────────────────────────────────
+ui.initSteppers();
 refreshParts();
 pollHealth();
 setInterval(pollHealth, 10000);

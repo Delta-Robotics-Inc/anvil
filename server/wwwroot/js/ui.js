@@ -79,6 +79,10 @@ export function renderParts(parts, handlers) {
     meta.textContent = `${fmtInt(p.triangles)} tris` + (p.sourceFormat ? ` · ${p.sourceFormat.toUpperCase()}` : '');
     main.append(name, meta);
 
+    // wrapper supplies the two-layer chamfer rim (a <select> can't carry
+    // ::before/::after, and a real border would drop on the corner cuts).
+    const roleWrap = document.createElement('span');
+    roleWrap.className = 'field field-role';
     const role = document.createElement('select');
     role.className = 'part-role';
     role.name = `role-${p.id}`;
@@ -92,6 +96,7 @@ export function renderParts(parts, handlers) {
       role.appendChild(opt);
     }
     role.addEventListener('change', () => handlers.onRoleChange(p.id, role.value));
+    roleWrap.appendChild(role);
 
     const tools = document.createElement('div');
     tools.className = 'part-tools';
@@ -113,7 +118,7 @@ export function renderParts(parts, handlers) {
     del.addEventListener('click', () => handlers.onDelete(p.id));
 
     tools.append(eye, del);
-    row.append(main, role, tools);
+    row.append(main, roleWrap, tools);
     list.appendChild(row);
   }
 }
@@ -134,6 +139,53 @@ export function readParams() {
 export function setOverlapEnabled(enabled) {
   els.overlap.disabled = !enabled;
   els.overlapField.classList.toggle('disabled', !enabled);
+}
+
+// ── Number-input steppers ─────────────────────────────────────────────
+// The native spin buttons are hidden in CSS; each numeric input is flanked
+// by chamfered −/＋ buttons. A click steps the input by its `step` attribute
+// (respecting min/max, fallback step 1), then fires input + change so the
+// app's mode/validation logic stays in sync with typed entry. The flanking
+// buttons mirror the input's disabled state (e.g. Overlap in single mode).
+export function initSteppers() {
+  for (const group of document.querySelectorAll('.step-group')) {
+    const input = group.querySelector('input[type="number"]');
+    if (!input) continue;
+    const btns = group.querySelectorAll('.step-btn');
+
+    for (const btn of btns) {
+      const dir = Number(btn.dataset.step) || 0;
+      btn.addEventListener('click', () => {
+        if (input.disabled) return;
+        stepNumberInput(input, dir);
+      });
+    }
+
+    const sync = () => btns.forEach((b) => { b.disabled = input.disabled; });
+    sync();
+    new MutationObserver(sync).observe(input, { attributes: true, attributeFilter: ['disabled'] });
+  }
+}
+
+function stepNumberInput(input, dir) {
+  const step = parseFloat(input.step) || 1;
+  const min  = input.min !== '' ? parseFloat(input.min) : null;
+  const max  = input.max !== '' ? parseFloat(input.max) : null;
+  const cur  = parseFloat(input.value);
+  const base = Number.isFinite(cur) ? cur : (min ?? 0);
+  // Round to the step's precision so 0.3 − 0.05 lands on 0.25, not 0.2499….
+  let next = Number((base + dir * step).toFixed(decimalsOf(step)));
+  if (min !== null && next < min) next = min;
+  if (max !== null && next > max) next = max;
+  input.value = String(next);
+  input.dispatchEvent(new Event('input',  { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function decimalsOf(n) {
+  const s = String(n);
+  const dot = s.indexOf('.');
+  return dot < 0 ? 0 : s.length - dot - 1;
 }
 
 // ── Mode note + generate ──────────────────────────────────────────────

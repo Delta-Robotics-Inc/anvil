@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Infill App — AeroFlex Telemetry HUD design language. Dark-only. -->
+<!-- Infill App — AeroFlex Telemetry HUD design language. Dark-only. Tailwind v4 (browser build) for layout utilities; chamfer/glow/hazard components live in style.css. -->
 <html lang="en" class="dark">
 <head>
   <meta charset="utf-8" />
@@ -11,6 +11,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Kode+Mono:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS v4 — browser build compiles utilities at runtime (same setup as apps/hud). -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">@theme{ --font-mono:"Kode Mono",ui-monospace,monospace; }</style>
 
   <link rel="stylesheet" href="style.css" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
@@ -24,22 +28,22 @@
   </script>
   <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js">
 </head>
-<body>
-  <header class="topbar">
-    <div class="brand">
-      <h1 class="brand-title glow">INFILL <span class="slash">//</span> APP</h1>
-      <div class="brand-sub label jp">ジャイロイド充填 · GYROID CAVITY CONVERTER<span class="cursor">_</span></div>
+<body class="font-mono h-full flex flex-col overflow-hidden">
+  <header class="shrink-0 flex items-center gap-[14px] px-[18px] py-[9px] relative z-50 border-b border-[var(--line)] backdrop-blur-[6px] bg-[color-mix(in_oklch,var(--bg)_82%,transparent)]">
+    <div class="flex flex-col gap-[3px] leading-none min-w-0">
+      <h1 class="brand-title glow text-[16px] font-bold tracking-[0.22em]">INFILL <span class="text-[var(--primary)]">//</span> APP</h1>
+      <div class="label jp tracking-[0.05em]">ジャイロイド充填 · GYROID CAVITY CONVERTER<span class="cursor">_</span></div>
     </div>
-    <div class="spacer"></div>
-    <div class="conn" title="Server / worker health">
+    <div class="flex-1"></div>
+    <div class="flex items-center gap-2" title="Server / worker health">
       <span id="conn-dot" class="conn-dot"></span>
       <span id="conn-txt" class="label">connecting</span>
     </div>
   </header>
 
-  <main class="layout">
+  <main class="app-main flex-1 min-h-0 flex items-stretch">
     <!-- 3D viewport -->
-    <section class="viewport" id="viewport">
+    <section class="viewport relative flex-1 min-w-0 overflow-hidden bg-[var(--bg)]" id="viewport">
       <div class="viewport-hint" id="viewport-hint">
         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
         <div class="label vp-hint-title">DROP PARTS HERE</div>
@@ -53,8 +57,8 @@
     </section>
 
     <!-- Sidebar -->
-    <aside class="sidebar">
-      <div class="sidebar-scroll">
+    <aside class="sidebar w-[var(--sidebar-w)] flex flex-col shrink-0 border-l border-[var(--line)] bg-[color-mix(in_oklch,var(--bg)_66%,transparent)]">
+      <div class="sidebar-scroll flex-1 min-h-0 overflow-y-auto p-[14px] flex flex-col gap-[13px]">
 
         <!-- (1) Drop zone -->
         <div class="tile">
@@ -62,8 +66,8 @@
             <span class="lbls"><span class="label">DROP ZONE</span><span class="jp label">投入</span></span>
             <span class="tag">STL · STEP</span>
           </div>
-          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload parts">
-            <input id="file-input" type="file" accept=".stl,.step,.stp" multiple hidden />
+          <input id="file-input" type="file" accept=".stl,.step,.stp" multiple hidden />
+          <div id="dropzone" class="dropzone flex flex-col items-center justify-center gap-2 text-center" tabindex="0" role="button" aria-label="Upload parts">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>
             <div class="dropzone-title label">DROP PARTS HERE</div>
             <div class="dropzone-hint jp">投入 · クリックで参照</div>
@@ -76,7 +80,7 @@
             <span class="lbls"><span class="label">PARTS</span><span class="jp label">部品</span></span>
             <span class="tag">LOADED <span id="parts-count" class="num">0</span></span>
           </div>
-          <div id="parts-list" class="parts-list">
+          <div id="parts-list" class="parts-list flex flex-col gap-[7px]">
             <div class="parts-empty" id="parts-empty">No parts loaded</div>
           </div>
         </div>
@@ -87,40 +91,66 @@
             <span class="lbls"><span class="label">PARAMETERS</span><span class="jp label">設定</span></span>
             <span class="tag">TPMS</span>
           </div>
-          <div class="param-grid">
+          <div class="param-grid grid grid-cols-2 gap-[10px]">
             <label class="param param-wide">
               <span class="label">Pattern</span>
-              <select id="p-pattern">
-                <option value="gyroid" selected>Gyroid</option>
-                <option value="schwarzP">Schwarz P</option>
-                <option value="schwarzD">Schwarz D</option>
-                <option value="lidinoid">Lidinoid</option>
-                <option value="neovius">Neovius</option>
-              </select>
+              <span class="field">
+                <select id="p-pattern">
+                  <option value="gyroid" selected>Gyroid</option>
+                  <option value="schwarzP">Schwarz P</option>
+                  <option value="schwarzD">Schwarz D</option>
+                  <option value="lidinoid">Lidinoid</option>
+                  <option value="neovius">Neovius</option>
+                </select>
+              </span>
             </label>
-            <label class="param">
+            <label class="param" for="p-cell">
               <span class="label">Cell size <em>mm</em></span>
-              <input id="p-cell" type="number" value="8" min="0.5" step="0.5" />
+              <span class="step-group">
+                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease cell size">−</button>
+                <span class="field"><input id="p-cell" type="number" value="8" min="1" step="0.5" /></span>
+                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase cell size">＋</button>
+              </span>
             </label>
-            <label class="param">
+            <label class="param" for="p-wall">
               <span class="label">Wall thick. <em>mm</em></span>
-              <input id="p-wall" type="number" value="1.2" min="0.1" step="0.1" />
+              <span class="step-group">
+                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease wall thickness">−</button>
+                <span class="field"><input id="p-wall" type="number" value="1.2" min="0.2" step="0.1" /></span>
+                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase wall thickness">＋</button>
+              </span>
             </label>
-            <label class="param">
+            <label class="param" for="p-voxel">
               <span class="label">Resolution <em>voxel mm</em></span>
-              <input id="p-voxel" type="number" value="0.3" min="0.05" step="0.05" />
+              <span class="step-group">
+                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease resolution">−</button>
+                <span class="field"><input id="p-voxel" type="number" value="0.3" min="0.05" step="0.05" /></span>
+                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase resolution">＋</button>
+              </span>
             </label>
-            <label class="param" id="overlap-field">
+            <label class="param" id="overlap-field" for="p-overlap">
               <span class="label">Overlap <em>mm</em></span>
-              <input id="p-overlap" type="number" value="0.3" min="0" step="0.1" disabled />
+              <span class="step-group">
+                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease overlap">−</button>
+                <span class="field"><input id="p-overlap" type="number" value="0.3" min="0" step="0.1" disabled /></span>
+                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase overlap">＋</button>
+              </span>
             </label>
-            <label class="param">
+            <label class="param" for="p-smooth">
               <span class="label">Smoothing <em>mm</em></span>
-              <input id="p-smooth" type="number" value="0" min="0" step="0.1" />
+              <span class="step-group">
+                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease smoothing">−</button>
+                <span class="field"><input id="p-smooth" type="number" value="0" min="0" step="0.1" /></span>
+                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase smoothing">＋</button>
+              </span>
             </label>
-            <label class="param param-wide">
+            <label class="param param-wide" for="p-steptris">
               <span class="label">STEP target <em>triangles</em></span>
-              <input id="p-steptris" type="number" value="60000" min="1000" step="5000" />
+              <span class="step-group">
+                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease STEP target">−</button>
+                <span class="field"><input id="p-steptris" type="number" value="60000" min="5000" step="5000" /></span>
+                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase STEP target">＋</button>
+              </span>
             </label>
           </div>
         </div>
@@ -148,12 +178,12 @@
             <span class="lbls"><span class="label">RESULT</span><span class="jp label">結果</span></span>
             <span class="tag">GYROID</span>
           </div>
-          <div class="stats-grid">
+          <div class="stats-grid grid grid-cols-3 gap-2 mb-3">
             <div class="stat"><div class="stat-val num" id="stat-volume">&mdash;</div><div class="stat-label label">Volume <em>cm&sup3;</em></div></div>
             <div class="stat"><div class="stat-val num" id="stat-infill">&mdash;</div><div class="stat-label label">Infill</div></div>
             <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label">Tris</div></div>
           </div>
-          <div class="result-actions">
+          <div class="result-actions flex flex-col gap-2">
             <button id="export-stl-btn" class="btn btn-block" type="button">Export STL</button>
             <button id="export-step-btn" class="btn btn-block" type="button">
               <span class="btn-label">Export STEP</span>
@@ -164,7 +194,7 @@
         </div>
 
       </div>
-      <footer class="foot jp">DELTA ROBOTICS ⟢ INFILL APP ⟢ ジャイロイド充填 ⟢ PICOGK</footer>
+      <footer class="foot jp shrink-0 py-[10px] px-[14px] text-center border-t border-[var(--line)] text-[10px] tracking-[0.05em] text-[var(--dim)] opacity-60">DELTA ROBOTICS ⟢ INFILL APP ⟢ ジャイロイド充填 ⟢ PICOGK</footer>
     </aside>
   </main>
 

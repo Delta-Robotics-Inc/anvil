@@ -74,7 +74,11 @@ builder.Services.AddSingleton(sp => new JobManager(
     workerPath, jobsDir, repoRoot, maxConcurrent,
     sp.GetRequiredService<PythonSidecar>(), sp.GetRequiredService<ILogger<JobManager>>()));
 
-builder.WebHost.UseUrls("http://127.0.0.1:5238");
+// Bind to 127.0.0.1:5238 by default, but honor an explicit --urls / ASPNETCORE_URLS
+// override (both surface as the "urls" configuration key) so a second instance can
+// be launched on a different port without clashing with a running server.
+string bindUrls = cfg["urls"] ?? "http://127.0.0.1:5238";
+builder.WebHost.UseUrls(bindUrls);
 
 var app = builder.Build();
 

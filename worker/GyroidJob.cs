@@ -17,6 +17,16 @@ using PicoGK;
 namespace InfillWorker
 {
     // ---- Job model (JobRequest schema from the plan) ----
+    class Vec3
+    {
+        public float x { get; set; }
+        public float y { get; set; }
+        public float z { get; set; }
+        public Vec3() { }
+        public Vec3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
+        public Vector3 ToVector3() => new(x, y, z);
+    }
+
     class JobRequest
     {
         public string mode { get; set; } = "single";        // single | fuse | coarseOnly
@@ -35,6 +45,15 @@ namespace InfillWorker
         public string outputPath { get; set; } = "";
         public StepExport? stepExport { get; set; }
 
+        // ---- flow metrics v1 additions (all optional; defaults preserve behavior) ----
+        public string latticeType { get; set; } = "sheet";   // sheet | skeletal
+        public float biasMM { get; set; } = 0f;               // skeletal bias
+        public Vec3? cellSizeXYZ { get; set; }                // null -> scalar cellSizeMM
+        public Vec3 rotationDeg { get; set; } = new();        // {0,0,0}
+        public Vec3 phaseOffset { get; set; } = new();        // {0,0,0} cell fractions
+        public string flowAxis { get; set; } = "z";           // x | y | z
+        public float refFlowLpm { get; set; } = 10f;
+
         public static readonly JsonSerializerOptions JsonOptions = new()
         {
             PropertyNameCaseInsensitive = true,
@@ -52,10 +71,47 @@ namespace InfillWorker
 
     class Stats
     {
+        // ---- existing fields (unchanged) ----
         public float volumeMM3 { get; set; }
         public float envelopeVolumeMM3 { get; set; }
         public float infillPct { get; set; }
         public int triangles { get; set; }
+
+        // ---- flow metrics v1 ----
+        public float airVolumeMM3 { get; set; }
+        public float porosityPct { get; set; }
+        public float minOpenAreaMM2 { get; set; }
+        public float minAtMM { get; set; }
+        public float chokeRatio { get; set; }
+        public float grossAreaMM2 { get; set; }
+        public float flowLengthMM { get; set; }
+        public float surfaceAreaMM2 { get; set; }
+        public float specificSurfaceInvMM { get; set; }
+        public float hydraulicDiameterMM { get; set; }
+        public float permeabilityM2 { get; set; }
+        public float deltaPKPa { get; set; }
+        public string? flowAxis { get; set; }
+        public string[]? warnings { get; set; }
+        public ProfileDto? profile { get; set; }
+
+        public void Apply(FlowMetricsResult m)
+        {
+            airVolumeMM3         = m.airVolumeMM3;
+            porosityPct          = m.porosityPct;
+            minOpenAreaMM2       = m.minOpenAreaMM2;
+            minAtMM              = m.minAtMM;
+            chokeRatio           = m.chokeRatio;
+            grossAreaMM2         = m.grossAreaMM2;
+            flowLengthMM         = m.flowLengthMM;
+            surfaceAreaMM2       = m.surfaceAreaMM2;
+            specificSurfaceInvMM = m.specificSurfaceInvMM;
+            hydraulicDiameterMM  = m.hydraulicDiameterMM;
+            permeabilityM2       = m.permeabilityM2;
+            deltaPKPa            = m.deltaPKPa;
+            flowAxis             = m.flowAxis;
+            warnings             = m.warnings.ToArray();
+            profile              = m.profile;
+        }
     }
 
     // ---- Progress protocol: one JSON line per stage on stdout, auto-flushed ----
@@ -74,6 +130,13 @@ namespace InfillWorker
         {
             CurrentStage = "done";
             Console.WriteLine(JsonSerializer.Serialize(new { stage = "done", stats }));
+            Console.Out.Flush();
+        }
+
+        /// <summary>Diagnostic line ignored by the server (no "stage"/"stats" key).</summary>
+        public static void Note(object o)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(o));
             Console.Out.Flush();
         }
     }
@@ -101,14 +164,55 @@ namespace InfillWorker
             _ => throw new ArgumentException($"unknown pattern: '{p}'"),
         };
 
-        static BBox3 PadBox(BBox3 box, float cellSizeMM, float wallThicknessMM)
+        static TPMSWall.ELattice ParseLattice(string s) =>
+            string.Equals((s ?? "").Trim(), "skeletal", StringComparison.OrdinalIgnoreCase)
+                ? TPMSWall.ELattice.Skeletal
+                : TPMSWall.ELattice.Sheet;
+
+        // Per-axis cell size, falling back to scalar cellSizeMM where absent/invalid.
+        static Vector3 CellVec(JobRequest job)
+        {
+            if (job.cellSizeXYZ is Vec3 c)
+            {
+                float x = c.x > 0 ? c.x : job.cellSizeMM;
+                float y = c.y > 0 ? c.y : job.cellSizeMM;
+                float z = c.z > 0 ? c.z : job.cellSizeMM;
+                return new Vector3(x, y, z);
+            }
+            return new Vector3(job.cellSizeMM, job.cellSizeMM, job.cellSizeMM);
+        }
+
+        static Vector3 PhaseVec(JobRequest job)
+        {
+            Vec3 p = job.phaseOffset ?? new Vec3();
+            return new Vector3(Math.Clamp(p.x, 0f, 1f),
+                               Math.Clamp(p.y, 0f, 1f),
+                               Math.Clamp(p.z, 0f, 1f));
+        }
+
+        static BBox3 PadBox(BBox3 box, Vector3 vecCell, float wallThicknessMM)
         {
             // Pad the TPMS render bbox so the periodic field fully covers the
             // envelope plus a cell/wall margin (avoids clipped boundary cells).
-            float pad = MathF.Max(2f, cellSizeMM * 0.5f + wallThicknessMM);
+            float maxCell = MathF.Max(vecCell.X, MathF.Max(vecCell.Y, vecCell.Z));
+            float pad = MathF.Max(2f, maxCell * 0.5f + MathF.Max(0f, wallThicknessMM));
             return new BBox3(
                 box.vecMin - new Vector3(pad, pad, pad),
                 box.vecMax + new Vector3(pad, pad, pad));
+        }
+
+        static void EmitAssert(FlowMetricsResult m, float envelopeVolumeMM3)
+        {
+            Progress.Note(new
+            {
+                note = "profileAssert",
+                pass = m.profileAssertPass,
+                profileIntegralMM3 = m.profileIntegralMM3,
+                envelopeVolumeMM3,
+                relErr = envelopeVolumeMM3 > 0f
+                    ? MathF.Abs(m.profileIntegralMM3 - envelopeVolumeMM3) / envelopeVolumeMM3
+                    : 0f,
+            });
         }
 
         // ---- Workflow A: single part -> gyroidize the whole solid ----
@@ -117,7 +221,10 @@ namespace InfillWorker
             if (string.IsNullOrEmpty(job.stlPath))    throw new ArgumentException("single mode requires stlPath");
             if (string.IsNullOrEmpty(job.outputPath)) throw new ArgumentException("outputPath required");
 
-            TPMSWall.EFn eFn = ParsePattern(job.pattern);
+            TPMSWall.EFn eFn         = ParsePattern(job.pattern);
+            TPMSWall.ELattice eLat   = ParseLattice(job.latticeType);
+            Vector3 vecCell          = CellVec(job);
+            Vector3 vecPhase         = PhaseVec(job);
             Stats stats = new();
 
             using (var lib = new PicoGK.Library(job.voxelSizeMM)) // headless, per-job voxel size
@@ -125,20 +232,25 @@ namespace InfillWorker
                 Progress.Report("loadMesh", 0.05);
                 Mesh mshPart = Mesh.mshFromStlFile(job.stlPath, Mesh.EStlUnit.MM, 1f); // FORCE MM, never AUTO
                 BBox3 bbox = mshPart.oBoundingBox();
+                Vector3 vecCenter = bbox.vecCenter();
 
                 Progress.Report("voxelize", 0.2);
                 Voxels voxPart = new Voxels(mshPart);
 
                 Progress.Report("renderPattern", 0.4);
-                BBox3 bboxRender = PadBox(bbox, job.cellSizeMM, job.wallThicknessMM);
+                BBox3 bboxRender = PadBox(bbox, vecCell, job.wallThicknessMM);
                 Voxels voxPattern = new Voxels(
-                    new TPMSWall(job.cellSizeMM, job.wallThicknessMM, eFn), bboxRender);
+                    new TPMSWall(vecCell, job.wallThicknessMM, eFn, eLat, job.biasMM,
+                                 vecCenter, job.rotationDeg.ToVector3(), vecPhase),
+                    bboxRender);
 
                 Progress.Report("boolean", 0.6);
-                Voxels voxResult = voxPattern & voxPart; // intersect lattice with the solid
-
+                // Metrics lattice = TPMS clipped to the part (this is also the result
+                // when no smoothing is applied).
+                Voxels voxLattice = voxPattern & voxPart;
+                Voxels voxResult  = voxLattice;
                 if (job.smoothOffsetMM > 0f)
-                    voxResult.TripleOffset(job.smoothOffsetMM);
+                    voxResult = voxLattice.voxTripleOffset(job.smoothOffsetMM); // keep voxLattice pristine
 
                 voxResult.CalculateProperties(out float fVol, out _);
                 voxPart.CalculateProperties(out float fEnv, out _);
@@ -149,6 +261,19 @@ namespace InfillWorker
                 Progress.Report("meshing", 0.8);
                 Mesh mshResult = new Mesh(voxResult);
                 stats.triangles = mshResult.nTriangleCount();
+
+                // ---- flow metrics (Feature 2) ----
+                Progress.Report("metrics", 0.88);
+                Voxels voxAir = voxPart.voxBoolSubtract(voxLattice);
+                voxAir.CalculateProperties(out float fAir, out _);
+                Mesh mshLattice = (job.smoothOffsetMM > 0f) ? new Mesh(voxLattice) : mshResult;
+
+                var metrics = FlowMetrics.Compute(
+                    voxPart, voxLattice, voxAir, mshLattice,
+                    fEnv, fAir, job.voxelSizeMM,
+                    job.flowAxis, job.pattern, job.latticeType, job.wallThicknessMM, job.refFlowLpm);
+                stats.Apply(metrics);
+                EmitAssert(metrics, fEnv);
 
                 Progress.Report("saving", 0.95);
                 mshResult.SaveToStlFile(job.outputPath, Mesh.EStlUnit.MM);
@@ -165,7 +290,10 @@ namespace InfillWorker
             if (string.IsNullOrEmpty(job.negativeStlPath)) throw new ArgumentException("fuse mode requires negativeStlPath");
             if (string.IsNullOrEmpty(job.outputPath))      throw new ArgumentException("outputPath required");
 
-            TPMSWall.EFn eFn = ParsePattern(job.pattern);
+            TPMSWall.EFn eFn         = ParsePattern(job.pattern);
+            TPMSWall.ELattice eLat   = ParseLattice(job.latticeType);
+            Vector3 vecCell          = CellVec(job);
+            Vector3 vecPhase         = PhaseVec(job);
             Stats stats = new();
 
             using (var lib = new PicoGK.Library(job.voxelSizeMM))
@@ -174,35 +302,54 @@ namespace InfillWorker
                 Mesh mshPos = Mesh.mshFromStlFile(job.positiveStlPath, Mesh.EStlUnit.MM, 1f); // FORCE MM
                 Mesh mshNeg = Mesh.mshFromStlFile(job.negativeStlPath, Mesh.EStlUnit.MM, 1f); // FORCE MM
                 BBox3 bboxNeg = mshNeg.oBoundingBox();
+                Vector3 vecCenter = bboxNeg.vecCenter();
 
                 Progress.Report("voxelize", 0.2);
                 Voxels voxPos = new Voxels(mshPos);
                 Voxels voxNeg = new Voxels(mshNeg);
 
                 Progress.Report("renderPattern", 0.4);
-                BBox3 bboxRender = PadBox(bboxNeg, job.cellSizeMM, job.wallThicknessMM); // pad NEGATIVE bbox
+                BBox3 bboxRender = PadBox(bboxNeg, vecCell, job.wallThicknessMM); // pad NEGATIVE bbox
                 Voxels voxPattern = new Voxels(
-                    new TPMSWall(job.cellSizeMM, job.wallThicknessMM, eFn), bboxRender);
+                    new TPMSWall(vecCell, job.wallThicknessMM, eFn, eLat, job.biasMM,
+                                 vecCenter, job.rotationDeg.ToVector3(), vecPhase),
+                    bboxRender);
 
                 Progress.Report("boolean", 0.6);
-                // Lattice = pattern clipped to the cavity, grown overlapMM past the
-                // cavity boundary into the positive for a robust watertight joint.
-                Voxels voxLattice = voxPattern & voxNeg.voxOffset(job.overlapMM);
-                Voxels voxResult  = voxPos.voxBoolAdd(voxLattice);
+                // Output lattice grown overlapMM past the cavity boundary for a robust
+                // watertight joint into the positive.
+                Voxels voxLatticeOut = voxPattern & voxNeg.voxOffset(job.overlapMM);
+                Voxels voxResult     = voxPos.voxBoolAdd(voxLatticeOut);
 
                 if (job.smoothOffsetMM > 0f)
                     voxResult.TripleOffset(job.smoothOffsetMM);
 
                 voxResult.CalculateProperties(out float fVol, out _);
                 voxNeg.CalculateProperties(out float fCavity, out _);
-                voxLattice.CalculateProperties(out float fLattice, out _);
+                voxLatticeOut.CalculateProperties(out float fLatticeOut, out _);
                 stats.volumeMM3 = fVol;
                 stats.envelopeVolumeMM3 = fCavity;
-                stats.infillPct = fCavity > 0f ? 100f * fLattice / fCavity : 0f;
+                stats.infillPct = fCavity > 0f ? 100f * fLatticeOut / fCavity : 0f;
 
                 Progress.Report("meshing", 0.8);
                 Mesh mshResult = new Mesh(voxResult);
                 stats.triangles = mshResult.nTriangleCount();
+
+                // ---- flow metrics (Feature 2) ----
+                // Metrics describe the CAVITY itself: use the lattice clipped to the
+                // UN-offset negative (not the overlap-grown output lattice).
+                Progress.Report("metrics", 0.88);
+                Voxels voxLatticeMetrics = voxPattern & voxNeg;
+                Voxels voxAir = voxNeg.voxBoolSubtract(voxLatticeMetrics);
+                voxAir.CalculateProperties(out float fAir, out _);
+                Mesh mshLattice = new Mesh(voxLatticeMetrics);
+
+                var metrics = FlowMetrics.Compute(
+                    voxNeg, voxLatticeMetrics, voxAir, mshLattice,
+                    fCavity, fAir, job.voxelSizeMM,
+                    job.flowAxis, job.pattern, job.latticeType, job.wallThicknessMM, job.refFlowLpm);
+                stats.Apply(metrics);
+                EmitAssert(metrics, fCavity);
 
                 Progress.Report("saving", 0.95);
                 mshResult.SaveToStlFile(job.outputPath, Mesh.EStlUnit.MM);

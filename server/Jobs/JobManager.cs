@@ -17,6 +17,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using InfillServer.Sidecar;
 using InfillServer.Stl;
@@ -91,7 +92,16 @@ public sealed class JobManager : IAsyncDisposable
             ["overlapMM"] = req.overlapMM,
             ["smoothOffsetMM"] = req.smoothOffsetMM,
             ["outputPath"] = resultStl,
+            // ---- flow metrics v1 passthrough ----
+            ["latticeType"] = req.latticeType,
+            ["biasMM"] = req.biasMM,
+            ["rotationDeg"] = Vec(req.rotationDeg),
+            ["phaseOffset"] = Vec(req.phaseOffset),
+            ["flowAxis"] = req.flowAxis,
+            ["refFlowLpm"] = req.refFlowLpm,
         };
+        if (req.cellSizeXYZ is Vec3Dto cxyz)
+            workerJob["cellSizeXYZ"] = Vec(cxyz);
         if (inputs.Mode == "fuse")
         {
             workerJob["positiveStlPath"] = inputs.PositiveStlPath;
@@ -247,13 +257,10 @@ public sealed class JobManager : IAsyncDisposable
             {
                 if (root.TryGetProperty("stats", out var stats) && stats.ValueKind == JsonValueKind.Object)
                 {
-                    rec.Stats = new StatsDto
-                    {
-                        volumeMM3 = GetD(stats, "volumeMM3"),
-                        envelopeVolumeMM3 = GetD(stats, "envelopeVolumeMM3"),
-                        infillPct = GetD(stats, "infillPct"),
-                        triangles = GetI(stats, "triangles"),
-                    };
+                    // Capture the worker's stats object VERBATIM (deep clone the raw
+                    // JSON) so every field — including the flow metrics, warnings and
+                    // profile arrays — flows through to the client unchanged.
+                    rec.Stats = JsonNode.Parse(stats.GetRawText());
                     rec.Stage = "done";
                     rec.Progress = 1.0;
                 }
@@ -436,10 +443,13 @@ public sealed class JobManager : IAsyncDisposable
 
     // ---- helpers -----------------------------------------------------------
 
-    private static double GetD(JsonElement e, string name)
-        => e.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number ? p.GetDouble() : 0;
-    private static int GetI(JsonElement e, string name)
-        => e.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number ? p.GetInt32() : 0;
+    /// <summary>Serialize a Vec3Dto (or null) to a {x,y,z} object for job.json.</summary>
+    private static Dictionary<string, object?> Vec(Vec3Dto? v) => new()
+    {
+        ["x"] = v?.x ?? 0.0,
+        ["y"] = v?.y ?? 0.0,
+        ["z"] = v?.z ?? 0.0,
+    };
 
     public async ValueTask DisposeAsync()
     {
@@ -477,7 +487,7 @@ public sealed class JobRecord
     public JobState State = JobState.Queued;
     public string Stage = "queued";
     public double Progress;
-    public StatsDto? Stats;
+    public JsonNode? Stats;
     public string? Warning;
     public string? Error;
     public readonly StringBuilder Stderr = new();

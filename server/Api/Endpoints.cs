@@ -16,6 +16,8 @@ public static class Endpoints
 {
     private static readonly string[] Patterns =
         { "gyroid", "schwarzp", "schwarzd", "lidinoid", "neovius" };
+    private static readonly string[] LatticeTypes = { "sheet", "skeletal" };
+    private static readonly string[] FlowAxes = { "x", "y", "z" };
 
     // Resolution guard thresholds (plan).
     private const double MaxDimVoxelRatio = 2000.0;
@@ -234,6 +236,32 @@ public static class Endpoints
 
         if (reqBody.voxelSizeMM <= 0 || reqBody.cellSizeMM <= 0 || reqBody.wallThicknessMM <= 0)
             return Results.BadRequest(new { error = "cellSizeMM, wallThicknessMM and voxelSizeMM must be > 0" });
+
+        // ---- flow metrics v1 validation ------------------------------------
+        string latticeType = (reqBody.latticeType ?? "sheet").Trim().ToLowerInvariant();
+        if (Array.IndexOf(LatticeTypes, latticeType) < 0)
+            return Results.BadRequest(new { error = $"invalid latticeType '{reqBody.latticeType}' (expected 'sheet' or 'skeletal')" });
+        reqBody.latticeType = latticeType;
+
+        string flowAxis = (reqBody.flowAxis ?? "z").Trim().ToLowerInvariant();
+        if (Array.IndexOf(FlowAxes, flowAxis) < 0)
+            return Results.BadRequest(new { error = $"invalid flowAxis '{reqBody.flowAxis}' (expected 'x', 'y' or 'z')" });
+        reqBody.flowAxis = flowAxis;
+
+        if (reqBody.cellSizeXYZ is Vec3Dto cxyz &&
+            (cxyz.x <= 0 || cxyz.y <= 0 || cxyz.z <= 0))
+            return Results.BadRequest(new { error = "cellSizeXYZ components must each be > 0" });
+
+        if (reqBody.refFlowLpm < 1 || reqBody.refFlowLpm > 1000)
+            return Results.BadRequest(new { error = "refFlowLpm must be between 1 and 1000 L/min" });
+
+        // Clamp phase offset to cell fractions [0,1] (never reject — just normalize).
+        if (reqBody.phaseOffset is Vec3Dto ph)
+        {
+            ph.x = Math.Clamp(ph.x, 0, 1);
+            ph.y = Math.Clamp(ph.y, 0, 1);
+            ph.z = Math.Clamp(ph.z, 0, 1);
+        }
 
         // Resolve referenced parts.
         var referenced = new List<PartInfo>();

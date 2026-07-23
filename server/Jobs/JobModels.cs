@@ -6,6 +6,7 @@
 // up with the plan's API schema regardless of policy.
 //
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 using InfillServer.Stl;
 
 namespace InfillServer.Jobs;
@@ -53,6 +54,13 @@ public sealed class BboxDto
 
 // ---- Job request (POST /jobs body) -----------------------------------------
 
+public sealed class Vec3Dto
+{
+    public double x { get; set; }
+    public double y { get; set; }
+    public double z { get; set; }
+}
+
 public sealed class JobRequestDto
 {
     public string mode { get; set; } = "single";        // single | fuse
@@ -67,6 +75,15 @@ public sealed class JobRequestDto
     public double overlapMM { get; set; } = 0.3;         // fuse
     public double smoothOffsetMM { get; set; } = 0;
     public StepExportDto? stepExport { get; set; }
+
+    // ---- flow metrics v1 additions (all optional; defaults preserve behavior) ----
+    public string latticeType { get; set; } = "sheet";   // sheet | skeletal
+    public double biasMM { get; set; } = 0;               // skeletal bias
+    public Vec3Dto? cellSizeXYZ { get; set; }             // null -> scalar cellSizeMM
+    public Vec3Dto? rotationDeg { get; set; }             // null -> {0,0,0}
+    public Vec3Dto? phaseOffset { get; set; }             // null -> {0,0,0} cell fractions (clamped 0-1)
+    public string flowAxis { get; set; } = "z";           // x | y | z
+    public double refFlowLpm { get; set; } = 10;
 }
 
 public sealed class StepExportDto
@@ -83,14 +100,6 @@ public sealed class StepRequestDto
 
 // ---- Job status (GET /jobs/{id} response) ----------------------------------
 
-public sealed class StatsDto
-{
-    public double volumeMM3 { get; set; }
-    public double envelopeVolumeMM3 { get; set; }
-    public double infillPct { get; set; }
-    public int triangles { get; set; }
-}
-
 public sealed class StepStatusDto
 {
     public string state { get; set; } = "none";   // none | running | done | failed
@@ -105,7 +114,10 @@ public sealed class JobStatusDto
     public string state { get; set; } = "queued"; // queued | running | done | failed | cancelled
     public string? stage { get; set; }
     public double progress { get; set; }
-    public StatsDto? stats { get; set; }
+    // Verbatim worker stats object (whatever fields the worker emits in its
+    // "done" line — volumeMM3, porosityPct, warnings, profile, …). Passed
+    // through unchanged so new metrics reach the client without re-mapping.
+    public JsonNode? stats { get; set; }
     public StepStatusDto step { get; set; } = new();
     public string? warning { get; set; }
     public string? error { get; set; }

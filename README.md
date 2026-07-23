@@ -105,6 +105,85 @@ ever recentered — the preview sits exactly where CAD will place it.
 > but may be slow and memory-heavy. When in doubt, start coarse (0.4 mm) and
 > refine.
 
+### Lattice & flow parameters
+
+These control the lattice topology and the flow-metrics analysis. The advanced
+group (rotation, phase, per-axis cell, reference flow) lives under the collapsible
+**LATTICE // 格子** disclosure and is optional — sensible defaults apply.
+
+| Parameter | Meaning | Guidance |
+|---|---|---|
+| **Lattice type** | **Sheet** or **skeletal** — see [below](#sheet-vs-skeletal). | Sheet is the default (a thin TPMS wall separating two independent air networks). Skeletal is a solid strut network around one continuous channel. |
+| **Bias (mm)** *(skeletal only)* | Shifts the iso-level of the TPMS field, thickening/thinning the solid struts. Replaces **Wall thickness** when skeletal is selected. Range **−5…+5**, default 0. | Negative bias → thinner struts, more open channel. Positive → beefier struts, less open volume. 0 is the balanced minimal surface. |
+| **Flow axis** | The through-flow direction (**X / Y / Z**) the profile and permeability are measured along. | Pick the axis fluid/powder actually travels. Default **Z**. Drives the open-area profile, choke, hydraulic diameter, and ΔP. |
+| **Rotation (deg)** | Rotates the lattice field about X/Y/Z before sampling. Step 15°, range −180…180, default 0. | Re-orients cells relative to the part and the build plate — see [orientation guidance](#orientation-guidance). |
+| **Phase offset (0–1)** | Shifts the TPMS field's phase per axis (fraction of one cell period). Default 0. | Nudges where cell walls land relative to the part surface; useful to avoid a wall coinciding with a thin feature. Server clamps to 0–1. |
+| **Cell size (xyz)** | **Uniform** (one period, the default) or **per-axis** (independent X/Y/Z periods). | Per-axis stretches cells along one direction — e.g. a longer period along the flow axis for lower resistance. Prefilled from the uniform value when you switch. |
+| **Ref flow (L/min)** | Reference volumetric flow rate the Darcy ΔP estimate is reported at. Step 5, range 1–1000, default 10. | Only affects the reported **ΔP** number (linear in flow); it does not change the geometry. |
+
+### Sheet vs skeletal
+
+A TPMS field `f(x,y,z) = 0` is a single minimal surface that cleanly divides space
+into **two interpenetrating volumes** (`f > 0` and `f < 0`). The two modes keep
+different parts of that geometry as solid:
+
+- **Sheet** thickens the *surface itself* into a wall of the given thickness. The
+  solid is the thin membrane; the **two** labyrinths on either side are both open.
+  This is the classic self-supporting, open-celled infill: two independent air/powder
+  networks that never connect, braced by the wall between them. Best stiffness-to-weight
+  and the safe default for cavity venting.
+- **Skeletal** keeps *one* of the two volumes solid (biased by **Bias mm**) and leaves
+  the other as a **single** continuous channel. The result is a strut/gyroid-node
+  network. One connected pore means lower, more predictable flow resistance along the
+  channel — at some cost in isotropic stiffness.
+
+Rule of thumb: **sheet** when you want light bracing and powder escape on both sides;
+**skeletal** when a single clear flow path (cooling, filtration, fluidics) matters more
+than symmetric stiffness.
+
+### Orientation guidance
+
+The lattice family and its orientation interact with both flow and printability:
+
+- **Gyroid is nearly isotropic** — its properties barely change with direction, so
+  rotation mostly matters for how walls meet the part surface, not for flow. It prints
+  self-supporting in essentially any orientation. This is why it is the default.
+- **Schwarz P is strongly anisotropic** — it has straight, axis-aligned channels.
+  Aligning the **flow axis** with a Schwarz P channel gives a much larger open area (and
+  lower ΔP) than sampling it off-axis; a 45° rotation deliberately chokes it. If you pick
+  Schwarz P, set the flow axis and rotation on purpose — the choke number will move a lot.
+- **Rotation affects FDM overhangs.** Rotating the field changes the local wall angle
+  relative to the build plate. Steep, self-supporting angles print clean; rotating walls
+  toward horizontal introduces overhangs that may need support or sag. For FDM, prefer
+  rotations that keep sheet walls near-vertical along the print Z; for SLS/MJF (powder
+  support) orientation is unconstrained.
+
+## Flow metrics
+
+When a job finishes, the **FLOW // 流量** tile reports a set of **geometric** flow
+descriptors computed directly from the voxel field and the meshed result — sampled in
+≤128 bins along the chosen **flow axis**. These are **fast geometric estimates, not a
+CFD solution**: no Navier–Stokes, no turbulence, no real fluid. Use them to *compare*
+lattices and spot a choke, not to predict an absolute pressure drop.
+
+Let `ε` = porosity (open fraction), `Sᵥ` = specific surface area (solid–void interface
+area per unit envelope volume), `A(s)` = open cross-sectional area at position `s` along
+the flow axis, and `A_env(s)` = the part's cross-section (envelope) at `s`.
+
+| Metric | Formula / definition | Notes |
+|---|---|---|
+| **Porosity** `ε` | `airVolumeMM3 / envelopeVolumeMM3` (as %) | Fraction of the bounding volume that is open (air). Free volume = `airVolumeMM3 / 1000` cm³. |
+| **Open-area profile** `A(s)` | Open (void) area of each cross-section vs `A_env(s)`, per bin | Plotted as the **primary line**; the envelope is the dim reference. Leading/trailing zero bins are the empty space before/after the solid. |
+| **Choke** | `min_s A(s)` = `minOpenAreaMM2` at `minAtMM` | The tightest open cross-section — the flow-limiting constriction. **Choke ratio** = `minOpenAreaMM2 / grossAreaMM2` (how pinched the narrowest slice is vs the widest). Marked in red on the sparkline. |
+| **Specific surface** `Sᵥ` | `surfaceAreaMM2 / envelopeVolumeMM3` (mm⁻¹) | Wetted interface per unit volume. High `Sᵥ` = lots of surface (good for heat/mass transfer, higher drag). |
+| **Hydraulic diameter** `D_h` | `D_h = 4ε / Sᵥ` | The standard porous-media characteristic pore size. Larger `D_h` → freer flow. |
+| **Permeability** `k` | **Kozeny–Carman:** `k = ε³ / (c · Sᵥ² · (1−ε)²)` (m², `c ≈ 5`) | Geometric permeability of the pore network along the flow axis. Reported in scientific notation. |
+| **Pressure drop** `ΔP` | **Darcy:** `ΔP = (μ · L · Q) / (k · A)` at **Ref flow** `Q` | `μ` = fluid viscosity, `L` = `flowLengthMM`, `A` = mean open area. Labelled **EST** — linear in flow, derived from the geometric `k` above, **not** a solved flow field. |
+
+The tile also surfaces the worker's `warnings[]` as amber chips (red when the message
+contains "severe") — e.g. a sheet lattice's *two independent networks* note, or a
+near-total choke.
+
 ## Coordinate preservation guarantee
 
 Every stage — worker, sidecar, and the three.js viewer — operates in the **source
@@ -183,11 +262,18 @@ Base path `/api`, JSON is camelCase. The server binds `http://127.0.0.1:5238`.
   "positiveId": "p_…",           // fuse mode
   "negativeId": "p_…",           // fuse mode
   "pattern": "gyroid",           // gyroid | schwarzP | schwarzD | lidinoid | neovius
+  "latticeType": "sheet",        // "sheet" (default) | "skeletal"
   "cellSizeMM": 8.0,
-  "wallThicknessMM": 1.2,
+  "cellSizeXYZ": { "x": 8, "y": 8, "z": 16 },  // optional; omit for uniform cellSizeMM
+  "wallThicknessMM": 1.2,        // sheet mode: TPMS wall thickness
+  "biasMM": 0.0,                 // skeletal mode only: field iso-level bias (−5…+5)
   "voxelSizeMM": 0.3,
   "overlapMM": 0.3,              // fuse mode
   "smoothOffsetMM": 0,
+  "rotationDeg": { "x": 0, "y": 0, "z": 0 },   // lattice field rotation, degrees
+  "phaseOffset": { "x": 0, "y": 0, "z": 0 },   // 0–1 per axis (server clamps)
+  "flowAxis": "z",               // "x" | "y" | "z" (default z) — flow-metrics axis
+  "refFlowLpm": 10,              // 1–1000; reference flow for the ΔP estimate
   "stepExport": { "enabled": false, "targetTriangles": 60000 }
 }
 ```
@@ -200,7 +286,22 @@ Base path `/api`, JSON is camelCase. The server binds `http://127.0.0.1:5238`.
   "state": "running",            // queued | running | done | failed | cancelled
   "stage": "boolean",
   "progress": 0.6,
-  "stats": { "volumeMM3": 0, "envelopeVolumeMM3": 0, "infillPct": 0, "triangles": 0 },
+  "stats": {
+    "volumeMM3": 0, "envelopeVolumeMM3": 0, "infillPct": 0, "triangles": 0,
+    // ── flow metrics (present when the analysis ran) ──
+    "airVolumeMM3": 0, "porosityPct": 0,
+    "minOpenAreaMM2": 0, "minAtMM": 0, "chokeRatio": 0, "grossAreaMM2": 0,
+    "flowLengthMM": 0, "surfaceAreaMM2": 0, "specificSurfaceInvMM": 0,
+    "hydraulicDiameterMM": 0, "permeabilityM2": 0, "deltaPKPa": 0,
+    "flowAxis": "z", "refFlowLpm": 10,
+    "warnings": [],              // string[]; UI renders as amber/red chips
+    "profile": {                 // ≤128 bins; leading/trailing zero bins exist
+      "axis": "z",
+      "positionsMM":   [/* … */],
+      "openAreaMM2":   [/* … */],
+      "envelopeAreaMM2":[/* … */]
+    }
+  },
   "step":  { "state": "none",    // none | running | done | failed
              "triangles": null, "warning": null, "error": null },
   "warning": null,

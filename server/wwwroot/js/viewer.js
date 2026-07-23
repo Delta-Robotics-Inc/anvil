@@ -10,15 +10,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { roleColorInt } from './roles.js';
 
-// HUD palette (sRGB hex of the oklch tokens). Uploaded Part/Positive read as
-// translucent cyan, Negative as translucent orange (--primary); the generated
-// result is solid light gray (--fg) with a faint metallic sheen.
-const ROLE_COLOR = {
-  part:     0x49bfd9,  // --cyan
-  positive: 0x49bfd9,  // --cyan
-  negative: 0xff5c00,  // --primary (orange)
-};
+// Ghost meshes take their colour from the shared role map (roles.js) so a part's
+// 3D preview always matches its sidebar row accent: Part = --primary orange,
+// Positive = --green, Negative = --primary orange. Uploaded parts render
+// translucent; the generated result is solid light gray (--fg) with a sheen.
 const RESULT_COLOR = 0xd9d9d9;  // --fg
 
 const UP_OPACITY = 0.42;   // uploaded parts, translucent
@@ -41,8 +38,14 @@ export class Viewer {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.localClippingEnabled = true;   // enables the SECTION clip plane
     this.renderer = renderer;
     container.appendChild(renderer.domElement);
+
+    // View-strip state: GHOSTS (bulk-hide uploaded parts) + SECTION (flow-axis clip).
+    this._ghostsHidden = false;
+    this._section = { enabled: false, axis: 'z', t: 0.5 };
+    this._clipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 
     const controls = new OrbitControls(cam, renderer.domElement);
     controls.enableDamping = true;
@@ -79,7 +82,7 @@ export class Viewer {
       this._loader.load(url, (geometry) => {
         geometry.computeVertexNormals();
         const mat = new THREE.MeshStandardMaterial({
-          color: ROLE_COLOR[role] ?? ROLE_COLOR.part,
+          color: roleColorInt(role),
           metalness: 0.05,
           roughness: 0.65,
           transparent: true,
@@ -89,8 +92,10 @@ export class Viewer {
         });
         const mesh = new THREE.Mesh(geometry, mat);   // no transform — world coords preserved
         mesh.renderOrder = 1;
+        if (this._ghostsHidden) mesh.visible = false;
         this.scene.add(mesh);
         this.parts.set(id, { mesh, role, visible: true });
+        this._applyClip();
         this.fitView();
         resolve();
       }, undefined, (err) => reject(err instanceof Error ? err : new Error('STL load failed')));
@@ -101,7 +106,7 @@ export class Viewer {
     const p = this.parts.get(id);
     if (!p) return;
     p.role = role;
-    p.mesh.material.color.setHex(ROLE_COLOR[role] ?? ROLE_COLOR.part);
+    p.mesh.material.color.setHex(roleColorInt(role));
   }
 
   setPartVisible(id, visible) {
@@ -138,6 +143,7 @@ export class Viewer {
         this.result = mesh;
         this.scene.add(mesh);
         this.dimUploaded();
+        this._applyClip();
         this.fitView();
         resolve();
       }, undefined, (err) => reject(err instanceof Error ? err : new Error('preview load failed')));
@@ -159,12 +165,65 @@ export class Viewer {
     for (const p of this.parts.values()) p.mesh.material.opacity = UP_OPACITY;
   }
 
+  // ── Ghosts (bulk-toggle uploaded-part visibility; result stays) ──────
+  toggleGhosts() {
+    this._ghostsHidden = !this._ghostsHidden;
+    for (const p of this.parts.values()) p.mesh.visible = this._ghostsHidden ? false : p.visible;
+    this.fitView();
+    return this._ghostsHidden;   // true = uploaded parts hidden
+  }
+
+  // ── Section clip plane (along the current flow axis) ─────────────────
+  setSection(enabled, axis) {
+    this._section.enabled = enabled;
+    if (axis) this._section.axis = axis;
+    this._updateClipPlane();
+    this._applyClip();
+  }
+  setSectionAxis(axis) { this._section.axis = axis; this._updateClipPlane(); }
+  setSectionPosition(t) { this._section.t = Math.max(0, Math.min(1, t)); this._updateClipPlane(); }
+
+  _updateClipPlane() {
+    const box = this._visibleBox();
+    if (!box) return;
+    const a = this._section.axis;
+    const n = new THREE.Vector3(a === 'x' ? 1 : 0, a === 'y' ? 1 : 0, a === 'z' ? 1 : 0);
+    const min = box.min[a], max = box.max[a];
+    const value = min + this._section.t * (max - min);
+    // keep fragments where n·p >= value  →  constant = -value
+    this._clipPlane.normal.copy(n);
+    this._clipPlane.constant = -value;
+  }
+  _applyClip() {
+    const planes = this._section.enabled ? [this._clipPlane] : null;
+    const set = (mat) => { if (mat) { mat.clippingPlanes = planes; mat.needsUpdate = true; } };
+    for (const p of this.parts.values()) set(p.mesh.material);
+    if (this.result) set(this.result.material);
+  }
+
+  // Union bbox of currently-visible meshes (uploaded parts + result). null if empty.
+  _visibleBox() {
+    const box = new THREE.Box3();
+    let has = false;
+    for (const p of this.parts.values()) {
+      if (p.mesh.visible) { box.expandByObject(p.mesh); has = true; }
+    }
+    if (this.result) { box.expandByObject(this.result); has = true; }
+    return (!has || box.isEmpty()) ? null : box;
+  }
+
+  /** {x,y,z} size of the visible union bbox, or null. Feeds the dims readout. */
+  getVisibleSize() {
+    const box = this._visibleBox();
+    return box ? box.getSize(new THREE.Vector3()) : null;
+  }
+
   // ── Camera fit (Box3 union of visible objects) ──────────────────────
   fitView() {
     const box = new THREE.Box3();
     let has = false;
     for (const p of this.parts.values()) {
-      if (p.visible) { box.expandByObject(p.mesh); has = true; }
+      if (p.mesh.visible) { box.expandByObject(p.mesh); has = true; }
     }
     if (this.result) { box.expandByObject(this.result); has = true; }
     if (!has || box.isEmpty()) return;

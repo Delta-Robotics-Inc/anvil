@@ -9,10 +9,13 @@ import { Viewer } from './viewer.js';
 // ── State ─────────────────────────────────────────────────────────────
 const state = {
   parts: [],        // { id, name, triangles, sourceFormat, role, visible }
+  pending: [],      // { tempId, name, kind } placeholder rows for in-flight uploads
   job: null,        // { id } of the last successful generation
   poll: null,       // interval handle for generation polling
   stepPoll: null,   // interval handle for STEP-export polling
+  resultFresh: false, // Fix 1 — shown result matches current params (drives accent budget)
 };
+let pendingSeq = 0; // monotonic id source for placeholder rows
 
 const viewer = new Viewer(ui.els.viewport);
 viewer.setTheme(ui.isDarkTheme());
@@ -42,34 +45,95 @@ ui.els.fileInput.addEventListener('change', () => {
   }));
 ui.els.dropzone.addEventListener('drop', (e) => {
   const files = Array.from(e.dataTransfer?.files || []);
+  clearDragActive();
   handleFiles(files);
 });
-// Prevent the browser from navigating when a file is dropped outside the zone.
-window.addEventListener('dragover', (e) => e.preventDefault());
-window.addEventListener('drop', (e) => e.preventDefault());
+
+// ── Window-wide drag & drop ───────────────────────────────────────────
+// A file dropped ANYWHERE on the page (viewport included) routes to the same
+// upload path. While a file is dragged over the window both drop affordances
+// light up (sidebar zone + viewport hint). preventDefault on dragover is
+// required so the browser doesn't navigate to the dropped file. The dropzone's
+// own drop handler stopPropagation()s, so window drops never double-handle a
+// drop that already landed on the zone.
+let dragLeaveTimer = 0;
+function hasFiles(e) {
+  const t = e.dataTransfer;
+  return !!t && Array.from(t.types || []).includes('Files');
+}
+function clearDragActive() {
+  clearTimeout(dragLeaveTimer);
+  document.body.classList.remove('drag-active');
+}
+window.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  if (!hasFiles(e)) return;
+  document.body.classList.add('drag-active');
+  // Debounced leave: dragover stops firing once the cursor exits the window or
+  // a drop lands, so a short timeout clears the glow without child flicker.
+  clearTimeout(dragLeaveTimer);
+  dragLeaveTimer = setTimeout(() => document.body.classList.remove('drag-active'), 160);
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  clearDragActive();
+  const files = Array.from(e.dataTransfer?.files || []);
+  if (files.length) handleFiles(files);
+});
 
 async function handleFiles(files) {
   const accepted = files.filter((f) => /\.(stl|step|stp)$/i.test(f.name));
   const rejected = files.filter((f) => !/\.(stl|step|stp)$/i.test(f.name));
   for (const f of rejected) ui.toast(`Skipped "${f.name}" — only STL / STEP are supported.`, 'warn');
+  if (accepted.length === 0) return;
 
-  for (const file of accepted) {
+  // Synchronously stand up a placeholder row per file BEFORE any await, so a
+  // drop shows instant feedback while the STEP→STL sidecar spins up (1–3s).
+  const jobs = accepted.map((file) => {
+    const tempId = `pending-${++pendingSeq}`;
+    state.pending.push({
+      tempId, name: file.name,
+      kind: /\.stl$/i.test(file.name) ? 'stl' : 'step',
+    });
+    return { file, tempId };
+  });
+  refreshParts(); // paints placeholders + flips the drop zone to PROCESSING_
+
+  for (const { file, tempId } of jobs) {
+    let part;
     try {
-      const part = await api.uploadPart(file);
-      const rec = {
-        id: part.id, name: part.name, triangles: part.triangles,
-        sourceFormat: part.sourceFormat, role: 'part', visible: true,
-      };
-      state.parts.push(rec);
-      applyAutoRoles();
+      part = await api.uploadPart(file);
+    } catch (err) {
+      removePending(tempId);
+      refreshParts();
+      ui.toast(`Upload failed for "${file.name}": ${err.message}`, 'error', 9000);
+      continue;
+    }
+
+    const rec = {
+      id: part.id, name: part.name, triangles: part.triangles,
+      sourceFormat: part.sourceFormat, role: 'part', visible: true,
+    };
+    // Swap placeholder → real row the instant conversion returns, then flash.
+    removePending(tempId);
+    state.parts.push(rec);
+    applyAutoRoles();
+    refreshParts();
+    ui.flashPartRow(rec.id);
+
+    try {
       await viewer.addPart(part.id, part.stlUrl, rec.role);
       // Roles may have changed via applyAutoRoles — sync viewer colors.
       syncViewerRoles();
-      refreshParts();
+      updateDims();
     } catch (err) {
-      ui.toast(`Upload failed for "${file.name}": ${err.message}`, 'error', 9000);
+      ui.toast(`"${part.name}" loaded, but its 3D preview failed: ${err.message}`, 'warn');
     }
   }
+}
+
+function removePending(tempId) {
+  state.pending = state.pending.filter((p) => p.tempId !== tempId);
 }
 
 // First part → Part. When exactly two parts exist, switch to positive/negative
@@ -87,7 +151,7 @@ function syncViewerRoles() {
 
 // ── Parts list interactions ───────────────────────────────────────────
 function refreshParts() {
-  ui.renderParts(state.parts, {
+  ui.renderParts(state.parts, state.pending, {
     onRoleChange: (id, role) => {
       const p = state.parts.find((x) => x.id === id);
       if (!p) return;
@@ -104,8 +168,12 @@ function refreshParts() {
     },
     onDelete: (id) => deletePart(id),
   });
+  ui.setDropzoneBusy(state.pending.length > 0);
   ui.setViewportHint(state.parts.length === 0 && !state.job);
   updateMode();
+  updateDims();   // union-bbox readout + SECTION availability track the visible set
+  updateAccents();          // Fix 1 — refresh the single-fill slot for the new part/role set
+  updateViewportContext();  // Fix 6 — mode may have changed with roles
 }
 
 async function deletePart(id) {
@@ -156,6 +224,39 @@ function updateMode() {
   return m;
 }
 
+// ── Accent budget + live viewport context (Fix 1 / Fix 6) ──────────────
+// The solid --primary fill is a single-occupancy slot tied to the next primary
+// action: pinned GENERATE while armed/generating, EXPORT STL once a fresh result
+// exists. Empty & invalid states carry no fill (ghost GENERATE via CSS).
+function updateAccents() {
+  const generating = ui.isGenerating();
+  const fresh = state.resultFresh && !generating;
+  const genEnabled = !ui.els.generate.disabled;   // false while generating (disabled) or invalid
+  ui.setGenerateFilled(generating || (genEnabled && !fresh));
+  ui.setExportStlFilled(fresh);
+}
+
+const PATTERN_LABEL = {
+  gyroid: 'GYROID', schwarzP: 'SCHWARZ P', schwarzD: 'SCHWARZ D',
+  lidinoid: 'LIDINOID', neovius: 'NEOVIUS',
+};
+// Top-left viewport line: "PATTERN · LATTICE · MODE", from live state.
+function updateViewportContext() {
+  const patt = PATTERN_LABEL[ui.els.pattern.value] || (ui.els.pattern.value || '').toUpperCase();
+  const lat  = ui.getLatticeType().toUpperCase();
+  const mode = (computeMode().mode || 'single').toUpperCase();
+  ui.setViewportContext(`${patt} · ${lat} · ${mode}`);
+}
+
+// Any generation-affecting param change re-arms the primary action (the shown
+// result is no longer fresh). STEP target is export-only, so it's excluded.
+function markParamsDirty(e) {
+  if (e && e.target && e.target.id === 'p-steptris') return;
+  state.resultFresh = false;
+  updateAccents();
+  updateViewportContext();
+}
+
 // ── Generate ──────────────────────────────────────────────────────────
 ui.els.generate.addEventListener('click', onGenerate);
 ui.els.cancel.addEventListener('click', onCancel);
@@ -173,14 +274,28 @@ async function onGenerate() {
     voxelSizeMM: params.voxelSizeMM,
     overlapMM: params.overlapMM,
     smoothOffsetMM: params.smoothOffsetMM,
+
+    // flow-metrics v1
+    latticeType: params.latticeType,
+    flowAxis: params.flowAxis,
+    rotationDeg: params.rotationDeg,
+    phaseOffset: params.phaseOffset,
+    refFlowLpm: params.refFlowLpm,
   };
+  // Skeletal lattices bias the field instead of setting a wall thickness.
+  if (params.latticeType === 'skeletal') body.biasMM = params.biasMM;
+  // Per-axis cell sizes are only sent when the user opted in (omit → uniform).
+  if (params.cellSizeXYZ) body.cellSizeXYZ = params.cellSizeXYZ;
+
   if (m.mode === 'single') body.partId = m.partId;
   else { body.positiveId = m.positiveId; body.negativeId = m.negativeId; }
 
   stopPolling();
+  state.resultFresh = false;   // Fix 1 — old result hidden; GENERATE is the sole fill now
   ui.hideResult();
   ui.showProgress(true);
   ui.setProgress(0, 'Queued…');
+  updateAccents();
 
   let jobId;
   try {
@@ -190,6 +305,7 @@ async function onGenerate() {
   } catch (err) {
     ui.showProgress(false);
     ui.toast(err.message, 'error', 11000);   // surfaces the resolution-guard 400
+    updateAccents();
     return;
   }
 
@@ -218,10 +334,12 @@ function pollJob(jobId, stepTarget) {
     } else if (st.state === 'failed' || st.state === 'error') {
       stopPolling();
       ui.showProgress(false);
+      updateAccents();   // Fix 1 — back to armed (GENERATE refills)
       ui.toast(`Generation failed: ${st.error || 'unknown error'}`, 'error', 12000);
     } else if (st.state === 'cancelled') {
       stopPolling();
       ui.showProgress(false);
+      updateAccents();
       ui.toast('Generation cancelled.', 'warn');
     }
   }, 500);
@@ -229,10 +347,13 @@ function pollJob(jobId, stepTarget) {
 
 async function onJobDone(jobId, st, stepTarget) {
   state.job = { id: jobId, stepTarget };
+  state.resultFresh = true;   // Fix 1 — result matches current params: EXPORT STL takes the fill
   ui.showResult(st.stats);
   ui.setViewportHint(false);
+  updateAccents();
   try {
     await viewer.showResult(api.previewUrl(jobId));
+    updateDims();
   } catch (err) {
     ui.toast(`Result generated but preview failed to load: ${err.message}`, 'warn');
   }
@@ -343,8 +464,84 @@ async function pollHealth() {
   }
 }
 
+// ── CAD workspace shell (toolbar · view strip · panels · dims) ────────
+// Bottom-right dims readout = union bbox of visible meshes. Also gates the
+// SECTION button (nothing visible → nothing to clip → reset + disable).
+function updateDims() {
+  const size = viewer.getVisibleSize();
+  ui.setDims(size);
+  const sec = ui.els.vpSection;
+  if (!sec) return;
+  if (!size) {
+    if (sec.classList.contains('active')) {
+      sec.classList.remove('active');
+      sec.setAttribute('aria-pressed', 'false');
+      if (ui.els.vpSectionWrap) ui.els.vpSectionWrap.hidden = true;
+      viewer.setSection(false);
+    }
+    sec.disabled = true;
+  } else {
+    sec.disabled = false;
+  }
+}
+
+ui.initPanels();
+
+// Grouped pipeline toolbar (IMPORT · TPMS · ORIENT · GENERATE · FLOW · STL · STEP).
+// GENERATE/FLOW/STL/STEP reuse the existing handlers/buttons — no duplicated state.
+ui.els.tbImport?.addEventListener('click', () => ui.els.fileInput.click());
+ui.els.tbTpms?.addEventListener('click', () => ui.focusSection('tpms'));
+ui.els.tbOrient?.addEventListener('click', () => ui.focusSection('orient'));
+ui.els.tbGenerate?.addEventListener('click', () => { if (ui.isGenerating()) onCancel(); else onGenerate(); });
+ui.els.tbFlow?.addEventListener('click', () => ui.focusSection('flow'));
+ui.els.tbStl?.addEventListener('click', () => ui.els.exportStl.click());
+ui.els.tbStep?.addEventListener('click', () => ui.els.exportStep.click());
+
+// The nested OBJECTS op line ("└ TPMS · GYROID · PART") reflects the pattern.
+ui.els.pattern?.addEventListener('change', refreshParts);
+
+// Re-arm the primary action (and refresh the viewport context) on any
+// generation-param change (Fix 1 / Fix 6). input/change bubble from every
+// stepper input and select; the SHEET/SKELETAL + X/Y/Z toggles fire click.
+ui.els.panelLeft?.addEventListener('input', markParamsDirty);
+ui.els.panelLeft?.addEventListener('change', markParamsDirty);
+ui.els.panelLeft?.addEventListener('click', (e) => {
+  if (e.target.closest?.('.seg-btn, .fchip')) markParamsDirty();
+});
+
+// Floating view strip — FIT · GHOSTS · SECTION.
+ui.els.vpFit?.addEventListener('click', () => viewer.fitView());
+ui.els.vpGhosts?.addEventListener('click', () => {
+  const hidden = viewer.toggleGhosts();
+  ui.els.vpGhosts.classList.toggle('active', hidden);
+  ui.els.vpGhosts.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+  updateDims();
+});
+ui.els.vpSection?.addEventListener('click', () => {
+  const on = !ui.els.vpSection.classList.contains('active');
+  ui.els.vpSection.classList.toggle('active', on);
+  ui.els.vpSection.setAttribute('aria-pressed', on ? 'true' : 'false');
+  if (ui.els.vpSectionWrap) ui.els.vpSectionWrap.hidden = !on;
+  viewer.setSection(on, ui.getFlowAxis());
+  if (on) viewer.setSectionPosition(Number(ui.els.vpSectionSlider.value) / 100);
+});
+ui.els.vpSectionSlider?.addEventListener('input', () =>
+  viewer.setSectionPosition(Number(ui.els.vpSectionSlider.value) / 100));
+// Keep an active section plane aligned to the flow axis if the user changes it.
+ui.els.flowAxis?.addEventListener('click', () => {
+  if (ui.els.vpSection?.classList.contains('active')) viewer.setSectionAxis(ui.getFlowAxis());
+});
+
 // ── init ──────────────────────────────────────────────────────────────
 ui.initSteppers();
+ui.initLatticeControls();
+ui.initTooltips();
+// Keep the flow sparkline crisp + inside its tile when the window resizes.
+let sparkResizeRAF = 0;
+window.addEventListener('resize', () => {
+  if (sparkResizeRAF) return;
+  sparkResizeRAF = requestAnimationFrame(() => { sparkResizeRAF = 0; ui.drawFlowSpark(); });
+});
 refreshParts();
 pollHealth();
 setInterval(pollHealth, 10000);

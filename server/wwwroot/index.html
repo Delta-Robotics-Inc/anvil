@@ -1,5 +1,7 @@
 <!DOCTYPE html>
-<!-- Infill App — AeroFlex Telemetry HUD design language. Dark-only. Tailwind v4 (browser build) for layout utilities; chamfer/glow/hazard components live in style.css. -->
+<!-- Infill App — AeroFlex Telemetry HUD design language. Dark-only. CAD-style workspace
+     (HyDesign structural patterns) over the HUD skin. Tailwind v4 (browser build) for a
+     few layout utilities; chamfer/glow/hazard components live in style.css. -->
 <html lang="en" class="dark">
 <head>
   <meta charset="utf-8" />
@@ -29,9 +31,11 @@
   <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js">
 </head>
 <body class="font-mono h-full flex flex-col overflow-hidden">
-  <header class="shrink-0 flex items-center gap-[14px] px-[18px] py-[9px] relative z-50 border-b border-[var(--line)] backdrop-blur-[6px] bg-[color-mix(in_oklch,var(--bg)_82%,transparent)]">
-    <div class="flex flex-col gap-[3px] leading-none min-w-0">
-      <h1 class="brand-title glow text-[16px] font-bold tracking-[0.22em]">INFILL <span class="text-[var(--primary)]">//</span> APP</h1>
+
+  <!-- ═══ Region 1 — top app bar ═══════════════════════════════════════ -->
+  <header class="app-bar shrink-0 flex items-center gap-[14px] px-[18px] py-[8px] relative z-50 border-b border-[var(--line)] backdrop-blur-[6px] bg-[color-mix(in_oklch,var(--bg)_82%,transparent)]">
+    <div class="flex flex-col gap-[2px] leading-none min-w-0">
+      <h1 class="brand-title glow text-[15px] font-bold tracking-[0.22em]">INFILL <span class="text-[var(--primary)]">//</span> APP</h1>
       <div class="label jp tracking-[0.05em]">ジャイロイド充填 · GYROID CAVITY CONVERTER<span class="cursor">_</span></div>
     </div>
     <div class="flex-1"></div>
@@ -41,111 +45,248 @@
     </div>
   </header>
 
-  <main class="app-main flex-1 min-h-0 flex items-stretch">
-    <!-- 3D viewport -->
-    <section class="viewport relative flex-1 min-w-0 overflow-hidden bg-[var(--bg)]" id="viewport">
-      <div class="viewport-hint" id="viewport-hint">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
-        <div class="label vp-hint-title">DROP PARTS HERE</div>
-        <div class="jp regmark">STL · STEP 投入 // クリックで参照</div>
-      </div>
-      <div class="vp-chrome vp-tl regmark">INFILL // GYROID CAVITY CONVERTER · PICOGK</div>
-      <div class="vp-chrome vp-bl">
-        <div class="barcode" data-seed="4412" data-bars="46"></div>
-        <div class="regmark">TPMS // FIELD-DRIVEN LATTICE · ジャイロイド格子</div>
-      </div>
-    </section>
+  <!-- ═══ Region 2 — grouped pipeline toolbar ══════════════════════════ -->
+  <nav class="toolbar shrink-0 relative z-40" id="toolbar" aria-label="Pipeline">
+    <div class="tb-group" data-group="import">
+      <button type="button" class="tb-btn" id="tb-import" data-tip="Import STL / STEP parts (same as the drop zone).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3"/></svg>
+        <span class="tb-label">IMPORT</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="lattice">
+      <button type="button" class="tb-btn" id="tb-tpms" data-tip="Jump to the TPMS parameters (pattern, type, cell, wall, resolution).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg>
+        <span class="tb-label">TPMS</span>
+      </button>
+      <button type="button" class="tb-btn" id="tb-orient" data-tip="Jump to the LATTICE 格子 advanced controls (rotation, phase, per-axis cell).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+        <span class="tb-label">ORIENT</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="generate">
+      <button type="button" class="tb-btn tb-primary" id="tb-generate" disabled data-tip="Generate the lattice (mirrors the panel button).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>
+        <span class="tb-label">GENERATE</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="analyze">
+      <button type="button" class="tb-btn" id="tb-flow" disabled data-tip="Jump to the FLOW metrics (available after a result).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15c3 0 3-6 6-6s3 6 6 6 3-4 6-4"/></svg>
+        <span class="tb-label">FLOW</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="export">
+      <button type="button" class="tb-btn" id="tb-stl" disabled data-tip="Export the result as STL (available after a result).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
+        <span class="tb-label">STL</span>
+      </button>
+      <button type="button" class="tb-btn" id="tb-step" disabled data-tip="Export the result as faceted STEP (available after a result).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>
+        <span class="tb-label">STEP</span>
+      </button>
+    </div>
+  </nav>
 
-    <!-- Sidebar -->
-    <aside class="sidebar w-[var(--sidebar-w)] flex flex-col shrink-0 border-l border-[var(--line)] bg-[color-mix(in_oklch,var(--bg)_66%,transparent)]">
-      <div class="sidebar-scroll flex-1 min-h-0 overflow-y-auto p-[14px] flex flex-col gap-[13px]">
+  <!-- ═══ Regions 3·4·5 — panels + viewport ════════════════════════════ -->
+  <main class="app-main flex-1 min-h-0 relative flex items-stretch" id="app-main">
 
-        <!-- (1) Drop zone -->
-        <div class="tile">
-          <div class="thead">
-            <span class="lbls"><span class="label">DROP ZONE</span><span class="jp label">投入</span></span>
-            <span class="tag">STL · STEP</span>
-          </div>
-          <input id="file-input" type="file" accept=".stl,.step,.stp" multiple hidden />
-          <div id="dropzone" class="dropzone flex flex-col items-center justify-center gap-2 text-center" tabindex="0" role="button" aria-label="Upload parts">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>
-            <div class="dropzone-title label">DROP PARTS HERE</div>
-            <div class="dropzone-hint jp">投入 · クリックで参照</div>
-          </div>
-        </div>
+    <!-- ── Region 3 — left panel: contextual parameters ───────────────── -->
+    <aside class="panel panel-left" id="panel-left">
+      <div class="panel-inner">
+        <div class="panel-scroll">
 
-        <!-- (2) Parts list -->
-        <div class="tile">
-          <div class="thead">
-            <span class="lbls"><span class="label">PARTS</span><span class="jp label">部品</span></span>
-            <span class="tag">LOADED <span id="parts-count" class="num">0</span></span>
+          <!-- TPMS parameters -->
+          <div class="tile" id="sec-tpms">
+            <div class="thead">
+              <span class="lbls"><span class="label">TPMS</span><span class="jp label">設定</span></span>
+              <span class="tag">FIELD</span>
+            </div>
+            <div class="param-grid grid grid-cols-2 gap-[10px]">
+              <label class="param param-wide">
+                <span class="label has-tip" data-tip="TPMS surface type. Gyroid = balanced, isotropic. Schwarz P = straight axis-aligned channels. Schwarz D = branched diamond channels.">Pattern</span>
+                <span class="field">
+                  <select id="p-pattern">
+                    <option value="gyroid" selected>Gyroid</option>
+                    <option value="schwarzP">Schwarz P</option>
+                    <option value="schwarzD">Schwarz D</option>
+                    <option value="lidinoid">Lidinoid</option>
+                    <option value="neovius">Neovius</option>
+                  </select>
+                </span>
+              </label>
+              <div class="param param-wide">
+                <span class="label has-tip" data-tip="Sheet = wall around the surface — splits the cavity into two separate air networks. Skeletal = fills one side — one open channel.">Lattice type</span>
+                <div class="seg" id="lattice-seg" role="group" aria-label="Lattice type">
+                  <button type="button" class="seg-btn active" data-val="sheet" aria-pressed="true">SHEET</button>
+                  <button type="button" class="seg-btn" data-val="skeletal" aria-pressed="false">SKELETAL</button>
+                </div>
+                <span class="regmark" id="lattice-hint">wall lattice · two air networks</span>
+              </div>
+              <label class="param" for="p-cell">
+                <span class="label has-tip" data-tip="Size of one repeating cell. Bigger = more open flow, coarser structure.">Cell size <em>mm</em></span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease cell size">−</button>
+                  <span class="field"><input id="p-cell" type="number" value="8" min="1" step="0.5" /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase cell size">＋</button>
+                </span>
+              </label>
+              <label class="param" id="wall-field" for="p-wall">
+                <span class="label">
+                  <span id="lbl-wall" class="has-tip" data-tip="Lattice wall thickness. Thicker = stronger, more airtight, less flow. Below 0.8 mm risks FDM leaks.">Wall thick. <em>mm</em></span>
+                  <span id="lbl-bias" class="has-tip" data-tip="Shifts the solid/air split. 0 = 50/50. Negative = more air, positive = more solid." hidden>Bias <em>mm</em></span>
+                </span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease wall thickness / bias">−</button>
+                  <span class="field"><input id="p-wall" type="number" value="1.2" min="0.2" step="0.1" data-mode="sheet" /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase wall thickness / bias">＋</button>
+                </span>
+              </label>
+              <label class="param" for="p-voxel">
+                <span class="label has-tip" data-tip="Voxel size for generation. Smaller = finer detail but slower and heavier. Keep at or below wall/3.">Resolution <em>voxel mm</em></span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease resolution">−</button>
+                  <span class="field"><input id="p-voxel" type="number" value="0.3" min="0.05" step="0.05" /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase resolution">＋</button>
+                </span>
+              </label>
+              <label class="param" id="overlap-field" for="p-overlap">
+                <span class="label has-tip" data-tip="How far the lattice extends into the positive part so the fuse welds solid (fuse mode only).">Overlap <em>mm</em></span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease overlap">−</button>
+                  <span class="field"><input id="p-overlap" type="number" value="0.3" min="0" step="0.1" disabled /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase overlap">＋</button>
+                </span>
+              </label>
+              <label class="param" for="p-smooth">
+                <span class="label has-tip" data-tip="Rounds sharp edges after generation. 0 = off.">Smoothing <em>mm</em></span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease smoothing">−</button>
+                  <span class="field"><input id="p-smooth" type="number" value="0" min="0" step="0.1" /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase smoothing">＋</button>
+                </span>
+              </label>
+              <div class="param param-wide">
+                <span class="label has-tip" data-tip="Axis used for the open-area profile and choke metrics.">Flow axis</span>
+                <div class="chips" id="flow-axis" role="group" aria-label="Flow axis">
+                  <button type="button" class="fchip" data-val="x" aria-pressed="false">X</button>
+                  <button type="button" class="fchip" data-val="y" aria-pressed="false">Y</button>
+                  <button type="button" class="fchip active" data-val="z" aria-pressed="true">Z</button>
+                </div>
+              </div>
+            </div>
           </div>
-          <div id="parts-list" class="parts-list flex flex-col gap-[7px]">
-            <div class="parts-empty" id="parts-empty">No parts loaded</div>
-          </div>
-        </div>
 
-        <!-- (3) Parameters -->
-        <div class="tile">
-          <div class="thead">
-            <span class="lbls"><span class="label">PARAMETERS</span><span class="jp label">設定</span></span>
-            <span class="tag">TPMS</span>
+          <!-- ORIENT — LATTICE 格子 advanced disclosure -->
+          <div class="tile" id="sec-orient">
+            <div class="param param-wide adv" id="lattice-adv">
+              <button type="button" class="disc-head" id="lattice-adv-toggle" aria-expanded="false" aria-controls="lattice-adv-body">
+                <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                <span class="label">LATTICE</span><span class="jp label">格子</span>
+                <span class="regmark disc-tail">ORIENT · 詳細</span>
+              </button>
+              <div class="disc-body" id="lattice-adv-body" hidden>
+
+                <div class="subparam">
+                  <span class="label has-tip" data-tip="Rotates the lattice pattern inside the part. The part itself never moves.">Rotation <em>deg</em></span>
+                  <div class="triplet">
+                    <div class="axis-cell"><span class="axis-lab">X</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease X rotation">−</button>
+                        <span class="field"><input id="p-rot-x" type="number" value="0" min="-180" max="180" step="15" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase X rotation">＋</button>
+                      </span></div>
+                    <div class="axis-cell"><span class="axis-lab">Y</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease Y rotation">−</button>
+                        <span class="field"><input id="p-rot-y" type="number" value="0" min="-180" max="180" step="15" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase Y rotation">＋</button>
+                      </span></div>
+                    <div class="axis-cell"><span class="axis-lab">Z</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease Z rotation">−</button>
+                        <span class="field"><input id="p-rot-z" type="number" value="0" min="-180" max="180" step="15" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase Z rotation">＋</button>
+                      </span></div>
+                  </div>
+                </div>
+
+                <div class="subparam">
+                  <span class="label has-tip" data-tip="Slides the pattern within its cell — controls where cell openings land on the cavity walls.">Phase offset <em>0–1</em></span>
+                  <div class="triplet">
+                    <div class="axis-cell"><span class="axis-lab">X</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease X phase">−</button>
+                        <span class="field"><input id="p-phase-x" type="number" value="0" min="0" max="1" step="0.1" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase X phase">＋</button>
+                      </span></div>
+                    <div class="axis-cell"><span class="axis-lab">Y</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease Y phase">−</button>
+                        <span class="field"><input id="p-phase-y" type="number" value="0" min="0" max="1" step="0.1" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase Y phase">＋</button>
+                      </span></div>
+                    <div class="axis-cell"><span class="axis-lab">Z</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease Z phase">−</button>
+                        <span class="field"><input id="p-phase-z" type="number" value="0" min="0" max="1" step="0.1" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase Z phase">＋</button>
+                      </span></div>
+                  </div>
+                </div>
+
+                <div class="subparam">
+                  <span class="label has-tip" data-tip="Stretch cells per axis. Longer cells along the flow axis = straighter channels.">Cell size <em>xyz</em></span>
+                  <div class="seg" id="cell-seg" role="group" aria-label="Cell size mode">
+                    <button type="button" class="seg-btn active" data-val="uniform" aria-pressed="true">UNIFORM</button>
+                    <button type="button" class="seg-btn" data-val="peraxis" aria-pressed="false">PER-AXIS</button>
+                  </div>
+                  <div class="triplet cell-xyz" id="cell-xyz" hidden>
+                    <div class="axis-cell"><span class="axis-lab">X</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease X cell size">−</button>
+                        <span class="field"><input id="p-cell-x" type="number" value="8" min="1" step="0.5" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase X cell size">＋</button>
+                      </span></div>
+                    <div class="axis-cell"><span class="axis-lab">Y</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease Y cell size">−</button>
+                        <span class="field"><input id="p-cell-y" type="number" value="8" min="1" step="0.5" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase Y cell size">＋</button>
+                      </span></div>
+                    <div class="axis-cell"><span class="axis-lab">Z</span>
+                      <span class="step-group compact">
+                        <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease Z cell size">−</button>
+                        <span class="field"><input id="p-cell-z" type="number" value="8" min="1" step="0.5" /></span>
+                        <button type="button" class="btn step-btn" data-step="1" aria-label="Increase Z cell size">＋</button>
+                      </span></div>
+                  </div>
+                </div>
+
+                <label class="param" id="refflow-field" for="p-refflow">
+                  <span class="label has-tip" data-tip="Flow rate used for the pressure-drop estimate.">Ref flow <em>L/min</em></span>
+                  <span class="step-group">
+                    <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease reference flow">−</button>
+                    <span class="field"><input id="p-refflow" type="number" value="10" min="1" max="1000" step="5" /></span>
+                    <button type="button" class="btn step-btn" data-step="1" aria-label="Increase reference flow">＋</button>
+                  </span>
+                </label>
+
+              </div>
+            </div>
           </div>
-          <div class="param-grid grid grid-cols-2 gap-[10px]">
-            <label class="param param-wide">
-              <span class="label">Pattern</span>
-              <span class="field">
-                <select id="p-pattern">
-                  <option value="gyroid" selected>Gyroid</option>
-                  <option value="schwarzP">Schwarz P</option>
-                  <option value="schwarzD">Schwarz D</option>
-                  <option value="lidinoid">Lidinoid</option>
-                  <option value="neovius">Neovius</option>
-                </select>
-              </span>
-            </label>
-            <label class="param" for="p-cell">
-              <span class="label">Cell size <em>mm</em></span>
-              <span class="step-group">
-                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease cell size">−</button>
-                <span class="field"><input id="p-cell" type="number" value="8" min="1" step="0.5" /></span>
-                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase cell size">＋</button>
-              </span>
-            </label>
-            <label class="param" for="p-wall">
-              <span class="label">Wall thick. <em>mm</em></span>
-              <span class="step-group">
-                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease wall thickness">−</button>
-                <span class="field"><input id="p-wall" type="number" value="1.2" min="0.2" step="0.1" /></span>
-                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase wall thickness">＋</button>
-              </span>
-            </label>
-            <label class="param" for="p-voxel">
-              <span class="label">Resolution <em>voxel mm</em></span>
-              <span class="step-group">
-                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease resolution">−</button>
-                <span class="field"><input id="p-voxel" type="number" value="0.3" min="0.05" step="0.05" /></span>
-                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase resolution">＋</button>
-              </span>
-            </label>
-            <label class="param" id="overlap-field" for="p-overlap">
-              <span class="label">Overlap <em>mm</em></span>
-              <span class="step-group">
-                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease overlap">−</button>
-                <span class="field"><input id="p-overlap" type="number" value="0.3" min="0" step="0.1" disabled /></span>
-                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase overlap">＋</button>
-              </span>
-            </label>
-            <label class="param" for="p-smooth">
-              <span class="label">Smoothing <em>mm</em></span>
-              <span class="step-group">
-                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease smoothing">−</button>
-                <span class="field"><input id="p-smooth" type="number" value="0" min="0" step="0.1" /></span>
-                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase smoothing">＋</button>
-              </span>
-            </label>
+
+          <!-- STEP export target -->
+          <div class="tile" id="sec-export">
+            <div class="thead">
+              <span class="lbls"><span class="label">STEP</span><span class="jp label">出力</span></span>
+              <span class="tag">CAD</span>
+            </div>
             <label class="param param-wide" for="p-steptris">
-              <span class="label">STEP target <em>triangles</em></span>
+              <span class="label has-tip" data-tip="Triangle budget for STEP export. The mesh is coarsened to fit — smaller = lighter CAD file, less detail.">STEP target <em>triangles</em></span>
               <span class="step-group">
                 <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease STEP target">−</button>
                 <span class="field"><input id="p-steptris" type="number" value="60000" min="5000" step="5000" /></span>
@@ -153,15 +294,16 @@
               </span>
             </label>
           </div>
+
         </div>
 
-        <!-- (4) Generate + progress -->
-        <div class="tile">
+        <!-- pinned GENERATE footer (HyDesign "Confirm" pattern) -->
+        <div class="panel-foot" id="left-foot">
           <div class="thead">
             <span class="lbls"><span class="label">GENERATE</span><span class="jp label">生成</span></span>
             <span class="regmark">PICOGK // VOXEL</span>
           </div>
-          <button id="generate-btn" class="btn solid btn-block gen-btn" type="button" disabled>Generate</button>
+          <button id="generate-btn" class="btn btn-block gen-btn" type="button" disabled>Generate</button>
           <div id="mode-note" class="mode-note">Upload a part to begin.</div>
           <div id="progress-wrap" class="progress-wrap hidden">
             <div class="progress-row">
@@ -171,32 +313,139 @@
             <div class="bar"><i id="progress-fill" class="progress-fill"></i></div>
           </div>
         </div>
-
-        <!-- (5) Result card -->
-        <div class="tile result-card hidden" id="result-card">
-          <div class="thead">
-            <span class="lbls"><span class="label">RESULT</span><span class="jp label">結果</span></span>
-            <span class="tag">GYROID</span>
-          </div>
-          <div class="stats-grid grid grid-cols-3 gap-2 mb-3">
-            <div class="stat"><div class="stat-val num" id="stat-volume">&mdash;</div><div class="stat-label label">Volume <em>cm&sup3;</em></div></div>
-            <div class="stat"><div class="stat-val num" id="stat-infill">&mdash;</div><div class="stat-label label">Infill</div></div>
-            <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label">Tris</div></div>
-          </div>
-          <div class="result-actions flex flex-col gap-2">
-            <button id="export-stl-btn" class="btn btn-block" type="button">Export STL</button>
-            <button id="export-step-btn" class="btn btn-block" type="button">
-              <span class="btn-label">Export STEP</span>
-              <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
-            </button>
-          </div>
-          <div id="step-status" class="step-status hidden"></div>
-        </div>
-
       </div>
-      <footer class="foot jp shrink-0 py-[10px] px-[14px] text-center border-t border-[var(--line)] text-[10px] tracking-[0.05em] text-[var(--dim)] opacity-60">DELTA ROBOTICS ⟢ INFILL APP ⟢ ジャイロイド充填 ⟢ PICOGK</footer>
+
+      <button type="button" class="panel-chevron" id="left-chevron" aria-label="Collapse parameters" aria-expanded="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+      <div class="rail-label"><span class="label">PARAMETERS</span><span class="jp label">設定</span></div>
     </aside>
+
+    <!-- ── Region 5 — viewport ────────────────────────────────────────── -->
+    <section class="viewport relative flex-1 min-w-0 overflow-hidden bg-[var(--bg)]" id="viewport">
+      <div class="viewport-hint" id="viewport-hint">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
+        <div class="label vp-hint-title">DROP PARTS HERE</div>
+        <div class="jp regmark">STL · STEP 投入 // クリックで参照</div>
+      </div>
+      <div class="vp-chrome vp-tl regmark" id="vp-context">GYROID · SHEET · SINGLE</div>
+      <div class="vp-chrome vp-bl">
+        <div class="barcode" data-seed="4412" data-bars="46"></div>
+        <div class="regmark">TPMS // FIELD-DRIVEN LATTICE · ジャイロイド格子</div>
+      </div>
+
+      <!-- floating right-edge vertical view strip -->
+      <div class="view-strip" id="view-strip" role="group" aria-label="View controls">
+        <button type="button" class="vstrip-btn" id="vp-fit" data-tip="Fit camera to visible objects." aria-label="Fit view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg>
+        </button>
+        <button type="button" class="vstrip-btn" id="vp-ghosts" data-tip="Toggle visibility of all uploaded parts (result stays)." aria-label="Toggle ghosts" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <button type="button" class="vstrip-btn" id="vp-section" data-tip="Clip a section plane along the flow axis." aria-label="Toggle section" aria-pressed="false" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4Z"/><path d="M4 13h16"/></svg>
+        </button>
+        <div class="vstrip-slider-wrap" id="vp-section-wrap" hidden>
+          <input type="range" class="vstrip-slider" id="vp-section-slider" min="0" max="100" value="50" aria-label="Section position" orient="vertical" />
+        </div>
+      </div>
+
+      <!-- bottom-right live bounding-dimensions readout -->
+      <div class="vp-dims regmark" id="vp-dims" hidden></div>
+    </section>
+
+    <!-- ── Region 4 — right panel: objects tree + results ─────────────── -->
+    <aside class="panel panel-right" id="panel-right">
+      <button type="button" class="panel-chevron" id="right-chevron" aria-label="Collapse objects" aria-expanded="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+      <div class="rail-label"><span class="label">OBJECTS</span><span class="jp label">部品</span></div>
+
+      <div class="panel-inner">
+        <div class="panel-scroll">
+
+          <!-- OBJECTS tree -->
+          <div class="tile" id="sec-objects">
+            <div class="thead">
+              <span class="lbls"><span class="label">OBJECTS</span><span class="jp label">部品</span></span>
+              <span class="tag">LOADED <span id="parts-count" class="num">0</span></span>
+            </div>
+            <input id="file-input" type="file" accept=".stl,.step,.stp" multiple hidden />
+            <div id="dropzone" class="dropzone dropstrip" tabindex="0" role="button" aria-label="Upload parts">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>
+              <span class="dropzone-title label">DROP OR IMPORT PARTS<span class="cursor">_</span></span>
+            </div>
+            <div id="parts-list" class="parts-list flex flex-col gap-[7px]">
+              <div class="parts-empty" id="parts-empty">No parts loaded</div>
+            </div>
+          </div>
+
+          <!-- RESULT -->
+          <div class="tile result-card hidden" id="result-card">
+            <div class="thead">
+              <span class="lbls"><span class="label">RESULT</span><span class="jp label">結果</span></span>
+              <span class="tag">GYROID</span>
+            </div>
+            <div class="stats-grid grid grid-cols-3 gap-2 mb-3">
+              <div class="stat"><div class="stat-val num" id="stat-volume">&mdash;</div><div class="stat-label label">Volume <em>cm&sup3;</em></div></div>
+              <div class="stat"><div class="stat-val num" id="stat-infill">&mdash;</div><div class="stat-label label">Infill</div></div>
+              <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label">Tris</div></div>
+            </div>
+            <div class="result-actions flex flex-col gap-2">
+              <button id="export-stl-btn" class="btn btn-block" type="button">Export STL</button>
+              <button id="export-step-btn" class="btn btn-block" type="button">
+                <span class="btn-label">Export STEP</span>
+                <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div id="step-status" class="step-status hidden"></div>
+          </div>
+
+          <!-- FLOW metrics -->
+          <div class="tile flow-card hidden" id="flow-card">
+            <div class="thead">
+              <span class="lbls"><span class="label">FLOW</span><span class="jp label">流量</span></span>
+              <span class="tag">GEOMETRIC</span>
+            </div>
+
+            <div class="flow-stats grid grid-cols-2 gap-2">
+              <div class="stat"><div class="stat-val num" id="fl-porosity">&mdash;</div><div class="stat-label label has-tip" data-tip="Open share of the lattice region's volume.">Porosity <em>%</em></div></div>
+              <div class="stat"><div class="stat-val num" id="fl-freevol">&mdash;</div><div class="stat-label label has-tip" data-tip="Total air volume inside the lattice region.">Free vol <em>cm&sup3;</em></div></div>
+              <div class="stat"><div class="stat-val num" id="fl-choke">&mdash;</div><div class="stat-label label has-tip" data-tip="Smallest open cross-section along the flow axis — the bottleneck.">Choke <em>mm&sup2;</em></div><div class="stat-sub regmark" id="fl-chokeratio">&mdash;</div></div>
+              <div class="stat"><div class="stat-val num" id="fl-dh">&mdash;</div><div class="stat-label label has-tip" data-tip="Effective channel diameter: 4·porosity ÷ specific surface.">D<sub>h</sub> <em>mm</em></div></div>
+            </div>
+
+            <div class="flow-spark-head">
+              <span class="label" id="fl-spark-label">OPEN AREA · Z AXIS</span>
+              <span class="tag" id="fl-spark-axis">Z</span>
+            </div>
+            <div class="flow-spark-wrap">
+              <canvas id="fl-spark"></canvas>
+            </div>
+            <div class="flow-spark-axis">
+              <span class="regmark" id="fl-pos-min">&mdash;</span>
+              <span class="regmark" id="fl-area-max">&mdash;</span>
+              <span class="regmark" id="fl-pos-max">&mdash;</span>
+            </div>
+
+            <div class="flow-metrics" id="fl-metrics">
+              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Lattice surface area per unit volume.">S/V</span><span class="fl-met-v"><span class="num" id="fl-sv">&mdash;</span> <em>mm&#8315;&sup1;</em></span></div>
+              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Total lattice surface area.">Surface</span><span class="fl-met-v"><span class="num" id="fl-surface">&mdash;</span> <em>cm&sup2;</em></span></div>
+              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Permeability estimate (Kozeny–Carman) — geometric, not CFD.">Perm</span><span class="fl-met-v"><span class="num" id="fl-perm">&mdash;</span> <em>m&sup2;</em></span></div>
+              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Estimated pressure drop at the reference flow — geometric estimate, not CFD.">&Delta;P @<span id="fl-refflow">10</span> L/min</span><span class="fl-met-v"><span class="num" id="fl-dp">&mdash;</span> <em id="fl-dp-unit">kPa</em> <span class="tag est-tag">EST</span></span></div>
+              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Extent of the lattice region along the flow axis.">Length</span><span class="fl-met-v"><span class="num" id="fl-length">&mdash;</span> <em>mm</em></span></div>
+            </div>
+
+            <div class="flow-warnings" id="fl-warnings"></div>
+          </div>
+
+        </div>
+      </div>
+    </aside>
+
   </main>
+
+  <footer class="foot jp shrink-0 py-[7px] px-[14px] text-center border-t border-[var(--line)] text-[10px] tracking-[0.05em] text-[var(--dim)] opacity-60">DELTA ROBOTICS ⟢ INFILL APP ⟢ ジャイロイド充填 ⟢ PICOGK</footer>
 
   <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
 

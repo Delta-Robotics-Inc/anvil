@@ -23,8 +23,10 @@
   --amber:oklch(0.72 0.18 55); --red:oklch(0.6627 0.2067 24.78); --cyan:oklch(0.75 0.11 215);
   --font-mono:"Kode Mono",ui-monospace,monospace; --jp:"Noto Sans JP","Kode Mono",sans-serif;
 
-  /* role colors — mirror the viewer: part/positive cyan-ish, negative orange */
-  --role-part:var(--cyan); --role-pos:var(--green); --role-neg:var(--primary);
+  /* role colors — single source of truth is js/roles.js; these mirror it so
+     any CSS reference stays in step. Part = --primary orange (ghost parts read
+     orange, not blue), Positive = --green, Negative = --primary orange. */
+  --role-part:var(--primary); --role-pos:var(--green); --role-neg:var(--primary);
 
   /* aliases kept so inline var(--…) references in the JS keep resolving */
   --accent:var(--primary); --warn:var(--amber); --danger:var(--red); --success:var(--green);
@@ -105,18 +107,52 @@ body::after {
 }
 .btn:hover:not(:disabled) { color:var(--bg); transform:translateY(-1px); }
 .btn:hover:not(:disabled)::after { background:var(--c); }
-.btn:disabled { opacity:.35; cursor:not-allowed; }
 .btn.solid { color:var(--bg); }
 .btn.solid::after { background:var(--c); }
+/* Fix 2 — disabled primary = ghost: remove the fill entirely (no opacity trick),
+   leaving a chamfered --line rim + --dim text. `:not(.generating)` so a running
+   GENERATE keeps its solid pulse; placed after .btn.solid so it wins for a
+   disabled+solid button. */
+.btn:disabled:not(.generating) { opacity:1; cursor:not-allowed; color:var(--dim); transform:none; }
+.btn:disabled:not(.generating)::before { background:var(--line); }
+.btn:disabled:not(.generating)::after  { background:var(--bg); }
 .btn-block { width:100%; }
 
-/* generate: bigger, and pulse while a job runs (stays lit even though disabled) */
-.gen-btn { height:44px; font-size:.8rem; margin-top:2px; }
-.btn.generating { opacity:1 !important; animation:cycpulse 1.4s ease-in-out infinite; }
-@keyframes cycpulse {
-  0%,100% { filter:drop-shadow(0 0 2px var(--primary)); }
-  50%     { filter:drop-shadow(0 0 10px var(--primary)); }
+/* ── Fix 3 — one designed focus system ────────────────────────────────────
+   A single shared :focus-visible treatment (glow + the element's hover colour
+   state) applied to every interactive control. The UA outline is suppressed
+   only where this replacement applies. .field:focus-within keeps its own rim. */
+.btn:focus-visible,
+.tb-btn:focus-visible,
+.seg-btn:focus-visible,
+.fchip:focus-visible,
+.icon-btn:focus-visible,
+.vstrip-btn:focus-visible,
+.disc-head:focus-visible,
+.panel-chevron:focus-visible,
+.dropstrip:focus-visible {
+  outline:none;
+  filter:drop-shadow(0 0 5px color-mix(in oklch,var(--primary) 45%,transparent));
 }
+.btn:focus-visible:not(:disabled) { color:var(--bg); transform:translateY(-1px); }
+.btn:focus-visible:not(:disabled)::after { background:var(--c); }
+.step-btn:focus-visible:not(:disabled) { --c:var(--primary); }
+.tb-btn:focus-visible:not(:disabled) { color:var(--fg); }
+.tb-btn:focus-visible:not(:disabled)::before { background:var(--line); }
+.tb-btn:focus-visible:not(:disabled)::after  { background:var(--card); }
+.seg-btn:focus-visible { color:var(--fg); }
+.fchip:focus-visible  { color:var(--fg); }
+.icon-btn:focus-visible { color:var(--fg); background:var(--card); }
+.icon-btn.danger:focus-visible { color:var(--red); background:color-mix(in oklch,var(--red) 18%,transparent); }
+.vstrip-btn:focus-visible:not(:disabled) { color:var(--primary); }
+.disc-head:focus-visible { color:var(--fg); }
+.panel-chevron:focus-visible { color:var(--primary); }
+
+/* generate: bigger, and pulse while a job runs (stays lit even though disabled).
+   Fix 1 — the running fill is RED (cancel/in-progress semantics, matching the
+   red CANCEL button + toolbar), and it remains the sole solid fill on screen. */
+.gen-btn { height:44px; font-size:.8rem; margin-top:2px; }
+.btn.generating { --c:var(--red); color:var(--bg); opacity:1 !important; animation:cycpulse-red 1.4s ease-in-out infinite; }
 .cancel-btn { letter-spacing:.16em; padding:7px 12px; }
 
 /* ── Header conn indicator ────────────────────────────────────────────── */
@@ -173,6 +209,16 @@ body::after {
 .dropzone-hint { font-size:10px; color:var(--dim); }
 .dropzone:hover .dropzone-title, .dropzone.dragover .dropzone-title { color:inherit; }
 
+/* Busy: an upload is in flight. Rim pulses --primary, label reads PROCESSING_.
+   Still fully clickable/droppable (parallel drops stay allowed). */
+.dropzone.busy { color:var(--primary); }
+.dropzone.busy::before { animation:dz-busy 1.15s ease-in-out infinite; }
+.dropzone.busy .dropzone-title { color:var(--primary); }
+@keyframes dz-busy {
+  0%,100% { background:color-mix(in oklch,var(--primary) 45%,var(--line)); }
+  50%     { background:var(--primary); }
+}
+
 /* ── Parts list ───────────────────────────────────────────────────────── */
 .parts-empty {
   font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim);
@@ -193,45 +239,78 @@ body::after {
 .part-meta { font-size:9px; letter-spacing:.12em; color:var(--dim); }
 .part-tools { display:flex; align-items:center; gap:2px; }
 .icon-btn {
+  position:relative;
   display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px;
   background:transparent; border:none; color:var(--dim); cursor:pointer;
   transition:color .12s,background .12s;
 }
+/* Fix 4 — extend the clickable area without changing the 26px visual: a
+   transparent ::after grows the hit box vertically to 36px. Horizontally the
+   pair abuts the 2px inter-button gap (never crossing) and each reaches outward
+   into dead space — eye into the 8px role-select gap, delete into the row's
+   right padding — so both approach 36px wide without stealing a neighbour's clicks. */
+.icon-btn::after { content:""; position:absolute; inset:-5px -1px; }
+.part-tools .icon-btn:first-child::after { inset:-5px -1px -5px -8px; } /* eye → role gap */
+.part-tools .icon-btn:last-child::after  { inset:-5px -9px -5px -1px; } /* delete → row padding */
 .icon-btn:hover { background:var(--card); color:var(--fg); }
 .icon-btn.danger:hover { background:color-mix(in oklch,var(--red) 18%,transparent); color:var(--red); }
 .icon-btn.off { color:color-mix(in oklch,var(--dim) 55%,var(--bg)); }
 
-/* ── Field rim (two-layer chamfer for inputs/selects → clean corners) ──── */
-/* Inputs can't carry ::before/::after, so a thin wrapper supplies the rim:
-   the wrapper background is the rim colour, 1px padding reveals it, and the
-   control sits on top with a 1px-smaller chamfer. Focus lifts the rim to
-   --primary with a chamfer-following glow (drop-shadow, not box-shadow). */
+/* ── Pending upload placeholder rows ──────────────────────────────────── */
+/* Shown synchronously on drop while the STEP→STL sidecar runs. Two columns
+   (name/state + spinner) and a pulsing --primary accent bar — deliberately
+   NOT a role colour, so it can't be mistaken for a loaded Part/Positive/Neg. */
+.part-row.pending { grid-template-columns:1fr auto; }
+.part-row.pending::before {
+  background:var(--primary);
+  animation:pending-bar 1.15s ease-in-out infinite;
+}
+@keyframes pending-bar {
+  0%,100% { opacity:.4;  box-shadow:0 0 4px  color-mix(in oklch,var(--primary) 30%,transparent); }
+  50%     { opacity:1;   box-shadow:0 0 11px color-mix(in oklch,var(--primary) 65%,transparent); }
+}
+.part-pending-state { color:var(--primary); }
+.part-row.pending .spinner { color:var(--primary); align-self:center; }
+
+/* ── Success flash — a just-landed part row pulses its accent once (~600ms) ── */
+.part-row.flash { animation:part-flash .6s ease-out 1; }
+@keyframes part-flash {
+  0%   { background:color-mix(in oklch,var(--primary) 40%,var(--muted));
+         box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--primary) 60%,transparent); }
+  100% { background:var(--muted); box-shadow:none; }
+}
+
+/* ── Field rim (plain rectangle: 1px --line rim, --primary on focus) ────
+   A square field pairs cleanly with the outward-chamfered steppers that flank
+   it (see below) — the group reads as one unit and there are no diagonal
+   corners for a control to clip against. Inputs can't carry ::before/::after,
+   so the wrapper supplies the rim via a real border (safe now that it's a
+   rectangle) and the control sits flush inside it. */
 .field {
-  position:relative; display:block; background:var(--line); padding:1px;
-  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
-  transition:background .15s, filter .15s;
+  position:relative; display:block; background:var(--muted); border:1px solid var(--line);
+  transition:border-color .15s, box-shadow .15s;
 }
 .field:focus-within {
-  background:var(--primary);
-  filter:drop-shadow(0 0 5px color-mix(in oklch,var(--primary) 45%,transparent));
+  border-color:var(--primary);
+  box-shadow:0 0 6px color-mix(in oklch,var(--primary) 40%,transparent);
 }
 .field > input, .field > select {
   display:block; width:100%; height:28px; background:var(--muted); border:0; color:var(--fg);
   font-family:inherit; font-size:12px; font-variant-numeric:tabular-nums; padding:0 9px;
-  clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px));
 }
 .field > input:focus, .field > select:focus { outline:none; }
 .field > select { cursor:pointer; text-transform:uppercase; letter-spacing:.05em; }
 .field > select option { background:var(--card); color:var(--fg); text-transform:none; }
-.field:has(> :disabled) { background:var(--line); filter:none; }
+.field:has(> :disabled) { border-color:var(--line); box-shadow:none; }
 .field > :disabled { opacity:.4; cursor:not-allowed; }
 
 /* ── Number-input steppers (chamfered −/＋ flanking the field) ──────────
    Native browser spin buttons clash with the HUD, so they're hidden and each
-   numeric input is flanked by compact chamfered buttons that mirror the HUD
-   gauge target control: a mirrored-chamfer minus (.btn.flip) + a normal-
-   chamfer plus (.btn). Dim accent at rest, --primary fill on hover, and
-   disabled in lockstep with the input (JS mirrors the disabled state). */
+   numeric input is flanked by compact chamfered buttons. The trio reads as one
+   unit: the − (left) button's chamfer cuts its two OUTSIDE (left) corners, the
+   ＋ (right) button's cuts its two OUTSIDE (right) corners, and both inner
+   edges facing the square field stay straight. Dim accent at rest, --primary
+   fill on hover, disabled in lockstep with the input (JS mirrors the state). */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
 input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
@@ -244,11 +323,73 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 }
 .step-btn:hover:not(:disabled) { --c:var(--primary); }
 
+/* Outward chamfers — override the symmetric .btn corner cuts. The minus keeps
+   its right edge square (butts the field), the plus keeps its left edge square. */
+.step-btn.flip::before      { clip-path:polygon(9px 0,100% 0,100% 100%,9px 100%,0 calc(100% - 9px),0 9px); }
+.step-btn.flip::after       { clip-path:polygon(8px 0,100% 0,100% 100%,8px 100%,0 calc(100% - 8px),0 8px); }
+.step-btn:not(.flip)::before { clip-path:polygon(0 0,calc(100% - 9px) 0,100% 9px,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%); }
+.step-btn:not(.flip)::after  { clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%); }
+
 /* part-role select shares the field rim but sizes to its content */
 .field-role { display:inline-block; align-self:center; }
+/* Fix 1 — role select carries no orange fill: --muted seat, the ROLE's colour as
+   text (set inline from roleColorHex in ui.js). The row accent bar stays as today. */
 .field-role > select {
-  width:auto; height:24px; background:var(--card);
+  width:auto; height:24px; background:var(--muted);
   font-size:10px; font-weight:600; letter-spacing:.06em; padding:0 6px;
+}
+
+/* ── Customizable <select> — HUD-styled picker (Chrome base-select) ─────
+   Where supported, the native OS popup is replaced with a chamfered --card
+   panel matching the tiles: --line rim, Kode Mono, option hover = --primary
+   fill, checked option = --primary text. Covers the PATTERN select and every
+   per-row ROLE select (they inherit via .field-role, so dynamically-rendered
+   rows are styled with zero extra JS). These stay real <select>s, so all the
+   existing change/.value wiring keeps working; browsers without base-select
+   fall back to the native popup. */
+@supports (appearance:base-select) {
+  .field > select, .field-role > select {
+    appearance:base-select;
+    display:flex; align-items:center; justify-content:space-between; gap:6px;
+  }
+  .field > select::picker-icon, .field-role > select::picker-icon {
+    color:var(--dim); transition:transform .18s, color .18s;
+  }
+  .field > select:open::picker-icon, .field-role > select:open::picker-icon {
+    transform:rotate(180deg); color:var(--primary);
+  }
+  /* the open popup (top layer — escapes the sidebar scroll clip, flips at edges) */
+  ::picker(select) {
+    appearance:base-select;
+    background:var(--card); border:1px solid var(--line);
+    clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px));
+    padding:4px; margin-top:5px; font-family:var(--font-mono);
+    box-shadow:0 12px 32px rgba(0,0,0,.5);
+  }
+  /* Option rules must NOT go through the ::picker(select) pseudo-element —
+     `::picker(select) option:hover/:checked` does not match in Chrome. They ARE
+     matched as ordinary DOM descendants (the <option> really is a child of the
+     <select>), so they're DOM-scoped here — which also outranks the native
+     fallback rule `.field > select option {…}` above. Only the open picker is
+     affected (the collapsed select renders <selectedcontent>, not <option>s). */
+  .field > select option, .field-role > select option {
+    display:flex; align-items:center; gap:8px; padding:7px 11px;
+    font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--fg); background:transparent; border:0; cursor:pointer;
+    transition:background .1s, color .1s;
+  }
+  .field > select option::checkmark, .field-role > select option::checkmark { display:none; }
+  .field > select option:hover, .field-role > select option:hover,
+  .field > select option:focus, .field-role > select option:focus {
+    background:var(--primary); color:var(--bg); outline:none;
+  }
+  .field > select option:checked, .field-role > select option:checked { color:var(--primary); }
+  .field > select option:checked:hover, .field-role > select option:checked:hover,
+  .field > select option:checked:focus, .field-role > select option:checked:focus { color:var(--bg); }
+  /* keep the collapsed PATTERN button text neutral even though the checked option
+     is orange; the ROLE select instead inherits its inline role colour (Fix 1). */
+  .field > select selectedcontent { color:var(--fg); }
+  .field-role > select selectedcontent { color:inherit; }
 }
 
 /* ── Parameters ───────────────────────────────────────────────────────── */
@@ -342,10 +483,335 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 .toast-close:hover { color:var(--fg); }
 @keyframes toast-in { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
 
-/* ── Narrow screens — element+class selectors so these win over the base
-      Tailwind layout utilities in the markup regardless of source order. ── */
-@media (max-width:820px) {
-  main.app-main { flex-direction:column; }
-  section.viewport { flex:1 1 42vh; min-height:220px; }
-  aside.sidebar { width:100%; flex:1 1 auto; border-left:0; border-top:1px solid var(--line); }
+/* ── Segmented control (SHEET|SKELETAL, UNIFORM|PER-AXIS) ──────────────
+   Same rim language as .field: a line-coloured backing with 1px padding and
+   a 1px inter-segment gap that reveals the rim as a divider. Selected segment
+   goes solid --primary (mirrors .ll.active / .btn.solid). */
+.seg {
+  display:flex; gap:1px; background:var(--line); padding:1px;
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
+  transition:filter .15s;
+}
+/* per-button :focus-visible (Fix 3) now carries the focus glow — no wrapper glow */
+.seg-btn {
+  position:relative;
+  flex:1 1 0; min-width:0; padding:6px 8px; background:var(--muted); color:var(--dim);
+  font-family:inherit; font-size:10px; font-weight:700; letter-spacing:.13em; text-transform:uppercase;
+  border:0; cursor:pointer; transition:color .15s, background .15s;
+}
+.seg-btn:first-child { clip-path:polygon(0 0,100% 0,100% 100%,6px 100%,0 calc(100% - 6px)); }
+.seg-btn:last-child  { clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,0 100%); }
+.seg-btn:hover:not(.active) { color:var(--fg); }
+/* Fix 1 — selected segment demoted off the solid-orange fill: --muted fill,
+   --primary text, and a 2px --primary underline bar seated inside the chamfer. */
+.seg-btn.active { background:var(--muted); color:var(--primary); }
+.seg-btn.active::after {
+  content:""; position:absolute; left:7px; right:7px; bottom:0; height:2px; background:var(--primary);
+  box-shadow:0 0 6px color-mix(in oklch,var(--primary) 55%,transparent);
+}
+
+/* ── Flow-axis chips (X / Y / Z) — light chamfered toggles ─────────────── */
+.chips { display:flex; gap:6px; }
+.fchip {
+  position:relative;
+  flex:0 0 auto; min-width:40px; padding:6px 13px; background:var(--muted); color:var(--dim);
+  font-family:inherit; font-size:11px; font-weight:700; letter-spacing:.12em;
+  border:0; cursor:pointer; transition:color .15s, background .15s;
+  clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px));
+}
+.fchip:hover:not(.active) { color:var(--fg); }
+/* Fix 1 — selected axis chip demoted off the solid-orange fill (matches .seg-btn). */
+.fchip.active { background:var(--muted); color:var(--primary); }
+.fchip.active::after {
+  content:""; position:absolute; left:6px; right:6px; bottom:0; height:2px; background:var(--primary);
+  box-shadow:0 0 6px color-mix(in oklch,var(--primary) 55%,transparent);
+}
+
+/* ── Advanced disclosure (LATTICE // 格子) ─────────────────────────────── */
+.adv { gap:0; }
+.disc-head {
+  display:flex; align-items:center; gap:8px; width:100%; padding:8px 10px;
+  background:var(--muted); color:var(--dim); border:0; cursor:pointer; font-family:inherit; text-align:left;
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
+  transition:color .15s, background .15s;
+}
+.disc-head:hover { color:var(--fg); }
+.disc-head .label { color:inherit; }
+.disc-head .chev { flex:none; color:var(--dim); transition:transform .18s, color .18s; }
+.disc-head[aria-expanded="true"] .chev { transform:rotate(90deg); color:var(--primary); }
+.disc-head .disc-tail { margin-left:auto; }
+.disc-body { display:flex; flex-direction:column; gap:12px; padding:12px 2px 2px; }
+.disc-body[hidden] { display:none; }
+
+.subparam { display:flex; flex-direction:column; gap:6px; }
+.subparam > .label { display:flex; align-items:baseline; gap:5px; }
+.subparam > .label em {
+  font-style:normal; text-transform:none; letter-spacing:.08em;
+  color:color-mix(in oklch,var(--dim) 78%,var(--bg)); font-size:9px;
+}
+.triplet { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.triplet.cell-xyz[hidden] { display:none; }
+.axis-cell { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.axis-lab { font-size:9px; letter-spacing:.14em; color:var(--dim); text-align:center; }
+
+/* compact steppers for the x/y/z triplets (narrower buttons, centred value) */
+.step-group.compact { gap:3px; }
+.step-group.compact .step-btn { width:22px; min-width:22px; font-size:13px; }
+.step-group.compact .field > input { height:26px; font-size:11px; padding:0 4px; text-align:center; }
+
+/* Fix 4 — stepper hit-area extension. The two-layer chamfer already owns the
+   button's ::before/::after, so a transparent <i class="step-hit"> child (added
+   in ui.initSteppers) grows the effective hit box. Regular buttons reach 36×36;
+   compact buttons reach 36 tall and abut (never cross) the 3px field gap +
+   neighbouring axis-cell so triplet hits don't collide. */
+.step-hit { position:absolute; inset:-4px -3px; content:""; }
+.step-group.compact .step-hit { inset:-5px -3px; }
+
+/* ── Flow metrics tile ─────────────────────────────────────────────────── */
+.flow-card.hidden { display:none; }
+.flow-stats .stat { display:flex; flex-direction:column; justify-content:center; }
+.stat-sub { margin-top:3px; color:var(--dim); }
+
+.flow-spark-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:13px; margin-bottom:7px; }
+.flow-spark-wrap { position:relative; width:100%; }
+#fl-spark { display:block; width:100%; height:120px; }
+.flow-spark-axis { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:5px; }
+.flow-spark-axis .regmark:nth-child(2) { color:color-mix(in oklch,var(--dim) 72%,var(--fg)); }
+
+/* metric list — 1px gaps over a line-coloured backing give hairline dividers */
+.flow-metrics {
+  margin-top:13px; display:flex; flex-direction:column; gap:1px; background:var(--line);
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
+}
+.fl-met { display:flex; align-items:baseline; justify-content:space-between; gap:10px; padding:6px 11px; background:var(--muted); }
+.fl-met-k { text-transform:uppercase; white-space:nowrap; }
+.fl-met-v { font-size:12px; color:var(--fg); white-space:nowrap; }
+.fl-met-v em { font-style:normal; font-size:9px; letter-spacing:.06em; color:color-mix(in oklch,var(--dim) 78%,var(--bg)); }
+.est-tag { transform:translateY(-1px); }
+
+.flow-warnings { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
+.flow-warnings:empty { display:none; }
+.fl-warn { display:block; width:100%; text-align:left; }
+
+/* ── Window-wide file-drag affordance ─────────────────────────────────
+   While a file is dragged anywhere over the window (main.js toggles
+   body.drag-active) BOTH drop targets light up so the drop-anywhere behaviour
+   is obvious: the sidebar zone rim + the viewport hint glow --primary, plus a
+   viewport edge glow that shows even when a model is loaded and the hint is
+   hidden. All overlays are pointer-events:none so orbit/drag still works. */
+body.drag-active .dropzone { color:var(--primary); filter:drop-shadow(0 0 14px color-mix(in oklch,var(--primary) 34%,transparent)); }
+body.drag-active .dropzone::before { background:var(--primary); }
+body.drag-active .dropzone-title { color:var(--primary); }
+body.drag-active .viewport-hint { color:var(--primary); filter:drop-shadow(0 0 18px color-mix(in oklch,var(--primary) 42%,transparent)); }
+body.drag-active .viewport-hint .vp-hint-title { color:var(--primary); }
+.viewport::after {
+  content:""; position:absolute; inset:0; z-index:3; pointer-events:none; opacity:0; transition:opacity .15s;
+  box-shadow:inset 0 0 0 2px color-mix(in oklch,var(--primary) 55%,transparent),
+             inset 0 0 46px color-mix(in oklch,var(--primary) 22%,transparent);
+}
+body.drag-active .viewport::after { opacity:1; }
+
+/* ── HUD tooltips (chamfered --card panel, --line rim; see ui.initTooltips) ──
+   One shared floating panel positioned in JS off the hovered/focused label, so
+   it escapes the sidebar overflow clip and flips below / clamps near edges.
+   pointer-events:none so it never blocks steppers, inputs, or the role select. */
+.hud-tip {
+  position:fixed; left:0; top:0; z-index:200; pointer-events:none;
+  max-width:236px; padding:9px 12px;
+  background:var(--card); border:1px solid var(--line);
+  clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px));
+  color:color-mix(in oklch,var(--fg) 84%,var(--bg));
+  font-family:var(--font-mono); font-size:10.5px; line-height:1.5; letter-spacing:.02em;
+  text-transform:none; text-shadow:none; box-shadow:0 10px 28px rgba(0,0,0,.45);
+  opacity:0; visibility:hidden; transform:translateY(-4px);
+  transition:opacity .14s, transform .14s;
+}
+.hud-tip.below { transform:translateY(4px); }
+.hud-tip.show  { opacity:1; visibility:visible; transform:translateY(0); }
+
+/* subtle dotted-underline affordance on label text carrying a tip */
+[data-tip] { cursor:help; }
+.has-tip {
+  text-decoration:underline dotted color-mix(in oklch,var(--dim) 55%,transparent);
+  text-underline-offset:3px; text-decoration-thickness:1px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CAD-STYLE WORKSPACE SHELL (HyDesign structural patterns, HUD skin)
+   Region 2 pipeline toolbar · Regions 3/4 collapsible panels · Region 5
+   viewport chrome (view strip, section slider, dims readout). Everything
+   below reuses the existing tile/field/btn chamfer language — no new visual
+   vocabulary, only new structure.
+   ═══════════════════════════════════════════════════════════════════════ */
+:root { --panel-w:356px; --rail-w:30px; }
+
+/* overflow:hidden clips the oversized WebGL canvas + the collapsed rail labels
+   (a few sub-pixels past the edge) without hiding the outward chevron tabs,
+   which sit inside app-main. Prevents any horizontal page overflow. */
+.app-main { position:relative; overflow:hidden; }
+.rail-label { overflow:hidden; }
+
+/* ── Region 2 — grouped pipeline toolbar ─────────────────────────────── */
+.toolbar {
+  display:flex; align-items:stretch; flex-wrap:nowrap; overflow-x:auto;
+  padding:6px 10px; border-bottom:1px solid var(--line);
+  background:color-mix(in oklch,var(--bg) 86%,transparent); backdrop-filter:blur(6px);
+}
+.tb-group { display:flex; align-items:stretch; gap:4px; }
+.tb-sep { flex:0 0 auto; width:1px; margin:5px 9px; background:var(--line); }
+.tb-btn {
+  --c:var(--dim); position:relative; isolation:isolate;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+  min-width:62px; padding:7px 12px 6px; background:transparent; border:0; cursor:pointer;
+  color:var(--c); font-family:inherit; transition:color .15s;
+}
+.tb-btn::before { content:""; position:absolute; inset:0; z-index:-2; background:transparent; transition:background .15s;
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px)); }
+.tb-btn::after  { content:""; position:absolute; inset:1px; z-index:-1; background:transparent; transition:background .15s;
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px)); }
+.tb-ico { width:22px; height:22px; stroke:currentColor; }
+.tb-label { font-size:9px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; white-space:nowrap; }
+.tb-btn:hover:not(:disabled) { color:var(--fg); }
+.tb-btn:hover:not(:disabled)::before { background:var(--line); }
+.tb-btn:hover:not(:disabled)::after  { background:var(--card); }
+.tb-btn:disabled { opacity:.3; cursor:not-allowed; }
+/* active-section highlight (Fix 1): --primary icon+label text + a 1px --primary
+   underline hairline seated in the ::after chamfer; no orange fill (::before
+   transparent, ::after card). */
+.tb-btn.active { color:var(--primary); }
+.tb-btn.active::before { background:transparent; }
+.tb-btn.active::after  { background:linear-gradient(to top,var(--primary) 0 1px,transparent 1px),var(--card); }
+
+/* GENERATE toolbar mirror (Fix 1): never filled. Armed = text-orange; running =
+   red pulsing text/icon (keeps the % readout via JS); normal disabled otherwise. */
+.tb-btn.tb-primary.armed { color:var(--primary); }
+.tb-btn.tb-primary.generating { color:var(--red); opacity:1 !important; animation:cycpulse-red 1.4s ease-in-out infinite; }
+@keyframes cycpulse-red {
+  0%,100% { filter:drop-shadow(0 0 2px var(--red)); }
+  50%     { filter:drop-shadow(0 0 10px var(--red)); }
+}
+
+/* ── Regions 3/4 — collapsible panels ────────────────────────────────── */
+.panel {
+  position:relative; flex:0 0 var(--panel-w); width:var(--panel-w); min-width:0;
+  background:color-mix(in oklch,var(--bg) 66%,transparent);
+  transition:flex-basis .22s ease, width .22s ease;
+}
+.panel-left  { border-right:1px solid var(--line); }
+.panel-right { border-left:1px solid var(--line); }
+.panel-inner { display:flex; flex-direction:column; height:100%; min-height:0; }
+.panel-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; padding:13px; display:flex; flex-direction:column; gap:12px; }
+.panel-foot {
+  flex:0 0 auto; border-top:1px solid var(--line); padding:11px 13px 13px;
+  background:color-mix(in oklch,var(--bg) 45%,var(--card));
+}
+.panel-foot .thead { margin-bottom:9px; }
+
+/* chevron tab at the panel's inner edge, vertically centred */
+.panel-chevron {
+  position:absolute; top:50%; transform:translateY(-50%); z-index:7;
+  width:20px; height:46px; display:flex; align-items:center; justify-content:center;
+  background:var(--card); border:1px solid var(--line); color:var(--dim); cursor:pointer;
+  transition:color .15s, background .15s;
+}
+.panel-chevron:hover { color:var(--primary); }
+/* Fix 4 note — the chevron's clip-path (its tab shape) also clips the pointer-hit
+   region, so a transparent ::after extension is clipped away and can't widen the
+   hit box. Widening the element instead would either enlarge the visual tab
+   (disallowed) or overlap the panel's parameter controls / the viewport canvas
+   and steal their clicks. The tab is already a tall 46px target, so it's left at
+   its visual width rather than introducing that regression. */
+.panel-chevron svg { width:13px; height:13px; transition:transform .2s; }
+.panel-left  .panel-chevron { right:-10px; clip-path:polygon(0 0,100% 9px,100% calc(100% - 9px),0 100%); }
+.panel-right .panel-chevron { left:-10px;  clip-path:polygon(100% 0,0 9px,0 calc(100% - 9px),100% 100%); }
+
+/* rotated rail label (revealed only when collapsed) */
+.rail-label {
+  position:absolute; inset:0; display:none; align-items:center; justify-content:center; gap:10px; pointer-events:none;
+}
+.rail-label .label, .rail-label .jp { writing-mode:vertical-rl; letter-spacing:.3em; }
+.rail-label .jp { color:var(--dim); }
+
+/* collapsed → slim rail */
+.panel.collapsed { flex-basis:var(--rail-w); width:var(--rail-w); }
+.panel.collapsed .panel-inner { display:none; }
+.panel.collapsed .rail-label { display:flex; }
+.panel.collapsed .panel-chevron { left:50%; right:auto; transform:translate(-50%,-50%); }
+.panel.collapsed .panel-chevron svg { transform:rotate(180deg); }
+
+/* ── Region 5 — floating right-edge view strip ───────────────────────── */
+.view-strip {
+  position:absolute; top:50%; right:12px; transform:translateY(-50%); z-index:4;
+  display:flex; flex-direction:column; align-items:center; gap:7px;
+}
+.vstrip-btn {
+  position:relative; isolation:isolate; width:34px; height:34px; display:flex; align-items:center; justify-content:center;
+  background:transparent; border:0; cursor:pointer; color:var(--dim); transition:color .15s;
+}
+.vstrip-btn::before { content:""; position:absolute; inset:0; z-index:-2; background:var(--line);
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px)); }
+.vstrip-btn::after  { content:""; position:absolute; inset:1px; z-index:-1;
+  background:color-mix(in oklch,var(--card) 90%,var(--bg)); transition:background .15s;
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px)); }
+.vstrip-btn svg { width:18px; height:18px; stroke:currentColor; }
+.vstrip-btn:hover:not(:disabled) { color:var(--primary); }
+.vstrip-btn:disabled { opacity:.32; cursor:not-allowed; }
+.vstrip-btn.active { color:var(--bg); }
+.vstrip-btn.active::before,
+.vstrip-btn.active::after { background:var(--primary); }
+
+.vstrip-slider-wrap { display:flex; align-items:center; justify-content:center; padding:5px 0; }
+.vstrip-slider-wrap[hidden] { display:none; }
+.vstrip-slider {
+  writing-mode:vertical-lr; direction:rtl; width:6px; height:104px;
+  accent-color:var(--primary); cursor:pointer; background:transparent;
+}
+
+/* bottom-right live bounding-dimensions readout */
+.vp-dims {
+  position:absolute; right:12px; bottom:12px; z-index:2; pointer-events:none;
+  padding:4px 9px; letter-spacing:.12em; color:color-mix(in oklch,var(--fg) 82%,var(--bg));
+  background:color-mix(in oklch,var(--card) 78%,transparent); border:1px solid var(--line);
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
+}
+.vp-dims[hidden] { display:none; }
+.vp-dims b { color:var(--fg); font-weight:700; }
+
+/* ── Compact OBJECTS drop strip (drop-anywhere already works, so keep it thin) ── */
+.dropstrip { display:flex; flex-direction:row; align-items:center; justify-content:flex-start; gap:9px; padding:8px 11px; margin-bottom:9px; }
+/* Fix 1 — at rest the strip is neutral: --dim rim + --dim text (text via the base
+   .dropzone colour). Hover / dragover / drag-active / busy still go --primary via
+   the higher-specificity rules above. */
+.dropstrip::before { background:var(--dim); }
+.dropstrip svg { width:16px; height:16px; flex:none; }
+.dropstrip .dropzone-title { font-size:10px; letter-spacing:.14em; color:inherit; }
+
+/* ── OBJECTS tree — nested per-part operation line (display only) ─────── */
+.part-node {
+  grid-column:1 / -1; margin-top:5px; padding-left:1px;
+  font-size:9px; letter-spacing:.1em; color:var(--dim);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.part-node .nk { color:color-mix(in oklch,var(--dim) 62%,var(--fg)); }
+.part-node .nr { color:var(--role-color,var(--dim)); }
+
+/* ── Section flash-highlight when a toolbar button targets a panel section ── */
+.flash-sec { animation:sec-flash 1s ease-out 1; }
+@keyframes sec-flash {
+  0%   { box-shadow:0 0 0 1px var(--primary), 0 0 18px color-mix(in oklch,var(--primary) 45%,transparent); }
+  100% { box-shadow:0 0 0 0 transparent, 0 0 0 transparent; }
+}
+
+/* ── Responsive (~≤1000px): panels OVERLAY the viewport (no squeeze) ─────
+      Element+class selectors so these win over base Tailwind layout utilities
+      regardless of source order. Both panels default-collapsed via JS here. ── */
+@media (max-width:1000px) {
+  aside.panel {
+    position:absolute; top:0; bottom:0; z-index:30;
+    box-shadow:0 0 42px rgba(0,0,0,.55);
+  }
+  aside.panel-left  { left:0; }
+  aside.panel-right { right:0; }
+  aside.panel.collapsed { box-shadow:none; }
+  section.viewport { flex:1 1 auto; }
 }

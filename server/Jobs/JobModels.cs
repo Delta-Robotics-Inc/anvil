@@ -234,3 +234,46 @@ public sealed class JobStatusDto
     // success and for plain failures. Passed through verbatim to agents.
     public JsonNode? errorData { get; set; }
 }
+
+// ---- Wave-3 unified export (POST /api/export) ------------------------------
+
+/// <summary>
+/// One thing to export: EITHER a registered part (partId) OR a finished generate
+/// job's result mesh (jobId). Exactly one of the two is set.
+/// </summary>
+public sealed class ExportSourceDto
+{
+    public string? partId { get; set; }
+    public string? jobId { get; set; }
+}
+
+/// <summary>
+/// POST /api/export body. One endpoint covers every combination the UI offers:
+/// 1..N sources × {stl|step} × {separate zip | combined single file}, with the
+/// per-part viewport TRS baked in so the file lands where the user sees it.
+/// </summary>
+public sealed class ExportRequestDto
+{
+    public List<ExportSourceDto>? sources { get; set; }
+    public string? format { get; set; }                        // stl | step (default stl)
+    public bool combined { get; set; }                          // multi-source: merge into one file
+    public string? name { get; set; }                           // base filename (extension is server-chosen)
+    // Per-part non-destructive TRS keyed by part id — baked into the export copy.
+    public Dictionary<string, TransformDto>? transforms { get; set; }
+    public int? targetTriangles { get; set; }                   // STEP coarsening budget (default 60_000)
+}
+
+/// <summary>GET /api/export/{id} response.</summary>
+public sealed class ExportStatusDto
+{
+    public string id { get; set; } = "";
+    public string state { get; set; } = "queued";   // queued | running | done | failed
+    public string? note { get; set; }               // human progress line ("converting 2/3…")
+    public string? error { get; set; }
+    public string? fileName { get; set; }           // download name once done
+    public string format { get; set; } = "stl";
+    public bool combined { get; set; }
+    public int sources { get; set; }
+    public int? triangles { get; set; }             // triangles written (STL) / converted (STEP)
+    public string? warning { get; set; }            // sidecar warning, if any
+}

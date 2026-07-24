@@ -58,6 +58,11 @@ $ErrLog   = Join-Path $WorkTmp 'server.err.log'
 New-Item -ItemType Directory -Force -Path $WorkTmp | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $SrvRoot 'server\wwwroot') | Out-Null
+# The server resolves the Python sidecar as <repoRoot>\sidecar\cadconvert.py, and
+# with no Anvil.sln above the scratch build "repoRoot" falls back to the working
+# directory ($SrvRoot). Mirror the script in so STEP conversions work here too.
+New-Item -ItemType Directory -Force -Path (Join-Path $SrvRoot 'sidecar') | Out-Null
+Copy-Item (Join-Path $RepoRoot 'sidecar\cadconvert.py') (Join-Path $SrvRoot 'sidecar\cadconvert.py') -Force
 
 $Base = "http://127.0.0.1:$Port"
 
@@ -117,6 +122,64 @@ function Wait-Health([int]$timeoutSec) {
     }
     return $null
 }
+function Http-Download([string]$url, [string]$outPath) {
+    $resp  = $client.GetAsync($url).GetAwaiter().GetResult()
+    $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+    $fname = ''
+    $cd = $resp.Content.Headers.ContentDisposition
+    if ($cd) {
+        if ($cd.FileNameStar) { $fname = $cd.FileNameStar } elseif ($cd.FileName) { $fname = $cd.FileName }
+    }
+    $fname = ($fname -replace '"', '')
+    if ($bytes.Length -gt 0) { [System.IO.File]::WriteAllBytes($outPath, $bytes) }
+    [pscustomobject]@{ status=[int]$resp.StatusCode; length=$bytes.Length; fileName=$fname; path=$outPath }
+}
+
+# --- binary-STL readers (header count + world-frame X range) -----------------
+function Get-StlTriCount([string]$path) {
+    $fs = [System.IO.File]::OpenRead($path)
+    try {
+        $head = New-Object byte[] 84
+        [void]$fs.Read($head, 0, 84)
+        return [int][System.BitConverter]::ToUInt32($head, 80)
+    } finally { $fs.Dispose() }
+}
+function Get-StlXRange([string]$path) {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    if ($bytes.Length -lt 84) { return $null }
+    $count = [int][System.BitConverter]::ToUInt32($bytes, 80)
+    $min = [double]::MaxValue; $max = [double]::MinValue
+    for ($i = 0; $i -lt $count; $i++) {
+        $o = 84 + $i * 50
+        foreach ($k in 12, 24, 36) {
+            $x = [double][System.BitConverter]::ToSingle($bytes, $o + $k)
+            if ($x -lt $min) { $min = $x }
+            if ($x -gt $max) { $max = $x }
+        }
+    }
+    [pscustomobject]@{ min=$min; max=$max; tris=$count }
+}
+function Get-FileHeadText([string]$path, [int]$n) {
+    $fs = [System.IO.File]::OpenRead($path)
+    try {
+        $buf = New-Object byte[] $n
+        $read = $fs.Read($buf, 0, $n)
+        return [System.Text.Encoding]::ASCII.GetString($buf, 0, $read)
+    } finally { $fs.Dispose() }
+}
+
+function Wait-Export([string]$id, [int]$timeoutSec) {
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $r = Http-Get "$Base/api/export/$id"
+        if ($r.status -eq 200 -and $r.obj) {
+            if ($r.obj.state -in @('done','failed')) { return $r.obj }
+        }
+        Start-Sleep -Milliseconds 400
+    }
+    return $null
+}
+
 function Wait-Job([string]$id, [int]$timeoutSec) {
     $deadline = (Get-Date).AddSeconds($timeoutSec)
     while ((Get-Date) -lt $deadline) {
@@ -270,6 +333,65 @@ try {
         Add-Result 'zoned generate (needs primitives)' $false "missing primitive part(s): box=$boxId sphere=$sphereId cyl=$cylZid"
     }
 
+    # =========================================================================
+    # The lattice IS a part: a finished generate registers its result as a
+    # derived part (op:"generate") BEFORE the job flips to done, so the client
+    # can select/move/export it like anything else. The job-dir preview.stl copy
+    # must survive (legacy preview + STEP endpoints read it from there).
+    # =========================================================================
+    Write-Host "`n== Generate registers the lattice as a part ==" -ForegroundColor Cyan
+    $latSrcId = New-Primitive 'box' @{ x=24; y=16; z=10 } 'box 24x16x10 (lattice src)'
+    if (-not $latSrcId) {
+        Add-Result 'generate registers a lattice part (needs the source box)' $false 'primitive box 24x16x10 failed'
+    } else {
+        $latResp = Http-PostJson "$Base/api/jobs" ([ordered]@{
+            mode='single'; partId=$latSrcId
+            pattern='gyroid'; cellSizeMM=6; wallThicknessMM=1.2; voxelSizeMM=0.4
+        })
+        $latAcc = ($latResp.status -eq 202) -and $latResp.obj.jobId
+        Add-Result 'POST /api/jobs coarse box lattice -> 202' $latAcc ("status={0} jobId={1}" -f $latResp.status, $latResp.obj.jobId)
+        if ($latAcc) {
+            $lj = Wait-Job $latResp.obj.jobId 240
+            if ($null -eq $lj) {
+                Add-Result 'lattice job completes' $false 'timeout (240s)'
+            } else {
+                Add-Result 'lattice job state=done' ($lj.state -eq 'done') ("state={0} stage={1} err={2}" -f $lj.state, $lj.stage, $lj.error)
+                $lp = $lj.part
+                $lpOk = ($null -ne $lp) -and ($lp.derived.op -eq 'generate') -and $lp.id
+                Add-Result 'job.part registered (derived.op=generate)' $lpOk `
+                    ("id={0} op={1} label='{2}' name='{3}'" -f $lp.id, $lp.derived.op, $lp.derived.label, $lp.name)
+                if ($lpOk) {
+                    $srcOk = ($lp.derived.sourceIds -contains $latSrcId) -and ([double]$lp.volumeMM3 -gt 0)
+                    Add-Result 'lattice provenance: sourceIds + mass props' $srcOk `
+                        ("sourceIds={0} vol={1:0.##} tris={2}" -f ($lp.derived.sourceIds -join ','), [double]$lp.volumeMM3, $lp.triangles)
+
+                    $md = Http-Download "$Base/api/parts/$($lp.id)/mesh.stl" (Join-Path $WorkTmp 'lattice_mesh.stl')
+                    $mtris = 0
+                    if ($md.status -eq 200 -and $md.length -gt 84) { $mtris = Get-StlTriCount $md.path }
+                    $meshOk = ($md.status -eq 200) -and ($mtris -gt 0) -and `
+                              ($md.length -eq (84 + $mtris * 50)) -and ($mtris -eq [int]$lp.triangles)
+                    Add-Result 'GET /api/parts/{id}/mesh.stl is a valid binary STL' $meshOk `
+                        ("status={0} bytes={1} tris={2} part.triangles={3}" -f $md.status, $md.length, $mtris, [int]$lp.triangles)
+
+                    # part bbox vs the job's own result mesh (preview.stl still served)
+                    $pvL = Http-Download "$Base/api/jobs/$($latResp.obj.jobId)/preview.stl" (Join-Path $WorkTmp 'lattice_preview.stl')
+                    $rng = $null
+                    if ($pvL.status -eq 200 -and $pvL.length -gt 84) { $rng = Get-StlXRange $pvL.path }
+                    $bboxOk = ($null -ne $rng) -and ($rng.tris -eq $mtris) -and `
+                              ([math]::Abs($rng.min - [double]$lp.bbox.min[0]) -lt 0.01) -and `
+                              ([math]::Abs($rng.max - [double]$lp.bbox.max[0]) -lt 0.01)
+                    Add-Result 'lattice part bbox matches the job result mesh' $bboxOk `
+                        ("preview X {0:0.###}..{1:0.###} part X {2:0.###}..{3:0.###} tris={4}/{5}" -f `
+                         $rng.min, $rng.max, [double]$lp.bbox.min[0], [double]$lp.bbox.max[0], $rng.tris, $mtris)
+
+                    $plResp = Http-Get "$Base/api/parts"
+                    $inList = [bool]($plResp.obj | Where-Object { $_.id -eq $lp.id })
+                    Add-Result 'GET /api/parts contains the lattice part' $inList ("id={0} present={1}" -f $lp.id, $inList)
+                }
+            }
+        }
+    }
+
     Write-Host "`n== Negatives (expect 400) ==" -ForegroundColor Cyan
 
     # zone id == base id
@@ -300,6 +422,195 @@ try {
         inputs=@(@{ partId=$cyl1.id }, @{ partId='p_does_not_exist' })
     })
     Add-Result 'boolean missing part id -> 400' ($n4.status -eq 400) ("status={0} err={1}" -f $n4.status, $n4.obj.error)
+
+    # =========================================================================
+    # Wave-3 unified export: POST /api/export -> poll -> GET /api/export/{id}/file
+    # One endpoint covers 1..N sources x stl|step x separate-zip|combined, with
+    # the per-part TRS baked in and a HUMAN filename on the download.
+    # =========================================================================
+    Write-Host "`n== Wave-3 unified export (POST /api/export) ==" -ForegroundColor Cyan
+    $DlDir = Join-Path $WorkTmp 'downloads'
+    New-Item -ItemType Directory -Force -Path $DlDir | Out-Null
+
+    # A SMALL box keeps the transform-bake bbox scan and the STEP conversion quick.
+    $smallId = New-Primitive 'box' @{ x=20; y=12; z=8 } 'box 20x12x8 (export src)'
+
+    if (-not $smallId) {
+        Add-Result 'export tests (need the small box primitive)' $false 'primitive box 20x12x8 failed'
+    } else {
+        # --- 1. STL, single source, sanitized name ---------------------------
+        $e1 = Http-PostJson "$Base/api/export" ([ordered]@{
+            sources=@(@{ partId=$smallId }); format='stl'; combined=$false; name='unit test:part'
+        })
+        $e1Acc = ($e1.status -eq 202) -and $e1.obj.exportId
+        Add-Result 'POST /api/export stl single -> 202 {exportId}' $e1Acc ("status={0} exportId={1}" -f $e1.status, $e1.obj.exportId)
+
+        $stlOrig = $null
+        if ($e1Acc) {
+            $s1 = Wait-Export $e1.obj.exportId 60
+            $s1Ok = ($null -ne $s1) -and ($s1.state -eq 'done')
+            Add-Result 'stl single export state=done' $s1Ok ("state={0} file={1} err={2}" -f $s1.state, $s1.fileName, $s1.error)
+
+            if ($s1Ok) {
+                $d1 = Http-Download "$Base/api/export/$($e1.obj.exportId)/file" (Join-Path $DlDir 'single.stl')
+                $tris1 = 0
+                if ($d1.status -eq 200 -and $d1.length -gt 84) { $tris1 = Get-StlTriCount $d1.path }
+                $binOk = ($d1.status -eq 200) -and ($tris1 -gt 0) -and ($d1.length -eq (84 + $tris1 * 50))
+                Add-Result 'stl single file is a binary STL (84 + tris*50)' $binOk ("status={0} bytes={1} tris={2}" -f $d1.status, $d1.length, $tris1)
+
+                $nameOk = ($d1.fileName -like '*unit_test_part*') -and ($d1.fileName -like '*.stl')
+                Add-Result 'download filename is the sanitized name' $nameOk ("Content-Disposition filename='{0}'" -f $d1.fileName)
+
+                $stlOrig = Get-StlXRange $d1.path
+            }
+        }
+
+        # --- 2. STL, multi, SEPARATE -> zip ----------------------------------
+        if ($boxId) {
+            $e2 = Http-PostJson "$Base/api/export" ([ordered]@{
+                sources=@(@{ partId=$smallId }, @{ partId=$boxId }); format='stl'; combined=$false; name='multi_sep'
+            })
+            $s2 = $null
+            if ($e2.status -eq 202) { $s2 = Wait-Export $e2.obj.exportId 60 }
+            $s2Ok = ($null -ne $s2) -and ($s2.state -eq 'done') -and ($s2.fileName -eq 'multi_sep.zip')
+            Add-Result 'stl multi SEPARATE -> multi_sep.zip' $s2Ok ("status={0} state={1} file={2}" -f $e2.status, $s2.state, $s2.fileName)
+            if ($s2Ok) {
+                $d2 = Http-Download "$Base/api/export/$($e2.obj.exportId)/file" (Join-Path $DlDir 'multi.zip')
+                $magic = ''
+                if ($d2.length -gt 2) { $magic = Get-FileHeadText $d2.path 2 }
+                Add-Result 'separate export is a real zip (PK magic)' (($d2.status -eq 200) -and ($magic -eq 'PK')) ("status={0} bytes={1} magic='{2}'" -f $d2.status, $d2.length, $magic)
+
+                # entry names are ASCII slugs of the part display names, deduped
+                Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                $zipEntries = @()
+                try {
+                    $za = [System.IO.Compression.ZipFile]::OpenRead($d2.path)
+                    $zipEntries = @($za.Entries | ForEach-Object { $_.FullName })
+                    $za.Dispose()
+                } catch { }
+                $asciiOk = ($zipEntries.Count -eq 2) -and `
+                           (-not ($zipEntries -match '[^\x20-\x7E]')) -and `
+                           ($zipEntries -join ',').EndsWith('.stl')
+                Add-Result 'zip entries are ASCII slugs of the part names' $asciiOk ("entries={0}" -f ($zipEntries -join ' | '))
+            }
+
+            # --- 3. STL, multi, COMBINED -> tris == sum of both parts --------
+            $plist = Http-Get "$Base/api/parts"
+            $triSmall = [int](@($plist.obj | Where-Object { $_.id -eq $smallId })[0].triangles)
+            $triBox   = [int](@($plist.obj | Where-Object { $_.id -eq $boxId })[0].triangles)
+
+            $e3 = Http-PostJson "$Base/api/export" ([ordered]@{
+                sources=@(@{ partId=$smallId }, @{ partId=$boxId }); format='stl'; combined=$true; name='multi_comb'
+            })
+            $s3 = $null
+            if ($e3.status -eq 202) { $s3 = Wait-Export $e3.obj.exportId 60 }
+            if ($null -ne $s3 -and $s3.state -eq 'done') {
+                $d3 = Http-Download "$Base/api/export/$($e3.obj.exportId)/file" (Join-Path $DlDir 'combined.stl')
+                $triComb = 0
+                if ($d3.length -gt 84) { $triComb = Get-StlTriCount $d3.path }
+                $sumOk = ($triComb -eq ($triSmall + $triBox)) -and ($s3.fileName -eq 'multi_comb.stl')
+                Add-Result 'stl multi COMBINED tris == sum of sources' $sumOk ("combined={0} small={1} box={2} file={3}" -f $triComb, $triSmall, $triBox, $s3.fileName)
+            } else {
+                Add-Result 'stl multi COMBINED tris == sum of sources' $false ("status={0} state={1}" -f $e3.status, $s3.state)
+            }
+        } else {
+            Add-Result 'stl multi separate/combined (needs the 60x40x20 box)' $false 'no boxId'
+        }
+
+        # --- 4. Transform baking: translateMM {x:25} shifts the mesh +25 in X --
+        if ($null -ne $stlOrig) {
+            $e4 = Http-PostJson "$Base/api/export" ([ordered]@{
+                sources=@(@{ partId=$smallId }); format='stl'; combined=$false; name='xform_test'
+                transforms=@{ $smallId = @{ translateMM=@{ x=25; y=0; z=0 }; rotateDeg=@{ x=0; y=0; z=0 }; scale=@{ x=1; y=1; z=1 } } }
+            })
+            $s4 = $null
+            if ($e4.status -eq 202) { $s4 = Wait-Export $e4.obj.exportId 60 }
+            if ($null -ne $s4 -and $s4.state -eq 'done') {
+                $d4 = Http-Download "$Base/api/export/$($e4.obj.exportId)/file" (Join-Path $DlDir 'xform.stl')
+                $moved = Get-StlXRange $d4.path
+                $dMin = $moved.min - $stlOrig.min
+                $dMax = $moved.max - $stlOrig.max
+                $bakeOk = ([math]::Abs($dMin - 25) -lt 0.05) -and ([math]::Abs($dMax - 25) -lt 0.05) -and ($moved.tris -eq $stlOrig.tris)
+                Add-Result 'transform-baked export shifted +25 mm in X' $bakeOk `
+                    ("dMin={0:0.###} dMax={1:0.###} tris={2} (orig X {3:0.##}..{4:0.##})" -f $dMin, $dMax, $moved.tris, $stlOrig.min, $stlOrig.max)
+            } else {
+                Add-Result 'transform-baked export shifted +25 mm in X' $false ("status={0} state={1} err={2}" -f $e4.status, $s4.state, $s4.error)
+            }
+        } else {
+            Add-Result 'transform-baked export shifted +25 mm in X' $false 'no baseline STL from test 1'
+        }
+
+        # --- 5. STEP, single, tiny budget (cold Python sidecar can take ~75s) --
+        $e5 = Http-PostJson "$Base/api/export" ([ordered]@{
+            sources=@(@{ partId=$smallId }); format='step'; combined=$false; name='step_tiny'; targetTriangles=5000
+        })
+        $e5Acc = ($e5.status -eq 202) -and $e5.obj.exportId
+        Add-Result 'POST /api/export step single -> 202' $e5Acc ("status={0} exportId={1}" -f $e5.status, $e5.obj.exportId)
+        if ($e5Acc) {
+            $s5 = Wait-Export $e5.obj.exportId 300
+            $s5Ok = ($null -ne $s5) -and ($s5.state -eq 'done') -and ($s5.fileName -eq 'step_tiny.step')
+            Add-Result 'step export state=done' $s5Ok ("state={0} file={1} tris={2} err={3}" -f $s5.state, $s5.fileName, $s5.triangles, $s5.error)
+            if ($s5Ok) {
+                $d5 = Http-Download "$Base/api/export/$($e5.obj.exportId)/file" (Join-Path $DlDir 'tiny.step')
+                $head = ''
+                if ($d5.length -gt 12) { $head = Get-FileHeadText $d5.path 12 }
+                Add-Result 'step file starts with ISO-10303-21' (($d5.status -eq 200) -and ($head -eq 'ISO-10303-21')) ("status={0} bytes={1} head='{2}'" -f $d5.status, $d5.length, $head)
+            }
+        }
+
+        # --- 6. jobId source: export the generate RESULT mesh (no TRS ever) ---
+        if ($genAcc -and $genResp.obj.jobId) {
+            $e6 = Http-PostJson "$Base/api/export" ([ordered]@{
+                sources=@(@{ jobId=$genResp.obj.jobId }); format='stl'; combined=$false; name='box_gyroid'
+            })
+            $s6 = $null
+            if ($e6.status -eq 202) { $s6 = Wait-Export $e6.obj.exportId 120 }
+            if ($null -ne $s6 -and $s6.state -eq 'done') {
+                $d6 = Http-Download "$Base/api/export/$($e6.obj.exportId)/file" (Join-Path $DlDir 'result.stl')
+                $tris6 = 0
+                if ($d6.length -gt 84) { $tris6 = Get-StlTriCount $d6.path }
+                $ok6 = ($d6.status -eq 200) -and ($tris6 -gt 0) -and ($d6.length -eq (84 + $tris6 * 50)) -and ($s6.fileName -eq 'box_gyroid.stl')
+                Add-Result 'export a jobId source (the generate result)' $ok6 ("file={0} bytes={1} tris={2}" -f $s6.fileName, $d6.length, $tris6)
+            } else {
+                Add-Result 'export a jobId source (the generate result)' $false ("status={0} state={1} err={2}" -f $e6.status, $s6.state, $s6.error)
+            }
+        } else {
+            Add-Result 'export a jobId source (the generate result)' $false 'no zoned generate job'
+        }
+
+        # --- 7. STEP over budget -> the coarseOnly worker remesh runs first ---
+        # Cylinder.stl is 576 tris; a 200-tri budget forces the remesh branch, so
+        # the STEP the sidecar reports back must NOT be the original count.
+        $e7 = Http-PostJson "$Base/api/export" ([ordered]@{
+            sources=@(@{ partId=$cyl1.id }); format='step'; combined=$false; name='coarse_step'; targetTriangles=200
+        })
+        $s7 = $null
+        if ($e7.status -eq 202) { $s7 = Wait-Export $e7.obj.exportId 300 }
+        if ($null -ne $s7 -and $s7.state -eq 'done') {
+            $d7 = Http-Download "$Base/api/export/$($e7.obj.exportId)/file" (Join-Path $DlDir 'coarse.step')
+            $head7 = ''
+            if ($d7.length -gt 12) { $head7 = Get-FileHeadText $d7.path 12 }
+            $ok7 = ($d7.status -eq 200) -and ($head7 -eq 'ISO-10303-21') -and `
+                   ([int]$s7.triangles -gt 0) -and ([int]$s7.triangles -ne [int]$cyl1.triangles)
+            Add-Result 'step over budget coarse-remeshes before conversion' $ok7 `
+                ("srcTris={0} stepTris={1} bytes={2} head='{3}'" -f [int]$cyl1.triangles, [int]$s7.triangles, $d7.length, $head7)
+        } else {
+            Add-Result 'step over budget coarse-remeshes before conversion' $false ("status={0} state={1} err={2}" -f $e7.status, $s7.state, $s7.error)
+        }
+
+        # --- negatives -------------------------------------------------------
+        $n5 = Http-PostJson "$Base/api/export" ([ordered]@{ sources=@(); format='stl' })
+        Add-Result 'export with no sources -> 400' ($n5.status -eq 400) ("status={0} err={1}" -f $n5.status, $n5.obj.error)
+
+        $n6 = Http-PostJson "$Base/api/export" ([ordered]@{ sources=@(@{ partId='p_does_not_exist' }); format='stl' })
+        Add-Result 'export unknown partId -> 400' ($n6.status -eq 400) ("status={0} err={1}" -f $n6.status, $n6.obj.error)
+
+        $n7 = Http-PostJson "$Base/api/export" ([ordered]@{ sources=@(@{ partId=$smallId }); format='obj' })
+        Add-Result 'export bad format -> 400' ($n7.status -eq 400) ("status={0} err={1}" -f $n7.status, $n7.obj.error)
+
+        $n8 = Http-Get "$Base/api/export/e_nope"
+        Add-Result 'GET unknown export -> 404' ($n8.status -eq 404) ("status={0}" -f $n8.status)
+    }
 }
 finally {
     if ($serverProc -and -not $serverProc.HasExited) {

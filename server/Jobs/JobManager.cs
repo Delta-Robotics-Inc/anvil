@@ -171,6 +171,32 @@ public sealed class JobManager : IAsyncDisposable
 
         File.WriteAllText(jobJson, JsonSerializer.Serialize(workerJob, CamelOut));
 
+        // ---- The lattice IS a part: reserve its id + provenance now, register the
+        //      mesh in FinalizeGeneratePart (BEFORE the job flips to done, exactly
+        //      like an op output). Source ids are base-first, then zones. ----
+        var sourceIds = new List<string>();
+        if (inputs.Mode == "fuse")
+        {
+            if (!string.IsNullOrWhiteSpace(req.positiveId)) sourceIds.Add(req.positiveId!);
+            if (!string.IsNullOrWhiteSpace(req.negativeId)) sourceIds.Add(req.negativeId!);
+        }
+        else if (!string.IsNullOrWhiteSpace(req.partId)) sourceIds.Add(req.partId!);
+        if (req.zones is ZonesDto zd)
+        {
+            foreach (var list in new[] { zd.latticeIds, zd.keepIds, zd.voidIds })
+            {
+                if (list is null) continue;
+                foreach (var zid in list)
+                    if (!string.IsNullOrWhiteSpace(zid) && !sourceIds.Contains(zid)) sourceIds.Add(zid);
+            }
+        }
+
+        string patternLabel = PatternLabel(req.pattern);
+        string stem = sourceIds.Count > 0 && _parts.TryGet(sourceIds[0], out var srcPart)
+            ? NameStem(srcPart.name)
+            : "LATTICE";
+        string genPartId = "p_" + Token.New();
+
         var rec = new JobRecord
         {
             Id = id,
@@ -183,6 +209,23 @@ public sealed class JobManager : IAsyncDisposable
             Warning = warning,
             State = JobState.Queued,
             Stage = "queued",
+            PendingPartId = genPartId,
+            PendingPartDir = Path.Combine(_partsDir, genPartId),
+            PendingPartName = $"{stem} · {patternLabel}",
+            PendingDerived = new DerivedDto
+            {
+                op = "generate",
+                label = $"TPMS · {patternLabel}",
+                sourceIds = sourceIds,
+                opParams = new JsonObject
+                {
+                    ["pattern"] = req.pattern,
+                    ["latticeType"] = req.latticeType,
+                    ["cellSizeMM"] = req.cellSizeMM,
+                    ["wallThicknessMM"] = req.wallThicknessMM,
+                    ["voxelSizeMM"] = req.voxelSizeMM,
+                },
+            },
         };
         _jobs[id] = rec;
         _queue.Writer.TryWrite(rec);
@@ -443,6 +486,17 @@ public sealed class JobManager : IAsyncDisposable
                     lock (rec.Gate) { rec.State = JobState.Failed; rec.Stage = "failed"; rec.Error = $"script part registration failed: {ex.Message}"; }
                 }
             }
+            else if (rec.Kind == JobKind.Generate && rec.PendingPartId is not null)
+            {
+                try { FinalizeGeneratePart(rec); }
+                catch (Exception ex)
+                {
+                    registered = false;
+                    _log.LogError(ex, "generate job {Id} produced output but lattice registration failed", rec.Id);
+                    lock (rec.Gate) { rec.State = JobState.Failed; rec.Stage = "failed"; rec.Error = $"lattice part registration failed: {ex.Message}"; }
+                    TryDeleteDir(rec.PendingPartDir);
+                }
+            }
 
             if (registered)
                 lock (rec.Gate) { rec.State = JobState.Done; rec.Stage = "done"; rec.Progress = 1.0; }
@@ -500,6 +554,86 @@ public sealed class JobManager : IAsyncDisposable
         lock (rec.Gate) rec.ResultPart = part;
         _log.LogInformation("op job {Id} registered derived part {PartId} '{Name}' ({Tris} tris, {Vol:0.##} mm3)",
             rec.Id, part.id, part.name, part.triangles, part.volumeMM3);
+    }
+
+    /// <summary>
+    /// Register a finished generate job's lattice as a derived part, so the result
+    /// IS a part (selectable, movable, exportable) instead of a floating preview
+    /// mesh. COPIES result.stl to {DataDir}\parts\{id}\mesh.stl — the job-dir copy
+    /// STAYS, because the legacy preview.stl / result.step endpoints (and the MCP
+    /// tools) read it from there. Exposed via JobStatus.part like an op output.
+    /// </summary>
+    private void FinalizeGeneratePart(JobRecord rec)
+    {
+        string partId = rec.PendingPartId!;
+        string partDir = rec.PendingPartDir ?? Path.Combine(_partsDir, partId);
+        Directory.CreateDirectory(partDir);
+        string meshStl = Path.Combine(partDir, "mesh.stl");
+        File.Copy(rec.ResultStlPath, meshStl, overwrite: true);
+
+        var info = StlInfo.ReadBinary(meshStl);
+        // Watertightness comes from the worker's done-stats (directed-edge check).
+        bool? watertight = null;
+        lock (rec.Gate)
+        {
+            if (rec.Stats is JsonObject so && so.TryGetPropertyValue("watertight", out var wtNode)
+                && wtNode is JsonValue wtVal && wtVal.TryGetValue(out bool wt))
+                watertight = wt;
+        }
+
+        var part = new PartInfo
+        {
+            id = partId,
+            name = !string.IsNullOrWhiteSpace(rec.PendingPartName)
+                ? rec.PendingPartName!
+                : (rec.PendingDerived?.label ?? partId),
+            sourceFormat = "derived",
+            stlUrl = $"/api/parts/{partId}/mesh.stl",
+            triangles = info.Triangles,
+            bbox = BboxDto.From(info.Bbox),
+            volumeMM3 = info.VolumeMM3,
+            surfaceAreaMM2 = info.SurfaceAreaMM2,
+            cogMM = info.CogMM,
+            watertight = watertight,
+            derived = rec.PendingDerived,
+            StlPath = meshStl,
+            Dir = partDir,
+        };
+        _parts.Add(part);
+        lock (rec.Gate) rec.ResultPart = part;
+        _log.LogInformation("generate job {Id} registered lattice part {PartId} '{Name}' ({Tris} tris, {Vol:0.##} mm3)",
+            rec.Id, part.id, part.name, part.triangles, part.volumeMM3);
+    }
+
+    // Display labels for the lattice part's name/provenance (mirrors the UI's
+    // PATTERN_LABEL map so the row and the file name read the same).
+    private static readonly Dictionary<string, string> PatternLabels = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["gyroid"] = "GYROID", ["schwarzp"] = "SCHWARZ P", ["schwarzd"] = "SCHWARZ D",
+        ["lidinoid"] = "LIDINOID", ["neovius"] = "NEOVIUS",
+    };
+    private const int StemMaxChars = 24;
+
+    private static string PatternLabel(string? pattern)
+    {
+        string p = (pattern ?? "").Trim();
+        return PatternLabels.TryGetValue(p, out var label) ? label : p.ToUpperInvariant();
+    }
+
+    /// <summary>
+    /// Source part name → a short human stem for the lattice part's display name:
+    /// a known mesh extension is dropped and anything over StemMaxChars is elided.
+    /// Only the three known extensions are stripped, so "1.5mm plate" survives.
+    /// </summary>
+    private static string NameStem(string? name)
+    {
+        string s = (name ?? "").Trim();
+        foreach (var ext in new[] { ".stl", ".step", ".stp" })
+        {
+            if (s.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) { s = s[..^ext.Length].Trim(); break; }
+        }
+        if (s.Length > StemMaxChars) s = s[..(StemMaxChars - 1)].TrimEnd() + "…";
+        return s.Length > 0 ? s : "PART";
     }
 
     /// <summary>
@@ -771,8 +905,13 @@ public sealed class JobManager : IAsyncDisposable
         }
     }
 
-    /// <summary>Auxiliary coarseOnly worker invocation (throttled by the slot gate).</summary>
-    private async Task RunCoarseOnlyAsync(string inStl, string outStl, double voxelSizeMM)
+    /// <summary>
+    /// Auxiliary coarseOnly worker invocation (throttled by the SAME slot gate as
+    /// generate/op jobs, so the live worker count never exceeds MaxConcurrentJobs).
+    /// `internal` so the Wave-3 ExportManager can reuse this exact pass for
+    /// part→STEP conversions instead of forking a second remesh implementation.
+    /// </summary>
+    internal async Task RunCoarseOnlyAsync(string inStl, string outStl, double voxelSizeMM)
     {
         if (!File.Exists(_workerPath))
             throw new SidecarException($"worker executable not found: {_workerPath}");

@@ -43,9 +43,11 @@ string workerPath = Path.IsPathRooted(workerCfg) ? workerCfg : Path.Combine(repo
 string sidecarScript = Path.Combine(repoRoot, "sidecar", "cadconvert.py");
 string partsDir = Path.Combine(dataDir, "parts");
 string jobsDir = Path.Combine(dataDir, "jobs");
+string exportsDir = Path.Combine(dataDir, "exports");   // Wave-3 unified export artefacts
 string wwwRoot = Path.Combine(serverDir, "wwwroot");
 Directory.CreateDirectory(partsDir);
 Directory.CreateDirectory(jobsDir);
+Directory.CreateDirectory(exportsDir);
 
 var paths = new AppPaths(repoRoot, dataDir, partsDir, jobsDir, serverDir, wwwRoot);
 
@@ -77,6 +79,9 @@ builder.Services.AddSingleton(sp => new JobManager(
     sp.GetRequiredService<PartStore>(),
     sp.GetRequiredService<ILogger<JobManager>>()));
 builder.Services.AddSingleton<ScriptLibrary>();
+// Unified export pipeline (POST /api/export). Depends on JobManager (coarse
+// remesh pass) + the sidecar (stl2step); max 1 export at a time, FIFO.
+builder.Services.AddSingleton<ExportManager>();
 
 // ---- MCP server (official C# SDK) ----------------------------------------
 // In-process, stateless HTTP MCP at /mcp (loopback binding unchanged). Tools
@@ -122,6 +127,7 @@ app.MapGet("/api/health", () => Results.Ok(new
 app.MapInfillApi();
 app.MapOpsApi();
 app.MapScriptsApi();
+app.MapExportApi();
 
 // MCP JSON-RPC endpoint (stateless streamable HTTP). Loopback only, no auth —
 // see the README SECURITY section: connecting an agent lets it run code here.

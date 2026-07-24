@@ -133,14 +133,18 @@ function tripletStepper(labelHtml, unit, vals, step, tip) {
 const num = (inp, dflt = 0) => { const n = parseFloat(inp?.value); return Number.isFinite(n) ? n : dflt; };
 const xyz = (t) => ({ x: num(t.x), y: num(t.y), z: num(t.z) });
 
+const TRS_EPS = 1e-6;
 function trsNonIdentity(trs) {
   if (!trs) return null;
-  const t = trs.translateMM || {}, r = trs.rotateDeg || {};
-  const any = ['x', 'y', 'z'].some((k) => (t[k] || 0) !== 0 || (r[k] || 0) !== 0);
-  return any ? {
+  const t = trs.translateMM || {}, r = trs.rotateDeg || {}, s = trs.scale || {};
+  const moved  = ['x', 'y', 'z'].some((k) => Math.abs(t[k] || 0) > TRS_EPS || Math.abs(r[k] || 0) > TRS_EPS);
+  const scaled = ['x', 'y', 'z'].some((k) => Math.abs((s[k] ?? 1) - 1) > TRS_EPS);
+  if (!moved && !scaled) return null;
+  return {
     translateMM: { x: t.x || 0, y: t.y || 0, z: t.z || 0 },
     rotateDeg:   { x: r.x || 0, y: r.y || 0, z: r.z || 0 },
-  } : null;
+    scale:       { x: s.x ?? 1, y: s.y ?? 1, z: s.z ?? 1 },
+  };
 }
 // One op input: { partId } plus the part's current non-identity TRS (folded in
 // server-side into the mesh load, so voxel/mesh ops see the transformed part).
@@ -404,33 +408,40 @@ const TOOLS = {
       const cur0 = ctx.getPartTrs(startId) || {};
       const t0 = cur0.translateMM || { x: 0, y: 0, z: 0 };
       const r0 = cur0.rotateDeg   || { x: 0, y: 0, z: 0 };
+      const s0 = cur0.scale       || { x: 1, y: 1, z: 1 };
       const part = pickerControl(startId, (id) => { prefill(id); onLive(); });
       const tr = tripletStepper('Translate', 'mm', { x: t0.x, y: t0.y, z: t0.z }, 1,
         'Moves the part. Non-destructive — travels with the part into GENERATE.');
       const rot = tripletStepper('Rotate', 'deg', { x: r0.x, y: r0.y, z: r0.z }, 15,
         'Rotates the part about its origin (X then Y then Z).');
+      const scl = tripletStepper('Scale', '×', { x: s0.x, y: s0.y, z: s0.z }, 0.05,
+        'Per-axis scale factor (1 = original). Applied before rotation; travels with the part.');
+      for (const ax of ['x', 'y', 'z']) { scl.inp[ax].min = '0.01'; }
       const center = el('button', 'btn tool-mini'); center.type = 'button'; center.textContent = 'CENTER';
       center.setAttribute('data-tip', 'Preset: translate the part bbox centre to the origin.');
       const actions = el('div', 'tool-actions'); actions.appendChild(center);
-      host.append(paramBlock('Part', part.el, { tip: 'Source part.' }), tr.el, rot.el,
+      host.append(paramBlock('Part', part.el, { tip: 'Source part.' }), tr.el, rot.el, scl.el,
         paramBlock('Preset', actions, { tip: 'One-tap placement presets.' }));
 
+      const readScale = () => { const s = xyz(scl.inp); return { x: s.x || 1, y: s.y || 1, z: s.z || 1 }; };
       function readTrs() {
-        return { translateMM: xyz(tr.inp), rotateDeg: xyz(rot.inp) };
+        return { translateMM: xyz(tr.inp), rotateDeg: xyz(rot.inp), scale: readScale() };
       }
       function prefill(id) {
         const t = ctx.getPartTrs(id) || {};
         const tt = t.translateMM || { x: 0, y: 0, z: 0 }, rr = t.rotateDeg || { x: 0, y: 0, z: 0 };
+        const ss = t.scale || { x: 1, y: 1, z: 1 };
         tr.inp.x.value = tt.x; tr.inp.y.value = tt.y; tr.inp.z.value = tt.z;
         rot.inp.x.value = rr.x; rot.inp.y.value = rr.y; rot.inp.z.value = rr.z;
+        scl.inp.x.value = ss.x ?? 1; scl.inp.y.value = ss.y ?? 1; scl.inp.z.value = ss.z ?? 1;
       }
       function onLive() {
         const id = part.get();
         if (id) ctx.setPartTransform(id, readTrs());
         onChange();   // refresh validity/accent
       }
-      // live-preview on every translate/rotate edit
-      for (const g of [tr.inp, rot.inp]) for (const ax of ['x', 'y', 'z'])
+      // live-preview on every translate/rotate/scale edit
+      for (const g of [tr.inp, rot.inp, scl.inp]) for (const ax of ['x', 'y', 'z'])
         g[ax].addEventListener('input', onLive);
       center.addEventListener('click', () => {
         const id = part.get(); const bb = ctx.partBbox(id);
@@ -445,7 +456,7 @@ const TOOLS = {
     },
     validate(v) {
       if (!v.part) return { ok: false, note: 'Pick a part', noteKind: 'err' };
-      if (!trsNonIdentity(v.trs)) return { ok: false, note: 'Move or rotate, then APPLY to bake', noteKind: '' };
+      if (!trsNonIdentity(v.trs)) return { ok: false, note: 'Move, rotate or scale, then APPLY to bake', noteKind: '' };
       return { ok: true, note: 'APPLY bakes a new part; source returns to origin' };
     },
     build(v) {

@@ -16,6 +16,13 @@ const state = {
   poll: null,       // interval handle for generation polling
   stepPoll: null,   // interval handle for STEP-export polling
   resultFresh: false, // Fix 1 — shown result matches current params (drives accent budget)
+
+  // Wave-2 viewport selection / gizmo (selection is state-derived; rows re-derive
+  // `.selected` from selectedPartId on every renderParts).
+  selectedPartId: null, // id of the click/row-selected part, or null
+  gizmoMode: null,      // 'translate' | 'rotate' | 'scale' | null
+  layFlatArmed: false,  // LAY FLAT one-shot pick armed
+  draggingGizmo: false, // true mid-drag → freeze refreshParts
 };
 let pendingSeq = 0; // monotonic id source for placeholder rows
 
@@ -154,14 +161,20 @@ function syncViewerRoles() {
 }
 
 // ── Transforms (non-destructive per-part TRS) ─────────────────────────
+// Scale is included end-to-end (epsilon 1e-6) so a gizmo/panel scale reaches
+// the worker (BuildMatrix reads translateMM/rotateDeg/scale).
+const TRS_EPS = 1e-6;
 function nonIdentityTrs(trs) {
   if (!trs) return null;
-  const t = trs.translateMM || {}, r = trs.rotateDeg || {};
-  const any = ['x', 'y', 'z'].some((k) => (t[k] || 0) !== 0 || (r[k] || 0) !== 0);
-  return any ? {
+  const t = trs.translateMM || {}, r = trs.rotateDeg || {}, s = trs.scale || {};
+  const moved  = ['x', 'y', 'z'].some((k) => Math.abs(t[k] || 0) > TRS_EPS || Math.abs(r[k] || 0) > TRS_EPS);
+  const scaled = ['x', 'y', 'z'].some((k) => Math.abs((s[k] ?? 1) - 1) > TRS_EPS);
+  if (!moved && !scaled) return null;
+  return {
     translateMM: { x: t.x || 0, y: t.y || 0, z: t.z || 0 },
     rotateDeg:   { x: r.x || 0, y: r.y || 0, z: r.z || 0 },
-  } : null;
+    scale:       { x: s.x ?? 1, y: s.y ?? 1, z: s.z ?? 1 },
+  };
 }
 // { partId -> {translateMM, rotateDeg} } for the parts referenced by this
 // generate (base + zone), identity transforms skipped. Field is translateMM
@@ -263,7 +276,13 @@ const toolCtx = {
 
 // ── Parts list interactions ───────────────────────────────────────────
 function refreshParts() {
+  // Frozen mid-gizmo-drag: rows rebuild on every refreshParts, which would tear
+  // down the selection row under the cursor. The drag commits once on release,
+  // where a single refreshParts runs.
+  if (state.draggingGizmo) return;
   ui.renderParts(state.parts, state.pending, {
+    selectedId: state.selectedPartId,           // drives the `.selected` row class
+    onSelect: (id) => selectPart(id),
     onRoleChange: (id, role) => {
       const p = state.parts.find((x) => x.id === id);
       if (!p) return;
@@ -289,6 +308,7 @@ function refreshParts() {
 }
 
 async function deletePart(id) {
+  if (id === state.selectedPartId) clearSelection();   // drop selection + gizmo first
   state.parts = state.parts.filter((x) => x.id !== id);
   viewer.removePart(id);
   refreshParts();
@@ -425,6 +445,7 @@ async function onGenerate() {
     voxelSizeMM: params.voxelSizeMM,
     overlapMM: params.overlapMM,
     smoothOffsetMM: params.smoothOffsetMM,
+    cleanup: params.cleanup,
 
     // flow-metrics v1
     latticeType: params.latticeType,
@@ -680,7 +701,7 @@ function updateDims() {
 
 ui.initPanels();
 
-// Grouped pipeline toolbar (IMPORT · TPMS · ORIENT · GENERATE · FLOW · STL · STEP).
+// Grouped pipeline toolbar (ADD PART · TPMS · ORIENT · GENERATE · FLOW · STL · STEP).
 // GENERATE/FLOW/STL/STEP reuse the existing handlers/buttons — no duplicated state.
 ui.els.tbImport?.addEventListener('click', () => ui.els.fileInput.click());
 // Wave-1 tool buttons open/close their contextual panel (js/tools.js).
@@ -719,20 +740,173 @@ ui.els.vpGhosts?.addEventListener('click', () => {
   ui.els.vpGhosts.setAttribute('aria-pressed', hidden ? 'true' : 'false');
   updateDims();
 });
+// SECTION now carries X/Y/Z axis chips + invert (⇄) + Alt+wheel scrub. The flow
+// axis is the initial default when the section turns on; chips override it after.
+const secAxisChips = document.getElementById('sec-axis');
+const secInvertBtn = document.getElementById('sec-invert');
+function syncSectionChips(axis) {
+  if (!secAxisChips) return;
+  for (const b of secAxisChips.querySelectorAll('.sec-chip[data-ax]')) {
+    const on = b.dataset.ax === axis;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
 ui.els.vpSection?.addEventListener('click', () => {
   const on = !ui.els.vpSection.classList.contains('active');
   ui.els.vpSection.classList.toggle('active', on);
   ui.els.vpSection.setAttribute('aria-pressed', on ? 'true' : 'false');
   if (ui.els.vpSectionWrap) ui.els.vpSectionWrap.hidden = !on;
-  viewer.setSection(on, ui.getFlowAxis());
-  if (on) viewer.setSectionPosition(Number(ui.els.vpSectionSlider.value) / 100);
+  if (on) {
+    const axis = ui.getFlowAxis();            // flow axis = initial default
+    viewer.setSectionSign(1);
+    secInvertBtn?.classList.remove('active');
+    syncSectionChips(axis);
+    viewer.setSection(true, axis);
+    viewer.setSectionPosition(Number(ui.els.vpSectionSlider.value) / 100);
+  } else {
+    viewer.setSection(false);
+  }
 });
 ui.els.vpSectionSlider?.addEventListener('input', () =>
   viewer.setSectionPosition(Number(ui.els.vpSectionSlider.value) / 100));
-// Keep an active section plane aligned to the flow axis if the user changes it.
-ui.els.flowAxis?.addEventListener('click', () => {
-  if (ui.els.vpSection?.classList.contains('active')) viewer.setSectionAxis(ui.getFlowAxis());
+// X / Y / Z section-axis chips (decoupled from the flow axis once the user picks).
+secAxisChips?.addEventListener('click', (e) => {
+  const chip = e.target.closest('.sec-chip[data-ax]');
+  if (!chip || !ui.els.vpSection?.classList.contains('active')) return;
+  syncSectionChips(chip.dataset.ax);
+  viewer.setSectionAxis(chip.dataset.ax);
 });
+// Invert (⇄) — flip which half of the model the plane keeps.
+secInvertBtn?.addEventListener('click', () => {
+  if (!ui.els.vpSection?.classList.contains('active')) return;
+  const sign = viewer.toggleSectionSign();
+  secInvertBtn.classList.toggle('active', sign < 0);
+});
+// Alt+wheel scrub (viewer) → keep the slider position in sync.
+viewer.onSectionScrub = (pct) => {
+  if (ui.els.vpSectionSlider) ui.els.vpSectionSlider.value = String(Math.round(pct));
+};
+// Changing the FLOW axis while a section is active re-aligns it (+ chips).
+ui.els.flowAxis?.addEventListener('click', () => {
+  if (ui.els.vpSection?.classList.contains('active')) {
+    const axis = ui.getFlowAxis();
+    syncSectionChips(axis);
+    viewer.setSectionAxis(axis);
+  }
+});
+
+// ══ Wave-2 — selection · transform gizmo · lay-flat ═══════════════════
+const selBar   = document.getElementById('sel-toolbar');
+const selName  = document.getElementById('sel-name');
+const selMove  = document.getElementById('sel-move');
+const selRot   = document.getElementById('sel-rotate');
+const selScale = document.getElementById('sel-scale');
+const selFlat  = document.getElementById('sel-layflat');
+
+function partById(id) { return state.parts.find((p) => p.id === id) || null; }
+
+// The floating selection toolbar mirrors selection + active gizmo mode. Neutral
+// styling (outside the accent machine) — the active mode reads via a --fg tint.
+function syncSelToolbar() {
+  const p = state.selectedPartId ? partById(state.selectedPartId) : null;
+  if (!p) { if (selBar) selBar.hidden = true; return; }
+  if (selName) selName.textContent = p.name;
+  if (selBar) selBar.hidden = false;
+  const map = { translate: selMove, rotate: selRot, scale: selScale };
+  for (const [mode, btn] of Object.entries(map))
+    btn?.classList.toggle('active', state.gizmoMode === mode && !state.layFlatArmed);
+  selFlat?.classList.toggle('active', state.layFlatArmed);
+}
+
+// Select a part (id) or clear (null). Selection is the single source of truth:
+// rows (`.selected`), the viewer emissive tint, and the gizmo all derive from it.
+function selectPart(id) {
+  const p = id ? partById(id) : null;
+  const nextId = p ? p.id : null;
+  if (nextId !== state.selectedPartId) {   // changing/clearing selection resets the gizmo
+    state.gizmoMode = null;
+    state.layFlatArmed = false;
+    viewer.stopGizmo();
+    viewer.cancelLayFlat();
+    document.body.classList.remove('layflat-armed');
+  }
+  state.selectedPartId = nextId;
+  viewer.setSelected(nextId);
+  syncSelToolbar();
+  refreshParts();   // re-derive the `.selected` row class from state
+}
+function clearSelection() { selectPart(null); }
+
+function setGizmoMode(mode) {
+  if (!state.selectedPartId) return;
+  state.layFlatArmed = false;
+  viewer.cancelLayFlat();
+  document.body.classList.remove('layflat-armed');
+  state.gizmoMode = mode;
+  viewer.setGizmoMode(mode);   // attach the gizmo (proxy ← part TRS) / switch mode
+  syncSelToolbar();
+}
+function armLayFlat() {
+  if (!state.selectedPartId) return;
+  state.layFlatArmed = true;
+  state.gizmoMode = null;
+  viewer.armLayFlat();
+  document.body.classList.add('layflat-armed');
+  syncSelToolbar();
+  ui.toast('LAY FLAT — click a face to rest it on Z = 0.', 'info', 4000);
+}
+function cancelLayFlat() {
+  state.layFlatArmed = false;
+  viewer.cancelLayFlat();
+  document.body.classList.remove('layflat-armed');
+  syncSelToolbar();
+}
+
+selMove?.addEventListener('click', () => setGizmoMode('translate'));
+selRot?.addEventListener('click', () => setGizmoMode('rotate'));
+selScale?.addEventListener('click', () => setGizmoMode('scale'));
+selFlat?.addEventListener('click', () => (state.layFlatArmed ? cancelLayFlat() : armLayFlat()));
+
+// ── viewer callbacks — the viewer owns pointer routing (cube → gizmo →
+//    selection); main owns app state + the commit path. ──
+viewer.onPick = (id) => selectPart(id);                     // id or null (empty click clears)
+viewer.onDragChange = (dragging) => { state.draggingGizmo = dragging; };
+viewer.onTransformLive = (id, trs) => {                     // mid-drag: rebuild only, no fit
+  viewer.setPartTransformLive(id, trs);
+  updateDims();
+};
+viewer.onTransformCommit = (id, trs) => {                   // drag END: single commit + fit + panel sync
+  const p = partById(id);
+  if (p) p.trs = trs;
+  viewer.setPartTransform(id, trs);
+  updateDims();
+  tools.onPartsChanged();   // re-prefill an open TRANSFORM tool (TRS panel sync)
+};
+viewer.onLayFlat = (id, trs) => {                           // one-shot face pick result
+  state.layFlatArmed = false;
+  document.body.classList.remove('layflat-armed');
+  if (trs) {
+    const p = partById(id);
+    if (p) p.trs = trs;
+    viewer.setPartTransform(id, trs);
+    updateDims();
+    tools.onPartsChanged();
+    ui.toast('Laid flat on Z = 0.', 'success', 2500);
+  }
+  syncSelToolbar();
+};
+
+// Escape clears selection — but only when no contextual tool owns Escape
+// (tools.js closes an open tool first). Arming LAY FLAT cancels before deselect.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || tools.isOpen()) return;
+  if (state.layFlatArmed) { cancelLayFlat(); return; }
+  if (state.selectedPartId) clearSelection();
+});
+
+// Expose for Stage-4 browser verification (selection/gizmo/section checks).
+window.__anvil = { viewer, state, selectPart, setGizmoMode, armLayFlat };
 
 // ── init ──────────────────────────────────────────────────────────────
 ui.initSteppers();

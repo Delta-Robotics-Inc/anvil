@@ -808,12 +808,65 @@ body.drag-active .viewport::after { opacity:1; }
 .vstrip-btn.active::before,
 .vstrip-btn.active::after { background:var(--primary); }
 
-.vstrip-slider-wrap { display:flex; align-items:center; justify-content:center; padding:5px 0; }
+.vstrip-slider-wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; padding:5px 0; }
 .vstrip-slider-wrap[hidden] { display:none; }
 .vstrip-slider {
   writing-mode:vertical-lr; direction:rtl; width:6px; height:104px;
   accent-color:var(--primary); cursor:pointer; background:transparent;
 }
+
+/* ── Wave-2 · SECTION axis chips + invert (part of the accent-orange section) ── */
+.sec-axis { display:grid; grid-template-columns:1fr 1fr; gap:3px; width:34px; }
+.sec-chip {
+  padding:3px 0; background:var(--muted); color:var(--dim); border:0; cursor:pointer;
+  font-family:inherit; font-size:10px; font-weight:700; letter-spacing:.06em; text-align:center;
+  clip-path:polygon(0 0,calc(100% - 4px) 0,100% 4px,100% 100%,4px 100%,0 calc(100% - 4px));
+  transition:color .14s, background .14s;
+}
+.sec-chip:hover:not(.active) { color:var(--fg); }
+.sec-chip.active { color:var(--primary); background:color-mix(in oklch,var(--primary) 16%,var(--muted)); }
+.sec-chip:focus-visible { outline:none; color:var(--primary); filter:drop-shadow(0 0 4px color-mix(in oklch,var(--primary) 42%,transparent)); }
+.sec-invert { font-size:12px; line-height:1; }
+.sec-invert.active { color:var(--primary); }
+
+/* ── Wave-2 · Floating selection toolbar (NEUTRAL — outside the accent machine) ──
+   Appears with a selection (top-centre of the viewport). MOVE / ROTATE / SCALE
+   switch the gizmo mode; LAY FLAT arms a one-shot face pick. Active mode reads
+   in --fg (never accent orange), so the single solid-orange fill stays with the
+   GENERATE/EXPORT machine. */
+.sel-toolbar {
+  position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:5;
+  display:flex; align-items:center; gap:6px; padding:5px 8px;
+  background:color-mix(in oklch,var(--card) 88%,transparent); border:1px solid var(--line);
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px));
+  backdrop-filter:blur(6px);
+}
+.sel-toolbar[hidden] { display:none; }
+.sel-name {
+  font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--fg);
+  max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 4px;
+}
+.sel-sep { width:1px; align-self:stretch; margin:2px 1px; background:var(--line); }
+.sel-btn {
+  position:relative; isolation:isolate;
+  padding:5px 10px; background:transparent; border:0; cursor:pointer;
+  color:var(--dim); font-family:inherit; font-size:10px; font-weight:700;
+  letter-spacing:.14em; text-transform:uppercase; transition:color .14s;
+}
+.sel-btn::before { content:""; position:absolute; inset:0; z-index:-2; background:var(--line); transition:background .14s;
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px)); }
+.sel-btn::after  { content:""; position:absolute; inset:1px; z-index:-1; background:var(--muted); transition:background .14s;
+  clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px)); }
+.sel-btn:hover { color:var(--fg); }
+.sel-btn:hover::before { background:var(--dim); }
+.sel-btn.active { color:var(--fg); }
+.sel-btn.active::before { background:var(--dim); }
+.sel-btn.active::after  { background:linear-gradient(to top,var(--fg) 0 1px,transparent 1px),color-mix(in oklch,var(--fg) 12%,var(--muted)); }
+.sel-btn:focus-visible { outline:none; color:var(--fg); filter:drop-shadow(0 0 5px color-mix(in oklch,var(--fg) 38%,transparent)); }
+
+/* LAY FLAT armed → crosshair over the canvas (click a face to rest on Z = 0). */
+body.layflat-armed .viewport,
+body.layflat-armed .viewport canvas { cursor:crosshair; }
 
 /* bottom-right live bounding-dimensions readout */
 .vp-dims {
@@ -934,3 +987,13 @@ body.drag-active .viewport::after { opacity:1; }
   aside.panel.collapsed { box-shadow:none; }
   section.viewport { flex:1 1 auto; }
 }
+
+/* ── Result: watertight chip + island-removal note (Stage 3) ───────────
+   The chip reuses the chamfered .chip base (background derives from
+   currentColor); .ok tints it green, .warn amber. */
+.result-chips { display:flex; flex-wrap:wrap; gap:6px; margin:-2px 0 10px; }
+.result-chips[hidden] { display:none; }
+.wt-chip.ok   { color:var(--green); }
+.wt-chip.warn { color:var(--amber); }
+.cleanup-note { margin:0 0 10px; color:color-mix(in oklch,var(--dim) 78%,var(--fg)); }
+.cleanup-note.hidden { display:none; }

@@ -49,9 +49,9 @@
   <!-- ═══ Region 2 — grouped pipeline toolbar ══════════════════════════ -->
   <nav class="toolbar shrink-0 relative z-40" id="toolbar" aria-label="Pipeline">
     <div class="tb-group" data-group="import">
-      <button type="button" class="tb-btn" id="tb-import" data-tip="Import STL / STEP parts (same as the drop zone).">
+      <button type="button" class="tb-btn" id="tb-import" data-tip="Add part — import an STL / STEP file (same as the drop zone).">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/></svg>
-        <span class="tb-label">IMPORT</span>
+        <span class="tb-label">ADD PART</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
@@ -224,6 +224,13 @@
                   <button type="button" class="btn step-btn" data-step="1" aria-label="Increase smoothing">＋</button>
                 </span>
               </label>
+              <div class="param param-wide">
+                <span class="label has-tip" data-tip="Removes disconnected lattice islands before export. Watertight check always runs.">CLEANUP <em>· remove floating islands</em></span>
+                <div class="seg" id="cleanup-seg" role="group" aria-label="Cleanup">
+                  <button type="button" class="seg-btn active" data-val="on" aria-pressed="true">ON</button>
+                  <button type="button" class="seg-btn" data-val="off" aria-pressed="false">OFF</button>
+                </div>
+              </div>
               <div class="param param-wide">
                 <span class="label has-tip" data-tip="Axis used for the open-area profile and choke metrics.">Flow axis</span>
                 <div class="chips" id="flow-axis" role="group" aria-label="Flow axis">
@@ -428,6 +435,18 @@
       </div>
       <div class="vp-chrome vp-tl regmark" id="vp-context">GYROID · SHEET · SINGLE</div>
 
+      <!-- floating selection toolbar (appears with a selection; neutral HUD chrome,
+           outside the accent machine) — MOVE / ROTATE / SCALE gizmo + LAY FLAT -->
+      <div class="sel-toolbar" id="sel-toolbar" role="group" aria-label="Selection tools" hidden>
+        <span class="sel-name" id="sel-name">PART</span>
+        <span class="sel-sep" aria-hidden="true"></span>
+        <button type="button" class="sel-btn" id="sel-move" data-mode="translate" data-tip="Move the selected part (drag the arrows).">MOVE</button>
+        <button type="button" class="sel-btn" id="sel-rotate" data-mode="rotate" data-tip="Rotate the selected part (drag the rings).">ROTATE</button>
+        <button type="button" class="sel-btn" id="sel-scale" data-mode="scale" data-tip="Scale the selected part (drag the handles).">SCALE</button>
+        <span class="sel-sep" aria-hidden="true"></span>
+        <button type="button" class="sel-btn" id="sel-layflat" data-tip="Lay flat — then click a face to rest it on Z = 0.">LAY FLAT</button>
+      </div>
+
       <!-- floating right-edge vertical view strip -->
       <div class="view-strip" id="view-strip" role="group" aria-label="View controls">
         <button type="button" class="vstrip-btn" id="vp-fit" data-tip="Fit camera to visible objects." aria-label="Fit view">
@@ -436,10 +455,16 @@
         <button type="button" class="vstrip-btn" id="vp-ghosts" data-tip="Toggle visibility of all uploaded parts (result stays)." aria-label="Toggle ghosts" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
-        <button type="button" class="vstrip-btn" id="vp-section" data-tip="Clip a section plane along the flow axis." aria-label="Toggle section" aria-pressed="false" disabled>
+        <button type="button" class="vstrip-btn" id="vp-section" data-tip="Clip a section plane (X / Y / Z axis · ⇄ invert · Alt+wheel to scrub)." aria-label="Toggle section" aria-pressed="false" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4Z"/><path d="M4 13h16"/></svg>
         </button>
         <div class="vstrip-slider-wrap" id="vp-section-wrap" hidden>
+          <div class="sec-axis" id="sec-axis" role="group" aria-label="Section axis">
+            <button type="button" class="sec-chip" data-ax="x" aria-pressed="false">X</button>
+            <button type="button" class="sec-chip" data-ax="y" aria-pressed="false">Y</button>
+            <button type="button" class="sec-chip" data-ax="z" aria-pressed="false">Z</button>
+            <button type="button" class="sec-chip sec-invert" id="sec-invert" title="Invert the kept side" aria-label="Invert section side">⇄</button>
+          </div>
           <input type="range" class="vstrip-slider" id="vp-section-slider" min="0" max="100" value="50" aria-label="Section position" orient="vertical" />
         </div>
       </div>
@@ -467,7 +492,7 @@
             <input id="file-input" type="file" accept=".stl,.step,.stp" multiple hidden />
             <div id="dropzone" class="dropzone dropstrip" tabindex="0" role="button" aria-label="Upload parts">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>
-              <span class="dropzone-title label">DROP OR IMPORT PARTS<span class="cursor">_</span></span>
+              <span class="dropzone-title label">DROP OR ADD PARTS<span class="cursor">_</span></span>
             </div>
             <div id="parts-list" class="parts-list flex flex-col gap-[7px]">
               <div class="parts-empty" id="parts-empty">No parts loaded</div>
@@ -485,6 +510,10 @@
               <div class="stat"><div class="stat-val num" id="stat-infill">&mdash;</div><div class="stat-label label">Infill</div></div>
               <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label">Tris</div></div>
             </div>
+            <div class="result-chips" id="result-chips" hidden>
+              <span class="chip wt-chip" id="wt-chip"></span>
+            </div>
+            <div class="regmark cleanup-note hidden" id="cleanup-note"></div>
             <div class="result-actions">
               <div class="export-menu" id="export-menu">
                 <button id="export-btn" class="btn btn-block export-trigger" type="button" aria-haspopup="menu" aria-expanded="false">

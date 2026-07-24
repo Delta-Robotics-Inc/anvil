@@ -26,6 +26,7 @@ export const els = {
   overlap:  document.getElementById('p-overlap'),
   overlapField: document.getElementById('overlap-field'),
   smooth:   document.getElementById('p-smooth'),
+  cleanupSeg: document.getElementById('cleanup-seg'),
   stepTris: document.getElementById('p-steptris'),
 
   // flow-metrics v1 parameter controls
@@ -82,6 +83,9 @@ export const els = {
   statVolume: document.getElementById('stat-volume'),
   statInfill: document.getElementById('stat-infill'),
   statTris:   document.getElementById('stat-tris'),
+  resultChips: document.getElementById('result-chips'),
+  wtChip:     document.getElementById('wt-chip'),
+  cleanupNote: document.getElementById('cleanup-note'),
   exportStl:  document.getElementById('export-stl-btn'),
   exportStep: document.getElementById('export-step-btn'),
   exportBtn:  document.getElementById('export-btn'),
@@ -166,9 +170,15 @@ export function renderParts(parts, pending, handlers) {
 
   for (const p of parts) {
     const row = document.createElement('div');
-    row.className = 'part-row';
+    row.className = 'part-row' + (handlers.selectedId === p.id ? ' selected' : '');
     row.dataset.id = p.id;
     row.style.setProperty('--role-color', roleColorHex(p.role));
+    // Row click selects the part (state-derived `.selected` class + viewer tint).
+    // Clicks on the role select, eye/delete buttons, or the tools cluster are theirs.
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('button, select, .field-role, .part-tools')) return;
+      handlers.onSelect?.(p.id);
+    });
 
     const main = document.createElement('div');
     main.className = 'part-main';
@@ -314,7 +324,7 @@ export function setDropzoneBusy(busy) {
   if (busy) {
     title.innerHTML = 'PROCESSING<span class="cursor">_</span>';
   } else {
-    title.innerHTML = 'DROP OR IMPORT PARTS<span class="cursor">_</span>';
+    title.innerHTML = 'DROP OR ADD PARTS<span class="cursor">_</span>';
   }
 }
 
@@ -333,6 +343,7 @@ export function readParams() {
     voxelSizeMM: numOr(els.voxel.value, 0.3),
     overlapMM: numOr(els.overlap.value, 0.3),
     smoothOffsetMM: numOr(els.smooth.value, 0),
+    cleanup: getCleanup(),
     stepTargetTriangles: Math.max(1, Math.round(numOr(els.stepTris.value, 60000))),
 
     // flow-metrics v1 additions
@@ -372,6 +383,9 @@ export function initLatticeControls() {
   // UNIFORM | PER-AXIS cell mode — reveals the per-axis triplet, prefilled.
   wireSeg(els.cellSeg, (val) => setCellMode(val));
 
+  // CLEANUP ON | OFF — read at generate time by readParams(); no side effects.
+  wireSeg(els.cleanupSeg, () => {});
+
   // Advanced disclosure.
   els.advToggle.addEventListener('click', () => {
     const open = els.advToggle.getAttribute('aria-expanded') === 'true';
@@ -401,6 +415,8 @@ function activeVal(group, sel) {
 export function getLatticeType() { return activeVal(els.latticeSeg, '.seg-btn') || 'sheet'; }
 export function getFlowAxis()    { return activeVal(els.flowAxis, '.fchip') || 'z'; }
 export function getCellMode()    { return activeVal(els.cellSeg, '.seg-btn') || 'uniform'; }
+// Cleanup toggle: default ON (removes floating islands before export).
+export function getCleanup()     { return activeVal(els.cleanupSeg, '.seg-btn') !== 'off'; }
 
 // Wall thickness (sheet) ↔ field bias (skeletal). The same input serves both;
 // switching swaps its min/max/step + label and preserves each mode's last value.
@@ -535,12 +551,44 @@ export function showResult(stats) {
   els.statInfill.textContent = stats?.infillPct != null ? `${fmtNum(stats.infillPct, 1)}%` : '—';
   els.statTris.textContent   = stats?.triangles != null ? fmtInt(stats.triangles) : '—';
 
+  renderWatertight(stats);
+
   // Flow tile renders only when the server returned a bin profile.
   if (stats?.profile?.positionsMM?.length) showFlow(stats);
   else hideFlow();
 }
+
+// Watertight chip (green ✓ / amber N OPEN EDGES) + optional island-removal note.
+function renderWatertight(stats) {
+  if (els.wtChip && stats?.watertight != null) {
+    const ok = !!stats.watertight;
+    els.wtChip.textContent = ok
+      ? 'WATERTIGHT ✓'
+      : `${fmtInt(stats.openEdges ?? 0)} OPEN EDGE${(stats.openEdges === 1) ? '' : 'S'}`;
+    els.wtChip.classList.toggle('ok', ok);
+    els.wtChip.classList.toggle('warn', !ok);
+    els.resultChips.hidden = false;
+  } else if (els.resultChips) {
+    els.resultChips.hidden = true;
+  }
+
+  const c = stats?.cleanup;
+  if (els.cleanupNote) {
+    if (c && c.removedComponents > 0) {
+      const n = c.removedComponents;
+      const vol = fmtNum(c.removedVolumeMM3 ?? 0, 1);
+      els.cleanupNote.textContent = `cleanup: removed ${n} island${n === 1 ? '' : 's'} (${vol} mm³)`;
+      els.cleanupNote.classList.remove('hidden');
+    } else {
+      els.cleanupNote.classList.add('hidden');
+    }
+  }
+}
+
 export function hideResult() {
   els.resultCard.classList.add('hidden');
+  if (els.resultChips) els.resultChips.hidden = true;
+  els.cleanupNote?.classList.add('hidden');
   setResultTools(false);   // no result → FLOW/STL/STEP toolbar buttons disabled
   hideFlow();
   clearStepStatus();

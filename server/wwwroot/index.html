@@ -119,13 +119,9 @@
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="export">
-      <button type="button" class="tb-btn" id="tb-stl" disabled data-tip="Export the result as STL (available after a result).">
-        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
-        <span class="tb-label">STL</span>
-      </button>
-      <button type="button" class="tb-btn" id="tb-step" disabled data-tip="Export the result as faceted STEP (available after a result).">
-        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>
-        <span class="tb-label">STEP</span>
+      <button type="button" class="tb-btn" id="tb-export" disabled data-tip="Export — pick parts and/or the result, choose STL or STEP, and name the file.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+        <span class="tb-label">EXPORT</span>
       </button>
     </div>
   </nav>
@@ -414,7 +410,7 @@
           <div id="progress-wrap" class="progress-wrap hidden">
             <div class="progress-row">
               <span id="progress-stage" class="progress-stage">Starting&hellip;</span>
-              <button id="cancel-btn" class="btn cancel-btn" type="button" style="--c:var(--red)">Cancel</button>
+              <button id="cancel-btn" class="btn cancel-btn" type="button" style="--c:var(--amber)">Cancel</button>
             </div>
             <div class="bar"><i id="progress-fill" class="progress-fill"></i></div>
           </div>
@@ -456,7 +452,7 @@
         <button type="button" class="vstrip-btn" id="vp-ghosts" data-tip="Toggle visibility of all uploaded parts (result stays)." aria-label="Toggle ghosts" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
-        <button type="button" class="vstrip-btn" id="vp-section" data-tip="Clip a section plane (X / Y / Z axis · ⇄ invert · Alt+wheel to scrub)." aria-label="Toggle section" aria-pressed="false" disabled>
+        <button type="button" class="vstrip-btn" id="vp-section" data-tip="Section plane — pick a plane from the triad, a chip, or a flat face, then push/pull the arrow. Click the arrow or ⇄ to flip. Alt+wheel nudges the offset." aria-label="Toggle section" aria-pressed="false" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4Z"/><path d="M4 13h16"/></svg>
         </button>
         <div class="vstrip-slider-wrap" id="vp-section-wrap" hidden>
@@ -466,9 +462,11 @@
             <button type="button" class="sec-chip" data-ax="z" aria-pressed="false">Z</button>
             <button type="button" class="sec-chip sec-invert" id="sec-invert" title="Invert the kept side" aria-label="Invert section side">⇄</button>
           </div>
-          <input type="range" class="vstrip-slider" id="vp-section-slider" min="0" max="100" value="50" aria-label="Section position" orient="vertical" />
         </div>
       </div>
+
+      <!-- bottom-centre SECTION offset readout (live during an arrow drag) -->
+      <div class="vp-section-readout regmark" id="vp-section-readout" hidden></div>
 
       <!-- bottom-right live bounding-dimensions readout -->
       <div class="vp-dims regmark" id="vp-dims" hidden></div>
@@ -512,22 +510,57 @@
               <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label">Tris</div></div>
             </div>
             <div class="result-chips" id="result-chips" hidden>
-              <span class="chip wt-chip" id="wt-chip"></span>
+              <span class="wt-chip" id="wt-chip"></span>
             </div>
             <div class="regmark cleanup-note hidden" id="cleanup-note"></div>
-            <div class="result-actions">
-              <div class="export-menu" id="export-menu">
-                <button id="export-btn" class="btn btn-block export-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
-                  <span class="btn-label">Export</span>
-                  <span class="export-caret" aria-hidden="true">▾</span>
-                  <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
-                </button>
-                <div class="export-opts hidden" id="export-opts" role="menu">
-                  <button type="button" class="export-opt" id="export-stl-btn" role="menuitem">STL<span class="regmark"> · mesh</span></button>
-                  <button type="button" class="export-opt" id="export-step-btn" role="menuitem">STEP<span class="regmark"> · faceted B-rep</span></button>
-                </div>
+          </div>
+
+          <!-- EXPORT — one tile owns every export: which objects, which format,
+               separate vs combined, and the filename. (Wave-3) -->
+          <div class="tile export-tile" id="sec-export-panel">
+            <div class="thead">
+              <span class="lbls"><span class="label">EXPORT</span><span class="jp label">出力</span></span>
+              <span class="tag">STL · STEP</span>
+            </div>
+
+            <div class="ex-block">
+              <span class="label has-tip" data-tip="Tick everything you want in this export — any mix of loaded parts and the generated result. Parts export exactly where you placed them.">Objects</span>
+              <div class="ex-sources" id="ex-sources"></div>
+            </div>
+
+            <div class="ex-block">
+              <span class="label has-tip" data-tip="STL = triangle mesh for slicers. STEP = faceted B-rep for CAD — heavier, and conversion takes time.">Format</span>
+              <div class="seg" id="ex-format" role="group" aria-label="Export format">
+                <button type="button" class="seg-btn active" data-val="stl" aria-pressed="true">STL</button>
+                <button type="button" class="seg-btn" data-val="step" aria-pressed="false">STEP</button>
               </div>
             </div>
+
+            <div class="ex-block" id="ex-output-block" hidden>
+              <span class="label has-tip" data-tip="Separate keeps one file per object (delivered as a zip). Combined welds them into a single file in shared coordinates.">Output</span>
+              <div class="seg" id="ex-output" role="group" aria-label="Output layout">
+                <button type="button" class="seg-btn active" data-val="separate" aria-pressed="true">SEPARATE<em> ·zip</em></button>
+                <button type="button" class="seg-btn" data-val="combined" aria-pressed="false">COMBINED<em> ·one file</em></button>
+              </div>
+            </div>
+
+            <div class="ex-block">
+              <span class="label has-tip" data-tip="Names the download. Left alone it tracks your selection; type once and it stays yours until the panel reopens.">Filename</span>
+              <span class="field ex-name-field">
+                <input id="ex-name" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Export filename" />
+              </span>
+              <div class="regmark ex-out" id="ex-out">&rarr; anvil_export.stl</div>
+            </div>
+
+            <div class="ex-block ex-step-block" id="ex-step-block" hidden>
+              <div class="regmark">STEP TARGET · <span class="num" id="ex-step-tris">60,000</span> TRIS <em>&mdash; set in STEP 出力</em></div>
+              <div class="regmark ex-warn">faceted B-rep &middot; heavy over ~150k tris</div>
+            </div>
+
+            <button id="export-btn" class="btn btn-block ex-go" type="button" disabled>
+              <span class="btn-label">Export</span>
+              <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
+            </button>
             <div id="step-status" class="step-status hidden"></div>
           </div>
 
@@ -556,6 +589,11 @@
               <span class="regmark" id="fl-pos-min">&mdash;</span>
               <span class="regmark" id="fl-area-max">&mdash;</span>
               <span class="regmark" id="fl-pos-max">&mdash;</span>
+            </div>
+            <div class="flow-legend" id="fl-legend">
+              <span class="fl-key has-tip" data-tip="Air (open) cross-section at each position along the flow axis — higher = freer flow."><i class="fl-sw fl-sw-open"></i>Open area</span>
+              <span class="fl-key has-tip" data-tip="Gross part cross-section at the same position — the ceiling open area could reach."><i class="fl-sw fl-sw-env"></i>Envelope</span>
+              <span class="fl-key has-tip" data-tip="Tightest open slice — the flow bottleneck. The label above shows its area and position."><i class="fl-sw fl-sw-choke"></i>Choke</span>
             </div>
 
             <div class="flow-metrics" id="fl-metrics">

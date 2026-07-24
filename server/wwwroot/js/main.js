@@ -17,6 +17,7 @@ const state = {
   poll: null,       // interval handle for generation polling
   stepPoll: null,   // interval handle for STEP-export polling
   resultFresh: false, // Fix 1 — shown result matches current params (drives accent budget)
+  latticePartId: null, // the CURRENT generated lattice part (one at a time)
 
   // Wave-2 viewport selection / gizmo (selection is state-derived; rows re-derive
   // `.selected` from selectedPartId on every renderParts).
@@ -137,6 +138,7 @@ async function handleFiles(files) {
       // Roles may have changed via applyAutoRoles — sync viewer colors.
       syncViewerRoles();
       updateDims();
+      updateOrbitPivot();   // new geometry shifts the centre of mass
     } catch (err) {
       ui.toast(`"${part.name}" loaded, but its 3D preview failed: ${err.message}`, 'warn');
     }
@@ -151,7 +153,7 @@ function removePending(tempId) {
 // the default "Part", switch them to positive/negative (bumpmesh-simple default).
 // Only BASE-role uploads count — derived and zone parts never trigger the flip.
 function applyAutoRoles() {
-  const base = state.parts.filter((p) => isBaseRole(p.role));
+  const base = state.parts.filter((p) => isBaseRole(p.role) && !p.isResult);
   if (base.length === 2 && base.every((p) => p.role === 'part')) {
     base[0].role = 'positive';
     base[1].role = 'negative';
@@ -245,6 +247,7 @@ async function addOpPart(part) {
     await viewer.addPart(part.id, part.stlUrl, rec.role);
     syncViewerRoles();
     updateDims();
+    updateOrbitPivot();   // new geometry shifts the centre of mass
   } catch (err) {
     ui.toast(`"${part.name}" created, but its 3D preview failed: ${err.message}`, 'warn');
   }
@@ -289,6 +292,7 @@ const toolCtx = {
     p.trs = trs;
     viewer.setPartTransform(id, trs);
     updateDims();
+    markSourceMoved(p);
   },
   clearPartTransform: (id) => {
     const p = state.parts.find((x) => x.id === id);
@@ -326,19 +330,27 @@ function refreshParts() {
     },
     onDelete: (id) => deletePart(id),
   });
+  viewer.setVolumeHint(volumeMap());   // COM weights for fitView's no-selection pivot
   ui.setDropzoneBusy(state.pending.length > 0);
   ui.setViewportHint(state.parts.length === 0 && !state.job);
   updateMode();
   updateDims();   // union-bbox readout + SECTION availability track the visible set
   updateAccents();          // Fix 1 — refresh the single-fill slot for the new part/role set
   updateViewportContext();  // Fix 6 — mode may have changed with roles
+  refreshExport();          // Wave-3 — the EXPORT tile lists the live part set
 }
 
 async function deletePart(id) {
   if (id === state.selectedPartId) clearSelection();   // drop selection + gizmo first
+  const rec = partById(id);
+  // Deleting the lattice un-ghosts its sources; deleting a ghosted source only
+  // detaches that one (the viewer drops the link either way in removePart).
+  if (rec?.isResult) releaseLattice(rec);
+  else if (rec?.ghosted) rec.ghosted = false;
   state.parts = state.parts.filter((x) => x.id !== id);
   viewer.removePart(id);
   refreshParts();
+  updateOrbitPivot();       // one fewer mass in the COM
   tools.onPartsChanged();   // an open picker tool refreshes its part list
   try { await api.deletePart(id); } catch { /* best effort */ }
 }
@@ -348,9 +360,12 @@ async function deletePart(id) {
 // roles (lattice/keep/void) layer on top and require a valid base part. Generate
 // is gated on FULL validity (base valid AND, if zones exist, a base to hang them
 // on). computeMode returns { mode, valid, partId|positiveId+negativeId, zones? }.
+// A generated lattice is NEVER a generate input: regeneration always derives
+// from the ORIGINAL sources (which stay in the list, ghosted), so GENERATE
+// re-runs the same recipe and replaces the lattice part.
 function computeMode() {
-  const base = state.parts.filter((p) => isBaseRole(p.role));
-  const zones = state.parts.filter((p) => isZoneRole(p.role));
+  const base = state.parts.filter((p) => !p.isResult && isBaseRole(p.role));
+  const zones = state.parts.filter((p) => !p.isResult && isZoneRole(p.role));
   const part = base.filter((p) => p.role === 'part');
   const pos  = base.filter((p) => p.role === 'positive');
   const neg  = base.filter((p) => p.role === 'negative');
@@ -562,17 +577,81 @@ function pollJob(jobId, stepTarget) {
 }
 
 async function onJobDone(jobId, st, stepTarget) {
-  state.job = { id: jobId, stepTarget };
-  state.resultFresh = true;   // Fix 1 — result matches current params: EXPORT STL takes the fill
+  state.job = { id: jobId, stepTarget };   // STEP legacy + flow stats still key off the job
+  state.resultStats = st.stats || null;   // Wave-3 — the EXPORT tile's RESULT row reads its tri count
+  state.resultFresh = true;   // Fix 1 — result matches current params: EXPORT takes the fill
   ui.showResult(st.stats);
   ui.setViewportHint(false);
   updateAccents();
-  try {
-    await viewer.showResult(api.previewUrl(jobId));
-    updateDims();
-  } catch (err) {
-    ui.toast(`Result generated but preview failed to load: ${err.message}`, 'warn');
+  refreshExport();            // a new result adds/refreshes the RESULT source row
+  if (!st.part) {
+    ui.toast('Result generated but the server did not register it as a part.', 'warn', 9000);
+    return;
   }
+  await adoptLatticePart(st.part);
+}
+
+// ── The lattice IS the part ───────────────────────────────────────────
+// A finished generate registers its result as a derived part server-side; we
+// ingest it like any op output but flagged `isResult`, draw it SOLID, and link
+// the sources it was built from as ghosts that ride its transform. One lattice
+// at a time: regenerating replaces the previous one.
+async function adoptLatticePart(part) {
+  if (state.latticePartId) await dropLatticePart(state.latticePartId);
+
+  const rec = {
+    id: part.id, name: part.name, triangles: part.triangles,
+    sourceFormat: part.sourceFormat || 'derived', role: 'part', visible: true,
+    volumeMM3: part.volumeMM3, bbox: part.bbox, derived: part.derived || null, trs: null,
+    isResult: true, sourceIds: (part.derived?.sourceIds || []).slice(),
+  };
+  state.parts.push(rec);
+  state.latticePartId = rec.id;
+
+  // Sources stay visible at ghost opacity, with their role select locked while
+  // they belong to this lattice (eye + delete stay live).
+  const ghostIds = [];
+  for (const sid of rec.sourceIds) {
+    const src = partById(sid);
+    if (!src || src.isResult) continue;
+    src.ghosted = true;
+    ghostIds.push(sid);
+  }
+
+  refreshParts();
+  ui.flashPartRow(rec.id);
+  try {
+    await viewer.addPart(part.id, part.stlUrl, rec.role, { solid: true });
+    viewer.linkGhosts(rec.id, ghostIds);
+    viewer.dimUploaded();     // the sources read as ghosts behind the solid lattice
+    updateDims();
+    updateOrbitPivot();       // the lattice joins the COM
+  } catch (err) {
+    ui.toast(`Lattice generated but its 3D preview failed: ${err.message}`, 'warn');
+  }
+  refreshExport();            // the lattice row replaces the jobId RESULT row
+}
+
+// App-state half of dropping a lattice: sources un-ghost, the ghost dim lifts.
+function releaseLattice(rec) {
+  for (const sid of rec.sourceIds || []) {
+    const src = partById(sid);
+    if (src) src.ghosted = false;
+  }
+  if (state.latticePartId === rec.id) state.latticePartId = null;
+  viewer.undimUploaded();
+}
+
+// Remove the previous lattice entirely (state + viewer + server) so a regenerate
+// leaves exactly one lattice row behind.
+async function dropLatticePart(id) {
+  const rec = partById(id);
+  if (!rec) { state.latticePartId = null; return; }
+  if (id === state.selectedPartId) clearSelection();
+  releaseLattice(rec);
+  state.parts = state.parts.filter((x) => x.id !== id);
+  viewer.removePart(id);
+  try { await api.deletePart(id); } catch { /* best effort */ }
 }
 
 async function onCancel() {
@@ -595,78 +674,227 @@ function prettyStage(stage, jobState) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-// ── Export STL ────────────────────────────────────────────────────────
-ui.els.exportStl.addEventListener('click', () => {
-  if (!state.job) return;
-  triggerDownload(api.previewUrl(state.job.id, true), `${state.job.id}_anvil.stl`);
-});
+// ══ Wave-3 · unified EXPORT ═══════════════════════════════════════════
+// ONE export path for everything. Sources = any mix of loaded parts and the
+// current generate result; format = STL | STEP; 2+ sources choose SEPARATE (zip)
+// or COMBINED (one file); the filename tracks the selection until the user types
+// one. Per-part TRS travels with the request so the file lands exactly where the
+// viewport shows the part — the server bakes it into the exported copy.
+const exportUi = {
+  dirty: new Map(),    // id -> the user's explicit tick (survives re-renders)
+  nameDirty: false,    // user typed a filename → stop auto-tracking until reopen
+  poll: null,          // export status poll handle
+  stepWarned: false,   // one-shot "first STEP warms up Python" notice
+};
 
-// ── Export STEP (async: kick off, poll job.step, then link the file) ──
-ui.els.exportStep.addEventListener('click', onExportStep);
-
-// Export split-menu: one Export button reveals the STL / STEP options.
-const exportBtnEl = document.getElementById('export-btn');
-const exportOptsEl = document.getElementById('export-opts');
-function closeExportMenu() { exportOptsEl.classList.add('hidden'); exportBtnEl.setAttribute('aria-expanded', 'false'); }
-exportBtnEl.addEventListener('click', (e) => {
-  e.stopPropagation();
-  const open = exportOptsEl.classList.contains('hidden');
-  exportOptsEl.classList.toggle('hidden', !open);
-  exportBtnEl.setAttribute('aria-expanded', String(open));
-});
-exportOptsEl.addEventListener('click', closeExportMenu);   // picking an option runs its handler, then closes
-document.addEventListener('click', (e) => { if (!e.target.closest('#export-menu')) closeExportMenu(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeExportMenu(); });
-
-async function onExportStep() {
-  if (!state.job) return;
-  const target = ui.readParams().stepTargetTriangles;
-
-  ui.setStepBusy(true);
-  ui.setStepStatus('', 'Converting to faceted STEP… this can take a while for dense meshes.');
-
-  try {
-    await api.startStepExport(state.job.id, target);
-  } catch (err) {
-    ui.setStepBusy(false);
-    ui.setStepStatus('err', `STEP export could not start: ${escapeHtml(err.message)}`);
-    return;
-  }
-  pollStep(state.job.id);
+// Filename stem from a display name: "PRIM · BOX 60×40×20" → "prim_box_60x40x20".
+function nameStem(name) {
+  const s = String(name || '')
+    .replace(/\.(stl|step|stp)$/i, '')
+    .toLowerCase()
+    .replace(/[×✕]/g, 'x')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return s || 'part';
+}
+// Light mirror of the server's sanitizer, for the live "→ file.ext" hint.
+function safeName(v) {
+  const s = String(v || '')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[._]+|[._]+$/g, '');
+  return s || 'anvil_export';
+}
+// Stem of the part this generate is built on (for the RESULT row's default name).
+function baseStem() {
+  const m = computeMode();
+  const id = m.partId || m.positiveId || state.parts[0]?.id;
+  const p = id ? partById(id) : null;
+  return p ? nameStem(p.name) : 'anvil';
 }
 
-function pollStep(jobId) {
-  if (state.stepPoll) clearInterval(state.stepPoll);
-  state.stepPoll = setInterval(async () => {
+// The lattice part's filename stem: `{source-stem-slug}_{pattern}` — the same
+// name the old jobId RESULT row produced, so exports keep their identity.
+function latticeStem(rec) {
+  const src = (rec.sourceIds || []).map(partById).find(Boolean);
+  const patt = String(rec.derived?.opParams?.pattern || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const stem = src ? nameStem(src.name) : nameStem(rec.name);
+  return patt ? `${stem}_${patt}` : nameStem(rec.name);
+}
+
+// Everything exportable, in panel order: loaded parts, then the result row. The
+// jobId RESULT row only appears when the lattice is NOT a registered part
+// (otherwise the same mesh would be listed twice).
+function exportItems() {
+  const items = state.parts.map((p) => ({
+    id: p.id, kind: 'part', role: p.role, name: p.name,
+    meta: `${(p.triangles ?? 0).toLocaleString('en-US')} tris`,
+    stem: p.isResult ? latticeStem(p) : nameStem(p.name),
+  }));
+  if (state.job && !state.latticePartId) {
+    const patt = PATTERN_LABEL[ui.els.pattern.value] || 'LATTICE';
+    const tris = state.resultStats?.triangles;
+    items.push({
+      id: `job:${state.job.id}`, kind: 'job', jobId: state.job.id, role: null,
+      name: `RESULT · ${patt}`,
+      meta: tris != null ? `${tris.toLocaleString('en-US')} tris` : 'lattice result',
+      stem: `${baseStem()}_${patt.toLowerCase().replace(/[^a-z0-9]+/g, '')}`,
+    });
+  }
+  return items;
+}
+
+// Preselect: a fresh result exports itself; otherwise the selected part; other-
+// wise every visible part. The user's own ticks (dirty map) always win.
+function defaultChecked(items) {
+  const result = items.filter((i) => i.kind === 'job' || i.id === state.latticePartId);
+  if (state.resultFresh && result.length) return new Set(result.map((i) => i.id));
+  if (state.selectedPartId && items.some((i) => i.id === state.selectedPartId))
+    return new Set([state.selectedPartId]);
+  const visible = items.filter((i) => i.kind === 'part' && partById(i.id)?.visible);
+  return new Set((visible.length ? visible : items).map((i) => i.id));
+}
+function checkedIds(items) {
+  const set = defaultChecked(items);
+  for (const it of items) {
+    const d = exportUi.dirty.get(it.id);
+    if (d === true) set.add(it.id);
+    else if (d === false) set.delete(it.id);
+  }
+  return set;
+}
+
+function defaultName(items, checked) {
+  const sel = items.filter((i) => checked.has(i.id));
+  if (sel.length === 0) return 'anvil_export';
+  if (sel.length === 1) return sel[0].stem;
+  const d = new Date();
+  const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return `anvil_${sel.length}parts_${iso}`;
+}
+function outputHint(items, checked, format) {
+  const n = checked.size;
+  if (n === 0) return '→ nothing selected';
+  const stem = safeName(ui.getExportName() || defaultName(items, checked));
+  if (n === 1) return `→ ${stem}.${format}`;
+  return ui.getExportOutput() === 'combined'
+    ? `→ ${stem}.${format} · merged`
+    : `→ ${stem}.zip · ${n} files`;
+}
+
+// Repaint the whole tile from state. Cheap + idempotent; called on every parts
+// change, selection change, result, and control interaction.
+function refreshExport() {
+  const items = exportItems();
+  const checked = checkedIds(items);
+  ui.renderExportSources(items, checked, (id, on) => {
+    exportUi.dirty.set(id, on);
+    refreshExport();
+  });
+  const format = ui.getExportFormat();
+  ui.setExportOutputVisible(checked.size > 1);
+  ui.setExportStepVisible(format === 'step');
+  ui.setExportStepTris(ui.readParams().stepTargetTriangles);
+  if (!exportUi.nameDirty) ui.setExportName(defaultName(items, checked));
+  ui.setExportHint(outputHint(items, checked, format));
+  if (!exportUi.poll) ui.setExportEnabled(items.length > 0, items.length > 0 && checked.size > 0);
+}
+
+async function runExport() {
+  const items = exportItems();
+  const checked = checkedIds(items);
+  const sel = items.filter((i) => checked.has(i.id));
+  if (!sel.length) { ui.toast('Tick at least one object to export.', 'warn'); return; }
+
+  const format = ui.getExportFormat();
+  const combined = sel.length > 1 && ui.getExportOutput() === 'combined';
+  const name = safeName(ui.getExportName() || defaultName(items, checked));
+
+  // Only non-identity part transforms travel. A lattice part is born in world
+  // coordinates (the worker baked its inputs) but can be moved afterwards like
+  // any part, so it goes through the same TRS path; a jobId source never does.
+  const transforms = {};
+  for (const it of sel) {
+    if (it.kind !== 'part') continue;
+    const t = nonIdentityTrs(partById(it.id)?.trs);
+    if (t) transforms[it.id] = t;
+  }
+
+  const body = {
+    sources: sel.map((i) => (i.kind === 'job' ? { jobId: i.jobId } : { partId: i.id })),
+    format, combined, name,
+  };
+  if (Object.keys(transforms).length) body.transforms = transforms;
+  if (format === 'step') body.targetTriangles = ui.readParams().stepTargetTriangles;
+
+  if (format === 'step' && !exportUi.stepWarned) {
+    exportUi.stepWarned = true;
+    ui.toast('First STEP conversion warms up Python — allow about a minute.', 'info', 9000);
+  }
+
+  ui.setExportBusy(true);
+  ui.setExportStatus('', `Preparing ${format.toUpperCase()} export…`);
+
+  let exportId;
+  try {
+    exportId = (await api.startExport(body)).exportId;
+  } catch (err) {
+    ui.setExportBusy(false);
+    ui.setExportStatus('err', `Export could not start: ${escapeHtml(err.message)}`);
+    ui.toast(`Export failed: ${err.message}`, 'error', 11000);
+    refreshExport();
+    return;
+  }
+  pollExport(exportId);
+}
+
+function stopExportPoll() {
+  if (exportUi.poll) { clearInterval(exportUi.poll); exportUi.poll = null; }
+}
+
+function pollExport(id) {
+  stopExportPoll();
+  exportUi.poll = setInterval(async () => {
     let st;
     try {
-      st = await api.getJob(jobId);
+      st = await api.getExport(id);
     } catch (err) {
-      clearInterval(state.stepPoll); state.stepPoll = null;
-      ui.setStepBusy(false);
-      ui.setStepStatus('err', `Lost contact during STEP export: ${escapeHtml(err.message)}`);
+      stopExportPoll();
+      ui.setExportBusy(false);
+      ui.setExportStatus('err', `Lost contact during export: ${escapeHtml(err.message)}`);
+      refreshExport();
       return;
     }
 
-    const step = st.step || {};
-    if (step.state === 'done') {
-      clearInterval(state.stepPoll); state.stepPoll = null;
-      ui.setStepBusy(false);
-      const tri = step.triangles != null ? `${step.triangles.toLocaleString('en-US')} triangles` : '';
-      const warn = step.warning ? `<br><span class="chip" style="color:var(--amber)">${escapeHtml(step.warning)}</span>` : '';
-      const url = api.resultStepUrl(jobId, true);
-      ui.setStepStatus('ok',
-        `STEP ready${tri ? ` (${tri})` : ''}. <a href="${url}" download>Download result.step</a>${warn}`);
-      // Auto-start the download via a plain anchor (large file — no fetch into memory).
-      triggerDownload(url, `${jobId}_anvil.step`);
-    } else if (step.state === 'failed' || step.state === 'error') {
-      clearInterval(state.stepPoll); state.stepPoll = null;
-      ui.setStepBusy(false);
-      ui.setStepStatus('err', `STEP export failed: ${escapeHtml(step.error || 'unknown error')}`);
+    if (st.state === 'done') {
+      stopExportPoll();
+      ui.setExportBusy(false);
+      const url = api.exportFileUrl(id);
+      const tri = st.triangles ? ` · ${st.triangles.toLocaleString('en-US')} tris` : '';
+      const warn = st.warning ? `<br><span class="ex-warn">${escapeHtml(st.warning)}</span>` : '';
+      ui.setExportStatus('ok',
+        `<a href="${url}" download>${escapeHtml(st.fileName || 'download')}</a> ready${tri}${warn}`);
+      // Plain anchor click — large files never get fetched into memory, and the
+      // server's Content-Disposition supplies the human filename.
+      triggerDownload(url);
+      refreshExport();
+    } else if (st.state === 'failed') {
+      stopExportPoll();
+      ui.setExportBusy(false);
+      ui.setExportStatus('err', `Export failed: ${escapeHtml(st.error || 'unknown error')}`);
+      ui.toast(`Export failed: ${st.error || 'unknown error'}`, 'error', 12000);
+      refreshExport();
+    } else {
+      ui.setExportStatus('', escapeHtml(st.note || 'working…'));
     }
-    // else: none | running → keep the spinner going.
   }, 500);
 }
+
+ui.els.exportBtn?.addEventListener('click', runExport);
+ui.els.exName?.addEventListener('input', () => { exportUi.nameDirty = true; refreshExport(); });
+ui.els.stepTris?.addEventListener('input', () => refreshExport());
+ui.initExportControls(() => refreshExport());
 
 // ── helpers ───────────────────────────────────────────────────────────
 function triggerDownload(url, filename) {
@@ -726,6 +954,24 @@ function updateDims() {
   }
 }
 
+// ── Orbit pivot ───────────────────────────────────────────────────────
+// What the view rotates about: the SELECTED part's bbox centre, or — with
+// nothing selected — the volume-weighted centre of mass of every visible mesh.
+// Only controls.target moves (the camera never jumps), so this is safe to call
+// on every commit. Not called mid-gizmo-drag: onTransformLive stays untouched.
+function volumeMap() {
+  const m = {};
+  for (const p of state.parts) if (p.volumeMM3 != null) m[p.id] = p.volumeMM3;
+  return m;
+}
+function updateOrbitPivot() {
+  const vol = volumeMap();
+  viewer.setVolumeHint(vol);
+  const sel = state.selectedPartId ? partById(state.selectedPartId) : null;
+  if (sel && sel.visible) viewer.setOrbitPivot(viewer.getPartCenter(sel.id));
+  else viewer.setOrbitPivot(viewer.computeCenterOfMass(vol));
+}
+
 ui.initPanels();
 
 // Grouped pipeline toolbar (ADD PART · TPMS · ORIENT · GENERATE · FLOW · STL · STEP).
@@ -744,8 +990,13 @@ ui.els.tbTpms?.addEventListener('click', () => ui.focusSection('tpms'));
 ui.els.tbOrient?.addEventListener('click', () => ui.focusSection('orient'));
 ui.els.tbGenerate?.addEventListener('click', () => { if (ui.isGenerating()) onCancel(); else onGenerate(); });
 ui.els.tbFlow?.addEventListener('click', () => ui.focusSection('flow'));
-ui.els.tbStl?.addEventListener('click', () => ui.els.exportStl.click());
-ui.els.tbStep?.addEventListener('click', () => ui.els.exportStep.click());
+// EXPORT is parts-gated (not result-gated): it opens the right panel and flashes
+// the EXPORT tile, and reopening resets the filename back to auto-tracking.
+ui.els.tbExport?.addEventListener('click', () => {
+  exportUi.nameDirty = false;
+  refreshExport();
+  ui.focusSection('export');
+});
 
 // The nested OBJECTS op line ("└ TPMS · GYROID · PART") reflects the pattern.
 ui.els.pattern?.addEventListener('change', refreshParts);
@@ -767,14 +1018,18 @@ ui.els.vpGhosts?.addEventListener('click', () => {
   ui.els.vpGhosts.setAttribute('aria-pressed', hidden ? 'true' : 'false');
   updateDims();
 });
-// SECTION now carries X/Y/Z axis chips + invert (⇄) + Alt+wheel scrub. The flow
-// axis is the initial default when the section turns on; chips override it after.
+// SECTION (Wave-3) — the slider is gone. Turning the tool on shows an in-canvas
+// pick triad; a plane comes from a triad quad, an X/Y/Z chip, or a flat face on
+// the selected part. Push/pull the orange arrow to offset it; click the arrow
+// (or ⇄) to flip the kept side. The viewer owns all of that — main only wires
+// the strip and mirrors viewer state into the chips + the offset readout.
 const secAxisChips = document.getElementById('sec-axis');
 const secInvertBtn = document.getElementById('sec-invert');
+const secReadout   = document.getElementById('vp-section-readout');
 function syncSectionChips(axis) {
   if (!secAxisChips) return;
   for (const b of secAxisChips.querySelectorAll('.sec-chip[data-ax]')) {
-    const on = b.dataset.ax === axis;
+    const on = !!axis && b.dataset.ax === axis;
     b.classList.toggle('active', on);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
   }
@@ -784,43 +1039,42 @@ ui.els.vpSection?.addEventListener('click', () => {
   ui.els.vpSection.classList.toggle('active', on);
   ui.els.vpSection.setAttribute('aria-pressed', on ? 'true' : 'false');
   if (ui.els.vpSectionWrap) ui.els.vpSectionWrap.hidden = !on;
-  if (on) {
-    const axis = ui.getFlowAxis();            // flow axis = initial default
-    viewer.setSectionSign(1);
-    secInvertBtn?.classList.remove('active');
-    syncSectionChips(axis);
-    viewer.setSection(true, axis);
-    viewer.setSectionPosition(Number(ui.els.vpSectionSlider.value) / 100);
-  } else {
-    viewer.setSection(false);
-  }
+  viewer.setSection(on);   // ON → triad pick mode (no plane preselected)
 });
-ui.els.vpSectionSlider?.addEventListener('input', () =>
-  viewer.setSectionPosition(Number(ui.els.vpSectionSlider.value) / 100));
-// X / Y / Z section-axis chips (decoupled from the flow axis once the user picks).
+// X / Y / Z chips = the same pick the triad quads perform, through the anchor.
 secAxisChips?.addEventListener('click', (e) => {
   const chip = e.target.closest('.sec-chip[data-ax]');
   if (!chip || !ui.els.vpSection?.classList.contains('active')) return;
-  syncSectionChips(chip.dataset.ax);
-  viewer.setSectionAxis(chip.dataset.ax);
+  viewer.pickAxisPlane(chip.dataset.ax);
 });
 // Invert (⇄) — flip which half of the model the plane keeps.
 secInvertBtn?.addEventListener('click', () => {
   if (!ui.els.vpSection?.classList.contains('active')) return;
-  const sign = viewer.toggleSectionSign();
-  secInvertBtn.classList.toggle('active', sign < 0);
+  viewer.toggleSectionSign();
 });
-// Alt+wheel scrub (viewer) → keep the slider position in sync.
-viewer.onSectionScrub = (pct) => {
-  if (ui.els.vpSectionSlider) ui.els.vpSectionSlider.value = String(Math.round(pct));
-};
-// Changing the FLOW axis while a section is active re-aligns it (+ chips).
-ui.els.flowAxis?.addEventListener('click', () => {
-  if (ui.els.vpSection?.classList.contains('active')) {
-    const axis = ui.getFlowAxis();
-    syncSectionChips(axis);
-    viewer.setSectionAxis(axis);
+// Single sync point: chips, invert state and the offset readout all derive from
+// whatever the viewer reports (chip / triad / face pick / arrow drag / Alt+wheel).
+viewer.onSectionChange = (s) => {
+  syncSectionChips(s.hasPlane ? s.axis : null);
+  secInvertBtn?.classList.toggle('active', s.sign < 0);
+  if (!secReadout) return;
+  if (!s.enabled) { secReadout.hidden = true; return; }
+  secReadout.hidden = false;
+  secReadout.classList.toggle('is-pick', !s.hasPlane);
+  if (!s.hasPlane) {
+    secReadout.innerHTML = '<span class="sr-k">SECTION · </span><span class="sr-v">PICK A PLANE</span>';
+    return;
   }
+  const label = s.axis ? s.axis.toUpperCase() : 'FACE';
+  const mm = s.offsetMM;
+  const txt = `${mm < 0 ? '−' : '+'}${Math.abs(mm).toFixed(1)} mm`;
+  secReadout.innerHTML = `<span class="sr-k">SECTION · ${label} · OFFSET </span><span class="sr-v">${txt}</span>`;
+};
+// Changing the FLOW axis re-aligns an axis-picked section (a face-picked plane
+// is the user's own choice — leave it alone).
+ui.els.flowAxis?.addEventListener('click', () => {
+  if (!ui.els.vpSection?.classList.contains('active')) return;
+  if (viewer.getSectionState().axis) viewer.pickAxisPlane(ui.getFlowAxis());
 });
 
 // ══ Wave-2 — selection · transform gizmo · lay-flat ═══════════════════
@@ -860,6 +1114,7 @@ function selectPart(id) {
   }
   state.selectedPartId = nextId;
   viewer.setSelected(nextId);
+  updateOrbitPivot();   // pivot follows the selection (camera stays put)
   syncSelToolbar();
   refreshParts();   // re-derive the `.selected` row class from state
 }
@@ -881,7 +1136,7 @@ function armLayFlat() {
   viewer.armLayFlat();
   document.body.classList.add('layflat-armed');
   syncSelToolbar();
-  ui.toast('LAY FLAT — click a face to rest it on Z = 0.', 'info', 4000);
+  ui.toast('LAY FLAT — click a highlighted face plane (or any face) to rest it on Z = 0.', 'info', 4500);
 }
 function cancelLayFlat() {
   state.layFlatArmed = false;
@@ -908,8 +1163,18 @@ viewer.onTransformCommit = (id, trs) => {                   // drag END: single 
   if (p) p.trs = trs;
   viewer.setPartTransform(id, trs);
   updateDims();
+  updateOrbitPivot();       // commit only — never inside onTransformLive
   tools.onPartsChanged();   // re-prefill an open TRANSFORM tool (TRS panel sync)
+  markSourceMoved(p);
 };
+
+// Moving a SOURCE out from under its lattice makes the lattice stale (the lattice
+// itself does not move — only the ghost does), so GENERATE re-takes the fill.
+function markSourceMoved(p) {
+  if (!p || p.isResult || !p.ghosted || !state.resultFresh) return;
+  state.resultFresh = false;
+  updateAccents();
+}
 viewer.onLayFlat = (id, trs) => {                           // one-shot face pick result
   state.layFlatArmed = false;
   document.body.classList.remove('layflat-armed');
@@ -918,7 +1183,9 @@ viewer.onLayFlat = (id, trs) => {                           // one-shot face pic
     if (p) p.trs = trs;
     viewer.setPartTransform(id, trs);
     updateDims();
+    updateOrbitPivot();
     tools.onPartsChanged();
+    markSourceMoved(p);
     ui.toast('Laid flat on Z = 0.', 'success', 2500);
   }
   syncSelToolbar();

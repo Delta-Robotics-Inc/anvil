@@ -105,6 +105,27 @@ export async function startStepExport(id, targetTriangles) {
   return res.json().catch(() => ({}));
 }
 
+// ── Wave-3 unified export (POST /api/export) ───────────────────────────
+// One call covers every combination: 1..N sources (parts and/or the generate
+// result) × stl|step × separate-zip|combined. Always async — 202 {exportId},
+// then poll getExport(id) until state === 'done' and pull exportFileUrl(id).
+// Body: { sources:[{partId}|{jobId}], format, combined, name, transforms, targetTriangles }
+export async function startExport(body) {
+  const res = await fetch(`${BASE}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+/** Poll an export. { id, state, note, error, fileName, format, combined, sources, triangles, warning } */
+export async function getExport(id) {
+  const res = await fetch(`${BASE}/export/${encodeURIComponent(id)}`);
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
 // ── Stage-5 scripting (POST /api/scripts/run, GET /api/scripts) ────────
 /** List library + user scripts. Returns [{id,name,source,savedUtc}]. */
 export async function listScripts() {
@@ -135,3 +156,6 @@ export const previewUrl  = (id, download = false) =>
   `${BASE}/jobs/${encodeURIComponent(id)}/preview.stl${download ? '?download=1' : ''}`;
 export const resultStepUrl = (id, download = false) =>
   `${BASE}/jobs/${encodeURIComponent(id)}/result.step${download ? '?download=1' : ''}`;
+// The server sets the download filename (Content-Disposition) from the name the
+// user typed — the anchor needs no `download` attribute value of its own.
+export const exportFileUrl = (id) => `${BASE}/export/${encodeURIComponent(id)}/file`;

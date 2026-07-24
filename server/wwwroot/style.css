@@ -29,7 +29,10 @@
   --role-part:var(--primary); --role-pos:var(--green); --role-neg:var(--primary);
 
   /* aliases kept so inline var(--…) references in the JS keep resolving */
-  --accent:var(--primary); --warn:var(--amber); --danger:var(--red); --success:var(--green);
+  /* --danger points at --amber on purpose: the HUD has no red feedback state.
+     --red stays defined only so the zone-VOID role colour (roles.js) has a
+     palette entry; nothing in the UI feedback layer consumes it. */
+  --accent:var(--primary); --warn:var(--amber); --danger:var(--amber); --success:var(--green);
   --border-strong:var(--line);
 
   --sidebar-w:376px;
@@ -143,43 +146,23 @@ body::after {
 .seg-btn:focus-visible { color:var(--fg); }
 .fchip:focus-visible  { color:var(--fg); }
 .icon-btn:focus-visible { color:var(--fg); background:var(--card); }
-.icon-btn.danger:focus-visible { color:var(--red); background:color-mix(in oklch,var(--red) 18%,transparent); }
+.icon-btn.danger:focus-visible { color:var(--amber); background:color-mix(in oklch,var(--amber) 18%,transparent); }
 .vstrip-btn:focus-visible:not(:disabled) { color:var(--primary); }
 .disc-head:focus-visible { color:var(--fg); }
 .panel-chevron:focus-visible { color:var(--primary); }
 
 /* generate: bigger, and pulse while a job runs (stays lit even though disabled).
-   Fix 1 — the running fill is RED (cancel/in-progress semantics, matching the
-   red CANCEL button + toolbar), and it remains the sole solid fill on screen. */
+   The running fill is AMBER (running / needs-attention semantics, matching the
+   amber CANCEL button + toolbar). It remains the sole solid fill on screen. */
 .gen-btn { height:44px; font-size:.8rem; margin-top:2px; }
-.btn.generating { --c:var(--red); color:var(--bg); opacity:1 !important; animation:cycpulse-red 1.4s ease-in-out infinite; }
+.btn.generating { --c:var(--amber); color:var(--bg); opacity:1 !important; animation:cycpulse-run 1.4s ease-in-out infinite; }
 .cancel-btn { letter-spacing:.16em; padding:7px 12px; }
-
-/* ── Export split-menu ─────────────────────────────────────────────────── */
-.export-menu { position:relative; }
-.export-trigger { display:flex; align-items:center; justify-content:center; gap:8px; }
-.export-caret { font-size:10px; opacity:.75; }
-.export-opts {
-  position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:40;
-  display:flex; flex-direction:column; gap:2px; padding:3px;
-  background:var(--card); border:1px solid var(--line);
-}
-.export-opts.hidden { display:none; }
-.export-opt {
-  text-align:left; padding:8px 10px; background:transparent; border:0; cursor:pointer;
-  color:var(--fg); font:inherit; font-size:.72rem; letter-spacing:.14em; text-transform:uppercase;
-}
-.export-opt:hover, .export-opt:focus-visible {
-  background:color-mix(in oklch,var(--primary) 15%,var(--card)); color:var(--primary);
-  outline:none; filter:drop-shadow(0 0 4px color-mix(in oklch,var(--primary) 40%,transparent));
-}
-.export-opt .regmark { text-transform:none; letter-spacing:.03em; color:var(--dim); }
 
 /* ── Header conn indicator ────────────────────────────────────────────── */
 .conn-dot { width:9px; height:9px; border-radius:50%; background:var(--dim); transition:background .2s,box-shadow .2s; }
 .conn-dot.ok   { background:var(--green); box-shadow:0 0 9px var(--green); }
 .conn-dot.warn { background:var(--amber); box-shadow:0 0 9px var(--amber); }
-.conn-dot.err  { background:var(--red);   box-shadow:0 0 9px var(--red); }
+.conn-dot.err  { background:var(--amber); box-shadow:0 0 9px var(--amber); }
 .brand-title .slash { color:var(--primary); }
 .anvil-logo { height:16px; width:auto; color:var(--fg); flex:none; filter:drop-shadow(0 0 3px color-mix(in oklch,var(--fg) 30%,transparent)); }
 header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] utility doesn't compile in this runtime build */
@@ -282,6 +265,17 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
 .part-name { font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .part-meta { font-size:9px; letter-spacing:.12em; color:var(--dim); }
 .part-tools { display:flex; align-items:center; gap:2px; }
+
+/* ── Generated lattice + its linked source ghosts ──────────────────────
+   The lattice row carries a static LATTICE tag where the role select sits (its
+   role is derived, not chosen). Its sources stay listed, dimmed, marked GHOST
+   with the role select locked while they belong to the lattice — eye + delete
+   stay live so either can still be hidden or removed. */
+.lattice-tag { align-self:center; }
+.role-cell { display:flex; align-items:center; gap:6px; }
+.ghost-mark { color:color-mix(in oklch,var(--dim) 70%,var(--bg)); }
+.part-row.ghosted .part-name, .part-row.ghosted .part-meta { opacity:.55; }
+.part-row.ghosted .field-role > select:disabled { opacity:.55; cursor:not-allowed; }
 .icon-btn {
   position:relative;
   display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px;
@@ -297,7 +291,7 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
 .part-tools .icon-btn:first-child::after { inset:-5px -1px -5px -8px; } /* eye → role gap */
 .part-tools .icon-btn:last-child::after  { inset:-5px -9px -5px -1px; } /* delete → row padding */
 .icon-btn:hover { background:var(--card); color:var(--fg); }
-.icon-btn.danger:hover { background:color-mix(in oklch,var(--red) 18%,transparent); color:var(--red); }
+.icon-btn.danger:hover { background:color-mix(in oklch,var(--amber) 18%,transparent); color:var(--amber); }
 .icon-btn.off { color:color-mix(in oklch,var(--dim) 55%,var(--bg)); }
 
 /* ── Pending upload placeholder rows ──────────────────────────────────── */
@@ -492,7 +486,7 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 .step-status.hidden { display:none; }
 .step-status.ok  { color:var(--green); border-left-color:var(--green); }
 .step-status.warn { color:var(--amber); border-left-color:var(--amber); }
-.step-status.err { color:var(--red); border-left-color:var(--red); }
+.step-status.err { color:var(--amber); border-left-color:var(--amber); }
 .step-status a { color:var(--primary); font-weight:700; }
 
 /* ── Spinner ──────────────────────────────────────────────────────────── */
@@ -624,6 +618,21 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 #fl-spark { display:block; width:100%; height:120px; }
 .flow-spark-axis { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:5px; }
 .flow-spark-axis .regmark:nth-child(2) { color:color-mix(in oklch,var(--dim) 72%,var(--fg)); }
+#fl-spark { cursor:crosshair; }
+
+/* sparkline key — pure-CSS 10×2 line swatches, regmark type, one row that wraps.
+   Each entry is a .has-tip so the long-hover tooltip explains the series. */
+.flow-legend { display:flex; flex-wrap:wrap; align-items:center; gap:5px 14px; margin-top:7px; }
+.fl-key {
+  display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+  font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim);
+  transition:color .15s;
+}
+.fl-key:hover { color:color-mix(in oklch,var(--dim) 50%,var(--fg)); }
+.fl-sw { display:block; width:10px; height:2px; flex:none; }
+.fl-sw-open  { background:var(--primary); box-shadow:0 0 5px color-mix(in oklch,var(--primary) 65%,transparent); }
+.fl-sw-env   { background:var(--dim); }
+.fl-sw-choke { background:linear-gradient(90deg,var(--amber) 0 3px,transparent 3px 5px); background-size:5px 2px; }
 
 /* metric list — 1px gaps over a line-coloured backing give hairline dividers */
 .flow-metrics {
@@ -638,7 +647,16 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 
 .flow-warnings { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
 .flow-warnings:empty { display:none; }
-.fl-warn { display:block; width:100%; text-align:left; }
+/* Flow notes are ADVISORY, not alarms — a calm neutral block (no chip fill, no
+   hazard colour). Readable --dim-toward---fg text over a 5% --fg wash with a
+   --line rule on the leading edge; severity no longer changes the colour. */
+.fl-warn {
+  display:block; width:100%; text-align:left;
+  padding:8px 10px; font-size:10px; font-weight:400; line-height:1.6; letter-spacing:.04em;
+  color:color-mix(in oklch,var(--dim) 45%,var(--fg));
+  background:color-mix(in oklch,var(--fg) 5%,transparent);
+  border-left:2px solid var(--line);
+}
 
 /* ── Window-wide file-drag affordance ─────────────────────────────────
    While a file is dragged anywhere over the window (main.js toggles
@@ -730,12 +748,12 @@ body.drag-active .viewport::after { opacity:1; }
 .tb-btn.active::after  { background:linear-gradient(to top,var(--primary) 0 1px,transparent 1px),var(--card); }
 
 /* GENERATE toolbar mirror (Fix 1): never filled. Armed = text-orange; running =
-   red pulsing text/icon (keeps the % readout via JS); normal disabled otherwise. */
+   amber pulsing text/icon (keeps the % readout via JS); normal disabled otherwise. */
 .tb-btn.tb-primary.armed { color:var(--primary); }
-.tb-btn.tb-primary.generating { color:var(--red); opacity:1 !important; animation:cycpulse-red 1.4s ease-in-out infinite; }
-@keyframes cycpulse-red {
-  0%,100% { filter:drop-shadow(0 0 2px var(--red)); }
-  50%     { filter:drop-shadow(0 0 10px var(--red)); }
+.tb-btn.tb-primary.generating { color:var(--amber); opacity:1 !important; animation:cycpulse-run 1.4s ease-in-out infinite; }
+@keyframes cycpulse-run {
+  0%,100% { filter:drop-shadow(0 0 2px var(--amber)); }
+  50%     { filter:drop-shadow(0 0 10px var(--amber)); }
 }
 
 /* ── Regions 3/4 — collapsible panels ────────────────────────────────── */
@@ -929,7 +947,7 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 }
 .tool-note.ok   { color:var(--green); }
 .tool-note.warn { color:var(--amber); }
-.tool-note.err  { color:var(--red); }
+.tool-note.err  { color:var(--amber); }
 .tool-progress { margin-top:11px; display:flex; align-items:center; gap:9px; color:var(--primary); }
 .tool-progress.hidden { display:none; }
 .tool-prog-stage {
@@ -988,11 +1006,36 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
   section.viewport { flex:1 1 auto; }
 }
 
-/* ── Result: watertight chip + island-removal note (Stage 3) ───────────
-   The chip reuses the chamfered .chip base (background derives from
-   currentColor); .ok tints it green, .warn amber. */
-.result-chips { display:flex; flex-wrap:wrap; gap:6px; margin:-2px 0 10px; }
+/* ── Result: watertight status line + island-removal note (Stage 3) ─────
+   NOT the .chip base any more — that solid currentColor-over---bg fill read as
+   a muddy cramped pill. This is a HUD status line: near-transparent wash, a
+   1px currentColor rim, generous tracking, and a single chamfered corner so it
+   sits in the design language without reading as a button.
+   .ok → --green "WATERTIGHT ✓"; .warn → --amber "N OPEN EDGES".
+   Vertical rhythm: 8px clear above (stats grid ships mb-3 = 12px, so -4px
+   trims it to 8) and 8px clear below to the cleanup regmark. */
+.result-chips { display:flex; flex-wrap:wrap; gap:6px; margin:-4px 0 8px; }
 .result-chips[hidden] { display:none; }
+.wt-chip {
+  position:relative; isolation:isolate;
+  display:inline-flex; align-items:center; padding:4px 10px;
+  font-size:10.5px; font-weight:700; line-height:1.35; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--dim); background:transparent;
+}
+/* two-layer chamfer: ::before = 1px rim at 35% currentColor, ::after = the 7%
+   currentColor wash over the tile's own --card fill (visually identical to a
+   translucent wash, but it lets the rim layer stay a clean hairline). */
+.wt-chip::before {
+  content:""; position:absolute; inset:0; z-index:-2;
+  background:color-mix(in oklch,currentColor 35%,transparent);
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,0 100%);
+}
+.wt-chip::after {
+  content:""; position:absolute; inset:1px; z-index:-1;
+  background:color-mix(in oklch,currentColor 7%,var(--card));
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,0 100%);
+}
+.wt-chip:empty { display:none; }
 .wt-chip.ok   { color:var(--green); }
 .wt-chip.warn { color:var(--amber); }
 .cleanup-note { margin:0 0 10px; color:color-mix(in oklch,var(--dim) 78%,var(--fg)); }
@@ -1039,3 +1082,119 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
   font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; color:var(--fg); white-space:pre;
 }
 .scripts-foot { padding:10px 14px; border-top:1px solid var(--line); opacity:.6; font-size:9px; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   ── Wave-3 · EXPORT ──
+   One tile (#sec-export-panel) owns every export: a checkbox list of what to
+   export (parts + the generate result), the FORMAT seg, an OUTPUT seg that only
+   appears for multi-selects, and the filename field with its live "→ file.ext"
+   regmark. Everything reuses the existing chamfer language — .tile rims, .seg
+   segments, the .field rim and .step-status block. The only NEW component is
+   the HUD checkbox (a chamfered square that fills --primary when ticked); no
+   solid --primary fill is introduced anywhere else, so #export-btn keeps the
+   single-occupancy accent slot the state machine hands it.
+   ══════════════════════════════════════════════════════════════════════ */
+
+.export-tile { display:flex; flex-direction:column; gap:12px; }
+.export-tile .thead { margin-bottom:0; }
+.ex-block { display:flex; flex-direction:column; gap:6px; }
+.ex-block[hidden] { display:none; }
+.ex-block > .label { display:flex; align-items:baseline; gap:5px; }
+
+/* ── Source list — one HUD checkbox row per exportable object ─────────── */
+.ex-sources { display:flex; flex-direction:column; gap:1px; background:var(--line);
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px)); }
+.ex-sources .parts-empty { background:var(--muted); padding:10px 2px; }
+.ex-src {
+  position:relative; display:grid; grid-template-columns:auto auto 1fr auto; align-items:center;
+  gap:8px; padding:7px 10px; background:var(--muted); cursor:pointer;
+  transition:background .12s;
+}
+.ex-src:hover { background:color-mix(in oklch,var(--fg) 5%,var(--muted)); }
+
+/* the real control drives state but never paints (its ::before/::after would
+   fight the chamfer); .ex-box is the visible square. */
+.ex-cb { position:absolute; opacity:0; width:0; height:0; pointer-events:none; }
+.ex-box {
+  position:relative; display:block; width:14px; height:14px; flex:none;
+  background:var(--bg); box-shadow:inset 0 0 0 1px var(--line);
+  clip-path:polygon(0 0,calc(100% - 4px) 0,100% 4px,100% 100%,4px 100%,0 calc(100% - 4px));
+  transition:background .12s, box-shadow .12s;
+}
+.ex-box::after {
+  content:""; position:absolute; left:4px; top:1px; width:4px; height:8px;
+  border:solid var(--bg); border-width:0 2px 2px 0; transform:rotate(42deg) scale(.4);
+  opacity:0; transition:opacity .12s, transform .12s;
+}
+.ex-cb:checked + .ex-box { background:var(--primary); box-shadow:inset 0 0 0 1px var(--primary); }
+.ex-cb:checked + .ex-box::after { opacity:1; transform:rotate(42deg) scale(1); }
+.ex-cb:focus-visible + .ex-box {
+  box-shadow:inset 0 0 0 1px var(--primary), 0 0 0 2px color-mix(in oklch,var(--primary) 35%,transparent);
+}
+
+/* role colour marker — same vocabulary as the OBJECTS row accent bar */
+.ex-dot {
+  display:block; width:7px; height:7px; flex:none; background:var(--role-color,var(--dim));
+  box-shadow:0 0 6px color-mix(in oklch,var(--role-color,var(--dim)) 55%,transparent);
+  clip-path:polygon(0 0,calc(100% - 2px) 0,100% 2px,100% 100%,2px 100%,0 calc(100% - 2px));
+}
+.ex-src-name {
+  min-width:0; font-size:11px; font-weight:600; color:var(--fg);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.ex-src-meta { font-size:9px; letter-spacing:.1em; color:var(--dim); white-space:nowrap; }
+/* the generate result reads as its own class of thing, not another part */
+.ex-src-result .ex-src-name { color:var(--primary); letter-spacing:.06em; }
+
+/* ── FORMAT / OUTPUT segments — the sub-labels stay quiet ─────────────── */
+#ex-output .seg-btn { letter-spacing:.1em; }
+#ex-output .seg-btn em {
+  font-style:normal; font-weight:400; letter-spacing:.04em; text-transform:none;
+  color:color-mix(in oklch,var(--dim) 70%,var(--bg));
+}
+#ex-output .seg-btn.active em { color:color-mix(in oklch,var(--primary) 62%,var(--dim)); }
+
+/* ── Filename field + the live output regmark ─────────────────────────── */
+.ex-name-field > input {
+  text-transform:none; letter-spacing:.04em; font-size:12px;
+}
+.ex-out {
+  color:color-mix(in oklch,var(--dim) 45%,var(--fg)); letter-spacing:.1em;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+
+/* ── STEP options row (reads the STEP 出力 stepper; never duplicates it) ── */
+.ex-step-block { gap:4px; }
+.ex-step-block em { font-style:normal; letter-spacing:.06em; opacity:.75; }
+.ex-warn { color:var(--amber); letter-spacing:.1em; }
+
+/* ── EXPORT button + status line ──────────────────────────────────────── */
+.ex-go { height:38px; }
+.ex-go.busy { cursor:progress; }
+.export-tile .step-status { margin-top:0; }
+
+/* ── Wave-3 · SECTION (Onshape-style) ────────────────────────────────────
+   The vertical slicer slider is gone: the plane is picked and pushed in the
+   canvas (triad → plane + arrow manipulator, or a flat face). The strip keeps
+   only the X/Y/Z convenience chips + ⇄ invert, and this bottom-centre readout
+   reports the signed offset live while the arrow is dragged. Neutral HUD
+   chrome — the single solid --primary fill stays with GENERATE/EXPORT. */
+.vp-section-readout {
+  position:absolute; left:50%; bottom:12px; transform:translateX(-50%); z-index:5;
+  pointer-events:none; white-space:nowrap;
+  padding:4px 11px; letter-spacing:.14em; text-transform:uppercase;
+  color:color-mix(in oklch,var(--fg) 82%,var(--bg));
+  background:color-mix(in oklch,var(--card) 82%,transparent);
+  border:1px solid color-mix(in oklch,var(--primary) 34%,var(--line));
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
+  backdrop-filter:blur(6px);
+}
+.vp-section-readout[hidden] { display:none; }
+.vp-section-readout .sr-k { color:var(--dim); }
+.vp-section-readout .sr-v { color:var(--primary); font-weight:700; }
+/* Pick mode (tool on, no plane yet) — the readout is an instruction, not data. */
+.vp-section-readout.is-pick { border-color:var(--line); }
+.vp-section-readout.is-pick .sr-v { color:var(--fg); font-weight:400; }
+
+/* The wrap is now chips-only; keep it tight under the SECTION button. */
+#vp-section-wrap { gap:0; padding:2px 0; }

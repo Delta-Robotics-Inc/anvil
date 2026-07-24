@@ -86,11 +86,19 @@ export const els = {
   resultChips: document.getElementById('result-chips'),
   wtChip:     document.getElementById('wt-chip'),
   cleanupNote: document.getElementById('cleanup-note'),
-  exportStl:  document.getElementById('export-stl-btn'),
-  exportStep: document.getElementById('export-step-btn'),
-  exportBtn:  document.getElementById('export-btn'),
-  stepSpinner: document.getElementById('step-spinner'),
-  stepStatus: document.getElementById('step-status'),
+  // ── Wave-3 EXPORT tile (#sec-export-panel — one tile owns every export) ──
+  secExportPanel: document.getElementById('sec-export-panel'),
+  exSources:     document.getElementById('ex-sources'),
+  exFormat:      document.getElementById('ex-format'),
+  exOutput:      document.getElementById('ex-output'),
+  exOutputBlock: document.getElementById('ex-output-block'),
+  exName:        document.getElementById('ex-name'),
+  exOut:         document.getElementById('ex-out'),
+  exStepBlock:   document.getElementById('ex-step-block'),
+  exStepTris:    document.getElementById('ex-step-tris'),
+  exportBtn:  document.getElementById('export-btn'),        // KEEPS the accent-budget contract
+  exportSpinner: document.getElementById('step-spinner'),
+  exportStatus:  document.getElementById('step-status'),
 
   connDot: document.getElementById('conn-dot'),
   connTxt: document.getElementById('conn-txt'),
@@ -111,8 +119,7 @@ export const els = {
   tbOrient:   document.getElementById('tb-orient'),
   tbGenerate: document.getElementById('tb-generate'),
   tbFlow:     document.getElementById('tb-flow'),
-  tbStl:      document.getElementById('tb-stl'),
-  tbStep:     document.getElementById('tb-step'),
+  tbExport:   document.getElementById('tb-export'),
 
   // ── Contextual tool panel (#sec-tool — top of the left panel) ─────────
   secTool:      document.getElementById('sec-tool'),
@@ -142,12 +149,12 @@ export const els = {
   vpGhosts:        document.getElementById('vp-ghosts'),
   vpSection:       document.getElementById('vp-section'),
   vpSectionWrap:   document.getElementById('vp-section-wrap'),
-  vpSectionSlider: document.getElementById('vp-section-slider'),
   vpDims:          document.getElementById('vp-dims'),
 };
 
 const ROLE_TIP = 'BASE: Part = gyroidize the whole part; one Positive + one Negative = fuse. '
                + 'ZONES: Lattice (blue) / Keep-solid (green) / Void (red) regions layered on a base part.';
+const GHOST_TIP = 'source of the current lattice — delete the lattice to edit';
 const ROLE_GROUP_LABEL = { base: 'BASE', zone: 'ZONES' };
 
 // ── Parts list ────────────────────────────────────────────────────────
@@ -170,7 +177,10 @@ export function renderParts(parts, pending, handlers) {
 
   for (const p of parts) {
     const row = document.createElement('div');
-    row.className = 'part-row' + (handlers.selectedId === p.id ? ' selected' : '');
+    row.className = 'part-row'
+      + (handlers.selectedId === p.id ? ' selected' : '')
+      + (p.isResult ? ' is-result' : '')
+      + (p.ghosted ? ' ghosted' : '');
     row.dataset.id = p.id;
     row.style.setProperty('--role-color', roleColorHex(p.role));
     // Row click selects the part (state-derived `.selected` class + viewer tint).
@@ -197,7 +207,7 @@ export function renderParts(parts, pending, handlers) {
     // ::before/::after, and a real border would drop on the corner cuts).
     const roleWrap = document.createElement('span');
     roleWrap.className = 'field field-role';
-    roleWrap.setAttribute('data-tip', ROLE_TIP);   // HUD hover tooltip
+    roleWrap.setAttribute('data-tip', p.ghosted ? GHOST_TIP : ROLE_TIP);   // HUD hover tooltip
     const role = document.createElement('select');
     role.className = 'part-role';
     role.name = `role-${p.id}`;
@@ -219,6 +229,29 @@ export function renderParts(parts, pending, handlers) {
     }
     role.addEventListener('change', () => handlers.onRoleChange(p.id, role.value));
     roleWrap.appendChild(role);
+
+    // Role column, three shapes:
+    //   lattice part  → a static LATTICE tag (its role is not the user's to set)
+    //   ghosted source→ GHOST regmark + a LOCKED role select (it feeds the lattice)
+    //   anything else → the plain role select
+    let roleSlot = roleWrap;
+    if (p.isResult) {
+      const tag = document.createElement('span');
+      tag.className = 'tag lattice-tag';
+      tag.textContent = 'LATTICE';
+      tag.title = p.derived?.label || 'Generated lattice';
+      roleSlot = tag;
+    } else if (p.ghosted) {
+      role.disabled = true;
+      role.title = GHOST_TIP;
+      const cell = document.createElement('div');
+      cell.className = 'role-cell';
+      const mark = document.createElement('span');
+      mark.className = 'regmark ghost-mark';
+      mark.textContent = 'GHOST';
+      cell.append(mark, roleWrap);
+      roleSlot = cell;
+    }
 
     const tools = document.createElement('div');
     tools.className = 'part-tools';
@@ -262,7 +295,7 @@ export function renderParts(parts, pending, handlers) {
       node.innerHTML = `└ <span class="nk">TPMS · ${patt}</span> · <span class="nr">${(p.role || 'part').toUpperCase()}</span>`;
     }
 
-    row.append(main, roleWrap, tools, node);
+    row.append(main, roleSlot, tools, node);
     list.appendChild(row);
   }
 
@@ -545,7 +578,7 @@ export function setProgress(fraction, stage) {
 // ── Result card ───────────────────────────────────────────────────────
 export function showResult(stats) {
   els.resultCard.classList.remove('hidden');
-  setResultTools(true);   // FLOW · STL · STEP toolbar buttons come alive
+  setResultTools(true);   // FLOW toolbar button comes alive
   const volCm3 = (stats?.volumeMM3 ?? 0) / 1000;
   els.statVolume.textContent = fmtNum(volCm3, volCm3 >= 100 ? 0 : volCm3 >= 10 ? 1 : 2);
   els.statInfill.textContent = stats?.infillPct != null ? `${fmtNum(stats.infillPct, 1)}%` : '—';
@@ -589,9 +622,9 @@ export function hideResult() {
   els.resultCard.classList.add('hidden');
   if (els.resultChips) els.resultChips.hidden = true;
   els.cleanupNote?.classList.add('hidden');
-  setResultTools(false);   // no result → FLOW/STL/STEP toolbar buttons disabled
+  setResultTools(false);   // no result → the FLOW toolbar button goes dark
   hideFlow();
-  clearStepStatus();
+  clearExportStatus();
 }
 
 // ── Flow-metrics tile ─────────────────────────────────────────────────
@@ -626,11 +659,14 @@ function showFlow(s) {
   els.flLength.textContent  = s.flowLengthMM != null ? fmtNum(s.flowLengthMM, 1) : '—';
 
   renderFlowWarnings(s.warnings || []);
+  flowHover = null;      // a new result invalidates any hovered bin
+  wireSparkHover();      // idempotent — guarded by cv._sparkWired
   drawFlowSpark();
 }
 
 function hideFlow() {
   flowState = null;
+  flowHover = null;
   els.flowCard.classList.add('hidden');
 }
 
@@ -638,22 +674,31 @@ function hideFlow() {
 // normalise to a percent for the sub-label either way.
 function chokePct(r) { return r <= 1.5 ? r * 100 : r; }
 
+// Flow notes read as calm advisories, not alarms: one neutral block per note,
+// no severity colour-coding (the copy already says how bad it is). Styling lives
+// entirely in .fl-warn — no inline colour here.
 function renderFlowWarnings(warnings) {
   const box = els.flWarnings;
   box.innerHTML = '';
   for (const w of warnings) {
-    const severe = /severe/i.test(w);
-    const chip = document.createElement('div');
-    chip.className = 'chip fl-warn';
-    chip.style.color = severe ? 'var(--red)' : 'var(--amber)';
-    chip.textContent = w;
-    box.appendChild(chip);
+    const note = document.createElement('div');
+    note.className = 'fl-warn';
+    note.textContent = w;
+    box.appendChild(note);
   }
 }
 
 // Sparkline — HUD TREND style (see apps/hud drawGraph): --primary open-area
-// line with a subtle fill, a dim envelope reference line, and a red choke
-// marker (vertical tick + dot) at minAtMM. Crisp on devicePixelRatio.
+// line with a subtle fill, a --dim envelope reference line, and an AMBER choke
+// marker (dashed tick + dot) at minAtMM. Crisp on devicePixelRatio.
+//
+// Hover: pointermove snaps a --line crosshair to the nearest profile bin and
+// paints an on-canvas readout (position · open · gross · % open). The plot
+// geometry from the last paint is cached in sparkGeom so the hit-test is a
+// plain inverse-map, and the listeners are wired once (cv._sparkWired).
+let flowHover = null;   // index into the profile arrays, or null when not hovering
+let sparkGeom = null;   // { xL,xR,yT,yB,pMin,pSpan } from the last paint
+
 export function drawFlowSpark() {
   const cv = els.flSpark;
   if (!cv || !flowState) return;
@@ -676,11 +721,12 @@ export function drawFlowSpark() {
   for (const v of env) if (v > aMax) aMax = v;
   for (const v of open) if (v > aMax) aMax = v;
   if (aMax <= 0) aMax = 1;
+  sparkGeom = { xL, xR, yT, yB, pMin, pSpan };
 
   const X = (v) => xL + ((v - pMin) / pSpan) * (xR - xL);
   const Y = (a) => yB - (Math.max(0, Math.min(a, aMax)) / aMax) * (yB - yT);
   const c = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const prim = c('--primary'), dim = c('--dim'), line = c('--line'), red = c('--red');
+  const prim = c('--primary'), dim = c('--dim'), line = c('--line'), amber = c('--amber');
 
   // baseline
   g.strokeStyle = line; g.lineWidth = 1; g.globalAlpha = 0.6;
@@ -701,22 +747,110 @@ export function drawFlowSpark() {
   traceLine(g, pos, open, X, Y);
   g.shadowBlur = 0;
 
-  // choke marker — vertical tick + dot at (minAtMM, minOpenAreaMM2)
+  // choke marker — dashed vertical + dot at (minAtMM, minOpenAreaMM2)
   const cx = flowState.minAtMM;
   if (cx != null && cx >= pMin && cx <= pMax) {
     const mx = X(cx);
-    g.strokeStyle = red; g.lineWidth = 1; g.setLineDash([3, 3]); g.globalAlpha = 0.85;
+    g.strokeStyle = amber; g.lineWidth = 1; g.setLineDash([3, 3]); g.globalAlpha = 0.85;
     g.beginPath(); g.moveTo(mx, yT); g.lineTo(mx, yB); g.stroke();
     g.setLineDash([]); g.globalAlpha = 1;
     const my = Y(flowState.minOpenAreaMM2 ?? 0);
-    g.fillStyle = red; g.shadowColor = red; g.shadowBlur = 6;
+    g.fillStyle = amber; g.shadowColor = amber; g.shadowBlur = 6;
     g.beginPath(); g.arc(mx, my, 3, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
+  }
+
+  // hover crosshair + readout
+  const hi = flowHover;
+  if (hi != null && hi >= 0 && hi < pos.length) {
+    const hx = X(pos[hi]);
+    g.strokeStyle = line; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(hx, yT); g.lineTo(hx, yB); g.stroke();
+
+    // sample dots so the eye lands on the two series being read out
+    g.fillStyle = dim;
+    g.beginPath(); g.arc(hx, Y(env[hi] ?? 0), 2, 0, Math.PI * 2); g.fill();
+    g.fillStyle = prim;
+    g.beginPath(); g.arc(hx, Y(open[hi] ?? 0), 2.5, 0, Math.PI * 2); g.fill();
+
+    drawSparkReadout(g, {
+      W, xL, xR, yT, hx,
+      posMM: pos[hi], openMM2: open[hi] ?? 0, grossMM2: env[hi] ?? 0,
+      card: c('--card'), line, fg: c('--fg'),
+    });
   }
 
   // axis regmarks
   els.flPosMin.textContent = `${fmtNum(pMin, pMax - pMin >= 100 ? 0 : 1)} mm`;
   els.flPosMax.textContent = `${fmtNum(pMax, pMax - pMin >= 100 ? 0 : 1)} mm`;
   els.flAreaMax.textContent = `max ${fmtNum(aMax, aMax >= 100 ? 0 : 1)} mm²`;
+}
+
+// On-canvas HUD readout: chamfered --card plate with a --line hairline rim and
+// --fg monospace text. Pinned to the top of the plot, flipping to whichever side
+// the cursor is NOT on so it never covers the crosshair it describes.
+function drawSparkReadout(g, o) {
+  const a = (v) => fmtNum(v, v >= 100 ? 0 : 1);
+  const pct = o.grossMM2 > 0 ? Math.round((o.openMM2 / o.grossMM2) * 100) : 0;
+  const txt = `${fmtNum(o.posMM, 1)} mm · open ${a(o.openMM2)} mm² · gross ${a(o.grossMM2)} mm² · ${pct}%`;
+
+  g.font = '10px "Kode Mono", ui-monospace, monospace';
+  g.textBaseline = 'middle';
+  const padX = 7, padY = 4, ch = 7;
+  const tw = g.measureText(txt).width;
+  const bw = Math.min(tw + padX * 2, o.xR - o.xL);
+  const bh = 10 + padY * 2;
+  // flip to the far side from the cursor, then clamp inside the plot
+  let bx = o.hx > (o.xL + o.xR) / 2 ? o.xL : o.xR - bw;
+  bx = Math.max(o.xL, Math.min(bx, o.xR - bw));
+  const by = o.yT;
+
+  g.beginPath();
+  g.moveTo(bx, by); g.lineTo(bx + bw - ch, by); g.lineTo(bx + bw, by + ch);
+  g.lineTo(bx + bw, by + bh); g.lineTo(bx + ch, by + bh); g.lineTo(bx, by + bh - ch);
+  g.closePath();
+  g.globalAlpha = 0.94; g.fillStyle = o.card; g.fill(); g.globalAlpha = 1;
+  g.strokeStyle = o.line; g.lineWidth = 1; g.stroke();
+
+  g.save();
+  g.clip();
+  g.fillStyle = o.fg;
+  g.fillText(txt, bx + padX, by + bh / 2 + 0.5);
+  g.restore();
+}
+
+// Pointer wiring for the sparkline. Idempotent — showFlow calls this on every
+// result, so the _sparkWired flag keeps a single set of listeners on the canvas.
+function wireSparkHover() {
+  const cv = els.flSpark;
+  if (!cv || cv._sparkWired) return;
+  cv._sparkWired = true;
+
+  const nearest = (clientX) => {
+    if (!flowState || !sparkGeom) return null;
+    const pos = flowState.profile?.positionsMM;
+    if (!pos || pos.length < 2) return null;
+    const { xL, xR, pMin, pSpan } = sparkGeom;
+    const x = clientX - cv.getBoundingClientRect().left;
+    const t = Math.max(0, Math.min(1, (x - xL) / ((xR - xL) || 1)));
+    const target = pMin + t * pSpan;
+    // positionsMM is monotonic and evenly spaced — index directly, then nudge.
+    let i = Math.round((target - pMin) / (pSpan / (pos.length - 1)));
+    i = Math.max(0, Math.min(pos.length - 1, i));
+    for (const j of [i - 1, i + 1]) {
+      if (j >= 0 && j < pos.length && Math.abs(pos[j] - target) < Math.abs(pos[i] - target)) i = j;
+    }
+    return i;
+  };
+
+  cv.addEventListener('pointermove', (e) => {
+    const i = nearest(e.clientX);
+    if (i === flowHover) return;
+    flowHover = i;
+    drawFlowSpark();
+  });
+  const clear = () => { if (flowHover == null) return; flowHover = null; drawFlowSpark(); };
+  cv.addEventListener('pointerleave', clear);
+  cv.addEventListener('pointercancel', clear);
 }
 
 function traceLine(g, xs, ys, X, Y) {
@@ -750,18 +884,114 @@ function setDeltaP(kPa) {
   if (els.flDpUnit) els.flDpUnit.textContent = unit;
 }
 
-// ── STEP export UI ────────────────────────────────────────────────────
-export function setStepBusy(busy) {
-  els.stepSpinner.classList.toggle('hidden', !busy);
-  els.exportStep.disabled = busy;
+// ══ Wave-3 · EXPORT tile ══════════════════════════════════════════════
+// One tile owns every export: WHICH objects (checkbox list of parts + the
+// result), WHICH format (STL|STEP), separate-vs-combined for multi-selects, and
+// the filename. main.js holds the selection/dirty state; this module only paints
+// and reads the DOM.
+
+/**
+ * Paint the source checkbox list.
+ * @param items    [{ id, kind:'part'|'job', name, meta, role }]
+ * @param checked  Set of checked ids
+ * @param onToggle (id, checked) => void
+ */
+export function renderExportSources(items, checked, onToggle) {
+  const box = els.exSources;
+  if (!box) return;
+  box.innerHTML = '';
+
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'parts-empty';
+    empty.textContent = 'Nothing to export yet';
+    box.appendChild(empty);
+    return;
+  }
+
+  for (const it of items) {
+    const row = document.createElement('label');
+    row.className = 'ex-src' + (it.kind === 'job' ? ' ex-src-result' : '');
+    row.dataset.id = it.id;
+    row.style.setProperty('--role-color', it.kind === 'job' ? 'var(--primary)' : roleColorHex(it.role));
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'ex-cb';
+    cb.checked = checked.has(it.id);
+    cb.addEventListener('change', () => onToggle(it.id, cb.checked));
+
+    const mark = document.createElement('i');
+    mark.className = 'ex-box';
+    mark.setAttribute('aria-hidden', 'true');
+
+    const dot = document.createElement('i');
+    dot.className = 'ex-dot';
+    dot.setAttribute('aria-hidden', 'true');
+
+    const name = document.createElement('span');
+    name.className = 'ex-src-name';
+    name.textContent = it.name;
+    name.title = it.name;
+
+    const meta = document.createElement('span');
+    meta.className = 'ex-src-meta';
+    meta.textContent = it.meta || '';
+
+    row.append(cb, mark, dot, name, meta);
+    box.appendChild(row);
+  }
 }
-export function setStepStatus(kind, html) {
-  els.stepStatus.className = 'step-status' + (kind ? ` ${kind}` : '');
-  els.stepStatus.innerHTML = html;
+
+/** Wire the FORMAT / OUTPUT segmented controls (onChange fires for both). */
+export function initExportControls(onChange) {
+  wireSeg(els.exFormat, () => onChange());
+  wireSeg(els.exOutput, () => onChange());
 }
-export function clearStepStatus() {
-  els.stepStatus.className = 'step-status hidden';
-  els.stepStatus.innerHTML = '';
+export function getExportFormat() { return activeVal(els.exFormat, '.seg-btn') || 'stl'; }
+export function getExportOutput() { return activeVal(els.exOutput, '.seg-btn') || 'separate'; }
+
+/** OUTPUT seg only makes sense with 2+ objects ticked. */
+export function setExportOutputVisible(show) { if (els.exOutputBlock) els.exOutputBlock.hidden = !show; }
+/** STEP options row (target-triangle readout + weight warning). */
+export function setExportStepVisible(show) { if (els.exStepBlock) els.exStepBlock.hidden = !show; }
+export function setExportStepTris(n) {
+  if (els.exStepTris) els.exStepTris.textContent = fmtInt(n);
+}
+
+/** The `→ name.ext · 3 files` line under the filename field. */
+export function setExportHint(text) { if (els.exOut) els.exOut.textContent = text; }
+export function getExportName() { return (els.exName?.value || '').trim(); }
+export function setExportName(v) { if (els.exName) els.exName.value = v; }
+
+/**
+ * Enable/disable the EXPORT affordances. The TOOLBAR button is parts-gated (any
+ * part or a result → it can open the tile); the tile's own EXPORT button also
+ * needs at least one ticked source, so unticking everything never strands the
+ * user with no way back into the panel.
+ */
+export function setExportEnabled(hasSources, canRun = hasSources) {
+  if (els.exportBtn) els.exportBtn.disabled = !canRun;
+  if (els.tbExport) els.tbExport.disabled = !hasSources;
+}
+
+/** Spinner + locked button while an export job runs. */
+export function setExportBusy(busy) {
+  els.exportSpinner?.classList.toggle('hidden', !busy);
+  if (els.exportBtn) {
+    els.exportBtn.classList.toggle('busy', busy);
+    els.exportBtn.disabled = busy;
+  }
+}
+export function setExportStatus(kind, html) {
+  if (!els.exportStatus) return;
+  els.exportStatus.className = 'step-status' + (kind ? ` ${kind}` : '');
+  els.exportStatus.innerHTML = html;
+}
+export function clearExportStatus() {
+  if (!els.exportStatus) return;
+  els.exportStatus.className = 'step-status hidden';
+  els.exportStatus.innerHTML = '';
 }
 
 // ── Viewport hint ─────────────────────────────────────────────────────
@@ -789,9 +1019,10 @@ function syncTbGenerate() {
 /** True while a generation job is running (toolbar GENERATE → CANCEL). */
 export function isGenerating() { return _genRunning; }
 
-/** Enable/disable the result-dependent toolbar buttons (FLOW · STL · STEP). */
+/** Enable/disable the result-dependent toolbar buttons (FLOW). EXPORT is NOT
+ *  result-gated any more — it is parts-gated via setExportEnabled. */
 export function setResultTools(enabled) {
-  for (const b of [els.tbFlow, els.tbStl, els.tbStep]) if (b) b.disabled = !enabled;
+  if (els.tbFlow) els.tbFlow.disabled = !enabled;
 }
 
 // ── Accent budget (Fix 1) — the single solid --primary fill per screen state ──
@@ -799,8 +1030,9 @@ export function setResultTools(enabled) {
 // (pinned GENERATE while armed/generating, EXPORT STL while the result is fresh).
 /** Pinned GENERATE solid fill (armed or generating) vs outline. */
 export function setGenerateFilled(filled) { els.generate.classList.toggle('solid', filled); }
-/** EXPORT STL solid fill — only when the currently-shown result is fresh. */
-export function setExportStlFilled(filled) { els.exportBtn.classList.toggle('solid', filled); }
+/** EXPORT solid fill (#export-btn in the EXPORT tile) — only when the
+ *  currently-shown result is fresh. Name kept for the accent-machine contract. */
+export function setExportStlFilled(filled) { els.exportBtn?.classList.toggle('solid', filled); }
 /** Tool CONFIRM solid fill — holds the single fill while an open tool is valid
  *  (GENERATE / EXPORT ghost meanwhile). See main.updateAccents' toolOpen branch. */
 export function setToolConfirmFilled(filled) { els.toolConfirm?.classList.toggle('solid', !!filled); }
@@ -888,12 +1120,13 @@ function observeActiveSection(root, entries) {
 
 // Scroll a left/right-panel section into view, flash it, expanding as needed.
 // TPMS/ORIENT live in the left panel (ORIENT also opens the LATTICE disclosure);
-// FLOW lives in the right panel. Called from the toolbar buttons in main.js.
+// FLOW + EXPORT live in the right panel. Called from the toolbar buttons in main.js.
 export function focusSection(name) {
   const MAP = {
     tpms:   { sec: els.secTpms,   side: 'left'  },
     orient: { sec: els.secOrient, side: 'left', disclosure: true },
     flow:   { sec: els.flowCard,  side: 'right' },
+    export: { sec: els.secExportPanel, side: 'right' },
   };
   const t = MAP[name];
   if (!t || !t.sec) return;
@@ -973,7 +1206,9 @@ export function initTooltips() {
 }
 
 // ── Toasts (styled as HUD warnbars: hazard-stripe block + message) ─────
-const HZ_COLOR = { error: 'var(--red)', warn: 'var(--amber)', success: 'var(--green)', info: 'var(--primary)' };
+// No red in the feedback layer — errors and warnings share --amber and are
+// distinguished by the toast copy (and by how long they stick around).
+const HZ_COLOR = { error: 'var(--amber)', warn: 'var(--amber)', success: 'var(--green)', info: 'var(--primary)' };
 
 export function toast(message, kind = 'info', timeout = 6000) {
   const el = document.createElement('div');

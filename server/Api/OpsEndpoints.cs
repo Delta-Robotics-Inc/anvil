@@ -46,20 +46,51 @@ public static class OpsEndpoints
         api.MapPost("/ops", CreateOp);
     }
 
-    // ---- POST /api/ops -----------------------------------------------------
+    /// <summary>
+    /// Outcome of SubmitOpCore. On failure ErrorStatus is 400 (validation) or 500
+    /// (submit crash). On success either SyncPart (duplicate → registered inline)
+    /// OR JobId+PartId (async worker op) is set.
+    /// </summary>
+    public sealed record OpCoreResult(
+        bool Ok, int ErrorStatus, string? Error,
+        string? JobId, string? PartId, PartInfo? SyncPart, string? Warning);
+
+    private static OpCoreResult OpErr(int status, string msg) => new(false, status, msg, null, null, null, null);
+    private static OpCoreResult OpSync(PartInfo p) => new(true, 0, null, null, null, p, null);
+    private static OpCoreResult OpAsync(string jobId, string partId, string? warning) =>
+        new(true, 0, null, jobId, partId, null, warning);
+
+    // ---- POST /api/ops (HTTP handler → maps the core outcome) --------------
 
     private static IResult CreateOp(
         OpRequestDto req, PartStore parts, JobManager jobs, AppPaths paths, ILoggerFactory lf)
     {
         var log = lf.CreateLogger("Ops");
-        if (req is null) return Bad("missing op request body");
+        var r = SubmitOpCore(req, parts, jobs, paths, log);
+        if (!r.Ok)
+            return r.ErrorStatus == 500
+                ? Results.Problem(detail: r.Error, statusCode: 500)
+                : Results.BadRequest(new { error = r.Error });
+        if (r.SyncPart is not null)
+            return Results.Ok(r.SyncPart);
+        return Results.Accepted($"/api/jobs/{r.JobId}", new { jobId = r.JobId, partId = r.PartId, warning = r.Warning });
+    }
+
+    /// <summary>
+    /// Validate + submit a tool op. Shared by the HTTP endpoint and the MCP op
+    /// tools so both go through the SAME validation, labelling and reserve path.
+    /// </summary>
+    public static OpCoreResult SubmitOpCore(
+        OpRequestDto req, PartStore parts, JobManager jobs, AppPaths paths, ILogger log)
+    {
+        if (req is null) return OpErr(400, "missing op request body");
 
         string op = (req.op ?? "").Trim().ToLowerInvariant();
         if (Array.IndexOf(OpKinds, op) < 0)
-            return Bad($"unknown op '{req.op}' (expected {string.Join('|', OpKinds)})");
+            return OpErr(400, $"unknown op '{req.op}' (expected {string.Join('|', OpKinds)})");
 
         double voxel = req.voxelSizeMM;
-        if (voxel <= 0) return Bad("voxelSizeMM must be > 0");
+        if (voxel <= 0) return OpErr(400, "voxelSizeMM must be > 0");
         double minFeature = 1.5 * voxel;   // thickness/offset must clear this
 
         // ---- primitive: no inputs; validate descriptor + sizes ----
@@ -67,19 +98,19 @@ public static class OpsEndpoints
         {
             var p = req.primitive;
             if (p is null || p.sizeMM is null)
-                return Bad("primitive op requires primitive.sizeMM");
+                return OpErr(400, "primitive op requires primitive.sizeMM");
             string pk = (p.kind ?? "").Trim().ToLowerInvariant();
             if (Array.IndexOf(PrimitiveKinds, pk) < 0)
-                return Bad($"unknown primitive kind '{p.kind}' (expected {string.Join('|', PrimitiveKinds)})");
+                return OpErr(400, $"unknown primitive kind '{p.kind}' (expected {string.Join('|', PrimitiveKinds)})");
             var sz = p.sizeMM;
             if (sz.x <= 0 || sz.y <= 0 || sz.z <= 0)
-                return Bad("primitive sizeMM must be > 0 on all axes");
+                return OpErr(400, "primitive sizeMM must be > 0 on all axes");
 
             var c = p.centerMM ?? new Vec3Dto();
             var bbox = BboxDto.From(
                 new[] { c.x - sz.x / 2, c.y - sz.y / 2, c.z - sz.z / 2 },
                 new[] { c.x + sz.x / 2, c.y + sz.y / 2, c.z + sz.z / 2 });
-            if (Endpoints.ResolutionError(bbox.MaxDim(), voxel) is { } pe) return Bad(pe);
+            if (Endpoints.ResolutionError(bbox.MaxDim(), voxel) is { } pe) return OpErr(400, pe);
             string? pw = Endpoints.ResolutionWarning(bbox.VoxelCount(voxel));
 
             string plabel = $"PRIM · {pk.ToUpperInvariant()} {Fmt(sz.x)}×{Fmt(sz.y)}×{Fmt(sz.z)}";
@@ -94,7 +125,7 @@ public static class OpsEndpoints
             _ => 1,   // shell, offset, transform, mirror, duplicate
         };
         if (ResolveInputs(req, parts, required, out var srcParts, out var refs) is { } inErr)
-            return Bad(inErr);
+            return OpErr(400, inErr);
 
         string a = srcParts[0].name;
         string b = srcParts.Count > 1 ? srcParts[1].name : "";
@@ -115,7 +146,7 @@ public static class OpsEndpoints
             catch (Exception ex)
             {
                 TryDeleteDir(dupDir);
-                return Results.Problem(detail: $"duplicate copy failed: {ex.Message}", statusCode: 500);
+                return OpErr(500, $"duplicate copy failed: {ex.Message}");
             }
 
             string dupLabel = $"DUPLICATE · {a}";
@@ -143,7 +174,7 @@ public static class OpsEndpoints
             };
             parts.Add(dupPart);
             log.LogInformation("duplicate part {Id} <- {SrcId}", dupId, src.id);
-            return Results.Ok(dupPart);
+            return OpSync(dupPart);
         }
 
         // ---- per-op validation + label ----
@@ -155,7 +186,7 @@ public static class OpsEndpoints
             {
                 string bk = (req.booleanKind ?? "").Trim().ToLowerInvariant();
                 if (Array.IndexOf(BooleanKinds, bk) < 0)
-                    return Bad($"unknown booleanKind '{req.booleanKind}' (expected {string.Join('|', BooleanKinds)})");
+                    return OpErr(400, $"unknown booleanKind '{req.booleanKind}' (expected {string.Join('|', BooleanKinds)})");
                 string sym = bk switch { "union" => "+", "difference" => "−", _ => "∩" };
                 label = $"BOOLEAN · {a} {sym} {b}";
                 guard = true;
@@ -169,16 +200,16 @@ public static class OpsEndpoints
             {
                 string dir = (req.shellDirection ?? "").Trim().ToLowerInvariant();
                 if (Array.IndexOf(ShellDirs, dir) < 0)
-                    return Bad($"unknown shellDirection '{req.shellDirection}' (expected {string.Join('|', ShellDirs)})");
+                    return OpErr(400, $"unknown shellDirection '{req.shellDirection}' (expected {string.Join('|', ShellDirs)})");
                 if (req.shellThicknessMM <= minFeature)
-                    return Bad($"shellThicknessMM ({req.shellThicknessMM}) must exceed 1.5×voxel ({minFeature:0.###} mm)");
+                    return OpErr(400, $"shellThicknessMM ({req.shellThicknessMM}) must exceed 1.5×voxel ({minFeature:0.###} mm)");
                 label = $"SHELL · {dir.ToUpperInvariant()} {Fmt(req.shellThicknessMM)}mm";
                 guard = true;
                 break;
             }
             case "offset":
                 if (Math.Abs(req.offsetDistMM) <= minFeature)
-                    return Bad($"|offsetDistMM| ({Math.Abs(req.offsetDistMM)}) must exceed 1.5×voxel ({minFeature:0.###} mm)");
+                    return OpErr(400, $"|offsetDistMM| ({Math.Abs(req.offsetDistMM)}) must exceed 1.5×voxel ({minFeature:0.###} mm)");
                 label = $"OFFSET · {(req.offsetDistMM >= 0 ? "+" : "−")}{Fmt(Math.Abs(req.offsetDistMM))}mm";
                 guard = true;
                 break;
@@ -188,14 +219,14 @@ public static class OpsEndpoints
                 break;
             case "mirror":
                 if (req.mirror is null || req.mirror.planeNormal is null)
-                    return Bad("mirror op requires mirror.planeNormal");
+                    return OpErr(400, "mirror op requires mirror.planeNormal");
                 var n = req.mirror.planeNormal;
                 if (n.x == 0 && n.y == 0 && n.z == 0)
-                    return Bad("mirror.planeNormal must be non-zero");
+                    return OpErr(400, "mirror.planeNormal must be non-zero");
                 label = $"MIRROR · {a}";
                 break;
             default:
-                return Bad($"unhandled op '{op}'");
+                return OpErr(400, $"unhandled op '{op}'");
         }
 
         // ---- resolution guard over the union bbox of (transformed) inputs ----
@@ -203,7 +234,7 @@ public static class OpsEndpoints
         if (guard)
         {
             var union = UnionBbox(srcParts, req.inputs!, required);
-            if (Endpoints.ResolutionError(union.MaxDim(), voxel) is { } ge) return Bad(ge);
+            if (Endpoints.ResolutionError(union.MaxDim(), voxel) is { } ge) return OpErr(400, ge);
             warning = Endpoints.ResolutionWarning(union.VoxelCount(voxel));
         }
 
@@ -212,7 +243,7 @@ public static class OpsEndpoints
 
     // ---- shared reserve-part + submit-op path (202) ------------------------
 
-    private static IResult SubmitWorkerOp(
+    private static OpCoreResult SubmitWorkerOp(
         OpRequestDto req, string op,
         List<JobManager.MeshRefPayload> refs, List<string> sourceIds,
         string label, string? warning,
@@ -241,15 +272,13 @@ public static class OpsEndpoints
         {
             TryDeleteDir(newDir);
             log.LogError(ex, "op submit failed");
-            return Results.Problem(detail: $"op submit failed: {ex.Message}", statusCode: 500);
+            return OpErr(500, $"op submit failed: {ex.Message}");
         }
 
-        return Results.Accepted($"/api/jobs/{jobId}", new { jobId, partId = newId, warning });
+        return OpAsync(jobId, newId, warning);
     }
 
     // ---- helpers -----------------------------------------------------------
-
-    private static IResult Bad(string message) => Results.BadRequest(new { error = message });
 
     /// <summary>
     /// Resolve the first <paramref name="required"/> inputs: each must have a

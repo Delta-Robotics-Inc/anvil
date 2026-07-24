@@ -72,10 +72,20 @@ builder.Services.AddSingleton<PartStore>();
 builder.Services.AddSingleton(sp => new PythonSidecar(
     pythonPath, sidecarScript, sp.GetRequiredService<ILogger<PythonSidecar>>()));
 builder.Services.AddSingleton(sp => new JobManager(
-    workerPath, jobsDir, repoRoot, maxConcurrent,
+    workerPath, jobsDir, partsDir, repoRoot, maxConcurrent,
     sp.GetRequiredService<PythonSidecar>(),
     sp.GetRequiredService<PartStore>(),
     sp.GetRequiredService<ILogger<JobManager>>()));
+builder.Services.AddSingleton<ScriptLibrary>();
+
+// ---- MCP server (official C# SDK) ----------------------------------------
+// In-process, stateless HTTP MCP at /mcp (loopback binding unchanged). Tools
+// live in server\Mcp\AnvilTools.cs ([McpServerToolType]) and call the same
+// JobManager / PartStore / ScriptLibrary / sidecar as the HTTP API.
+builder.Services
+    .AddMcpServer()
+    .WithHttpTransport(o => o.Stateless = true)
+    .WithToolsFromAssembly();
 
 // Bind to 127.0.0.1:5238 by default, but honor an explicit --urls / ASPNETCORE_URLS
 // override (both surface as the "urls" configuration key) so a second instance can
@@ -111,6 +121,11 @@ app.MapGet("/api/health", () => Results.Ok(new
 
 app.MapInfillApi();
 app.MapOpsApi();
+app.MapScriptsApi();
+
+// MCP JSON-RPC endpoint (stateless streamable HTTP). Loopback only, no auth —
+// see the README SECURITY section: connecting an agent lets it run code here.
+app.MapMcp("/mcp");
 
 app.Run();
 

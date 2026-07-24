@@ -502,6 +502,109 @@ byte-identical to the legacy behaviour.
 > survive a server restart**, even though their `data/parts/{id}/` folders remain
 > on disk.
 
+## MCP server (drive Anvil from an AI agent)
+
+Anvil hosts an in-process **Model Context Protocol** server at `/mcp` (streamable
+HTTP, stateless) using the official C# SDK. Any MCP client — Claude Code,
+Claude Desktop, your own agent — can list parts, run every tool op, generate
+lattice, run scripts, and export results. Add it once:
+
+```bash
+claude mcp add anvil --transport http --url http://127.0.0.1:5238/mcp
+```
+
+The server binds **`127.0.0.1` only** and has **no authentication** — read the
+[Security](#security) section before connecting anything.
+
+Job-spawning tools **poll to completion internally** (250 ms, ~10 min cap) and
+return the terminal job as JSON, so an agent sees synchronous results. Structured
+worker errors — including a script's `scriptError[]` compile diagnostics — pass
+straight through.
+
+| Tool | What it does |
+|---|---|
+| `list_parts` | List every registered part (uploads + derived + script outputs). |
+| `add_part_from_file` | Register a part from an **absolute** local `.stl` / `.step` / `.stp` path. |
+| `delete_part` | Delete a part by id. |
+| `duplicate_part` | Independent copy of a part (synchronous). |
+| `create_primitive` | `box`\|`cube`\|`cylinder`\|`sphere`\|`cone` — `sizeMM` `[x,y,z]`, optional `centerMM`. |
+| `boolean_op` | `union`\|`difference`\|`intersection` of two parts. |
+| `merge_parts` | Union two parts with a smoothing `filletMM` (default 1). |
+| `shell_part` | Hollow into a shell — `inside`\|`outside`\|`centered`, `thicknessMM`. |
+| `offset_part` | Grow / shrink by a signed `distMM`. |
+| `transform_part` | Bake `translateMM`/`rotateDeg`/`scale` into a new part. |
+| `mirror_part` | Mirror across a plane (`planeNormal`, optional `planePoint`). |
+| `generate_infill` | Full TPMS generate — `single`/`fuse`, patterns, sheet/skeletal, the zoned schema + transforms. |
+| `get_job` / `cancel_job` | Inspect / cancel a job. |
+| `export_step` | Faceted-STEP export (optional remesh budget, optional `outPath`). |
+| `get_result_stl` | Copy a job's result STL to an absolute `outPath`. |
+| `run_script` | Compile + run C# geometry code (see below). |
+| `list_scripts` / `get_script` / `save_script` | Browse and save the script library. |
+
+## Scripting (LEAP71-style code-to-geometry)
+
+Anvil compiles and runs user **C# scripts** (`.csx`) against the PicoGK +
+`Anvil.Worker` APIs in a per-job worker process. A script is the escape hatch for
+computational parts that the fixed tool palette can't express — parametric heat
+exchangers, functionally-graded lattices, anything you can write with signed
+distance fields. Run one from the **SCRIPTS** panel in the app, `POST
+/api/scripts/run`, or the `run_script` MCP tool.
+
+**Globals** (the script's `this` — call them unqualified):
+
+| Member | Purpose |
+|---|---|
+| `Params` | `IReadOnlyDictionary<string,object?>` of the run's parameters. |
+| `ParamF(key, fallback)` / `ParamS` / `ParamB` | Typed parameter reads with defaults. |
+| `VoxelSizeMM` | The voxel size this job runs at. |
+| `SavePart(name, Voxels)` | Mesh the field, remove floating islands, watertight-check, register it. |
+| `SavePart(name, Mesh)` | Register a mesh you built directly (watertight **check** only). |
+| `Log(msg)` | Structured progress note (collected into the job's `log[]`). |
+
+**Available APIs** (imported automatically): `PicoGK` (`Voxels`, `Mesh`,
+`IImplicit`, `BBox3`, booleans/offsets) and `Anvil.Worker` (`MeshUtil` hand-rolled
+primitives, `TPMSWall`), plus `System`, `System.Numerics`, and a static `Math`.
+
+Run parameters are a JSON object; e.g. `POST /api/scripts/run`:
+
+```jsonc
+{
+  "code": "…C# source…",
+  "name": "my_part",
+  "params": { "sizeMM": 40, "cellMM": 6 },
+  "voxelSizeMM": 0.3
+}
+```
+
+Two versioned seeds live in `scripts-library/` (both are library scripts in the
+SCRIPTS panel and are covered by the Stage-5 gate):
+
+| Seed | What it makes |
+|---|---|
+| `heat_exchanger_core.csx` | A parametric gyroid HX core (box envelope ∩ sheet-gyroid field). The annotated template for LEAP71-style work. |
+| `graded_lattice_puck.csx` | A Ø40×15 puck filled with a **radially graded** skeletal gyroid via a custom inline `IImplicit`. |
+
+User scripts saved through `POST /api/scripts` (or `save_script`) land in
+`data/scripts/` (gitignored, slugified filenames, path-traversal rejected). Part
+provenance stores the script **name + params + SHA-256** — never the source.
+
+## Security
+
+**Read this before exposing the port or connecting an agent.**
+
+- **Scripts and tools execute with your user privileges. There is no sandbox.** A
+  script runs **arbitrary C#** in a worker process; it can read, write, and delete
+  files and do anything your account can. MCP tools run geometry ops and
+  `add_part_from_file` reads arbitrary absolute paths.
+- **The server binds `127.0.0.1` only and has no authentication.** Anyone who can
+  reach the port can drive every tool and run arbitrary code. **Do not** bind it to
+  a public interface, port-forward it, or put it behind a tunnel.
+- **Connecting an agent to `/mcp` means the agent can run code on this machine.**
+  Only connect agents you trust, and **do not run untrusted scripts** — treat a
+  `.csx` exactly like an executable you were handed.
+- Per-job worker processes give crash isolation and cleanup, **not** a security
+  boundary.
+
 ## Samples
 
 `samples/` contains ready-to-use test parts and the generator that made them:
@@ -516,9 +619,10 @@ byte-identical to the legacy behaviour.
 
 ## Testing
 
-Two PowerShell harnesses cover the Wave-1 surface. Both are **self-contained and
-side-effect-free against a running dev server** — they build to a scratch output
-and use an isolated port/data dir, so a live server on `5238` is never touched.
+Three PowerShell harnesses cover the tool, HTTP, scripting and MCP surfaces. All
+are **self-contained and side-effect-free against a running dev server** — they
+build to a scratch output and use an isolated port/data dir, so a live server on
+`5238` is never touched.
 
 ```powershell
 # Worker CLI — drives AnvilWorker.exe directly with generated job.json files.
@@ -532,11 +636,18 @@ powershell -ExecutionPolicy Bypass -File scripts\test_ops.ps1
 # → duplicate 200 → a zoned /api/jobs on op-created primitives → preview.stl,
 # plus the negative cases (zone == base, unknown op, over-resolution → 400).
 powershell -ExecutionPolicy Bypass -File scripts\test_api.ps1
+
+# Scripting + MCP — (a) a worker-direct script job (manifest + watertight STL),
+# (b) a compile-error script → structured scriptError, (c) POST /api/scripts/run
+# heat_exchanger_core → parts registered, and (d) an MCP smoke over raw JSON-RPC
+# to /mcp (initialize → tools/list → create_primitive → boolean_op →
+# generate_infill → run_script).
+powershell -ExecutionPolicy Bypass -File scripts\test_scripts.ps1
 ```
 
-A clean `dotnet build Anvil.sln` plus a green run of both scripts is the
-Wave-1 gate. (`scripts\test_api.ps1` accepts `-Port` to move its throwaway
-instance off 5239 if needed.)
+A clean `dotnet build Anvil.sln` plus a green run of all three scripts is the
+gate. (`scripts\test_api.ps1` and `scripts\test_scripts.ps1` accept `-Port` to
+move their throwaway instance off 5239 if needed.)
 
 ## Platform note
 

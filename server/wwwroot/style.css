@@ -997,3 +997,45 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 .wt-chip.warn { color:var(--amber); }
 .cleanup-note { margin:0 0 10px; color:color-mix(in oklch,var(--dim) 78%,var(--fg)); }
 .cleanup-note.hidden { display:none; }
+
+/* ── SCRIPTS panel (Stage 5 — code-to-geometry) ───────────────────────── */
+.scripts-overlay {
+  position:fixed; inset:0; z-index:100;
+  display:flex; align-items:flex-start; justify-content:center; padding:64px 16px;
+  background:color-mix(in oklch,var(--bg) 55%,transparent); backdrop-filter:blur(3px);
+}
+.scripts-overlay[hidden] { display:none; }
+.scripts-panel {
+  width:min(560px,94vw); max-height:76vh; display:flex; flex-direction:column;
+  background:var(--card); border:1px solid var(--line);
+  clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,12px 100%,0 calc(100% - 12px));
+}
+.scripts-head {
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:12px 14px; border-bottom:1px solid var(--line);
+}
+.scripts-close {
+  background:none; border:none; color:var(--dim); cursor:pointer; font-size:13px; padding:2px 6px;
+}
+.scripts-close:hover { color:var(--fg); }
+.scripts-list { overflow:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
+.scripts-row {
+  display:flex; align-items:center; gap:10px; padding:8px 10px;
+  border:1px solid var(--line); background:color-mix(in oklch,var(--card) 88%,var(--bg));
+}
+.scripts-name { flex:1; font-size:12px; color:var(--fg); font-weight:600; }
+.scripts-src { opacity:.6; text-transform:uppercase; letter-spacing:.1em; font-size:9px; }
+.scripts-peek, .scripts-run {
+  font-family:inherit; font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+  padding:5px 10px; cursor:pointer; border:1px solid var(--line); background:var(--bg); color:var(--dim);
+}
+.scripts-peek:hover { color:var(--fg); }
+.scripts-run { border-color:color-mix(in oklch,var(--primary) 50%,var(--line)); color:var(--primary); }
+.scripts-run:hover:not(:disabled) { background:color-mix(in oklch,var(--primary) 16%,var(--card)); }
+.scripts-run:disabled, .scripts-peek:disabled { opacity:.5; cursor:default; }
+.scripts-code {
+  margin:0 8px 6px; padding:10px; max-height:220px; overflow:auto;
+  background:var(--bg); border:1px solid var(--line);
+  font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; color:var(--fg); white-space:pre;
+}
+.scripts-foot { padding:10px 14px; border-top:1px solid var(--line); opacity:.6; font-size:9px; }

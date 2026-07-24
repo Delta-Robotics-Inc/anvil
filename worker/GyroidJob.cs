@@ -17,7 +17,7 @@ using PicoGK;
 namespace Anvil.Worker
 {
     // ---- Job model (JobRequest schema from the plan) ----
-    class Vec3
+    public class Vec3
     {
         public float x { get; set; }
         public float y { get; set; }
@@ -84,6 +84,11 @@ namespace Anvil.Worker
         public TransformDto? stlTransform { get; set; }        // single / coarseOnly
         public TransformDto? positiveTransform { get; set; }   // fuse positive
         public TransformDto? negativeTransform { get; set; }   // fuse negative
+
+        // ---- Stage 5 script mode (mode == "script"; dispatched to ScriptJob) ----
+        public string? scriptPath { get; set; }                            // abs path to the .csx to compile+run
+        public System.Collections.Generic.Dictionary<string, JsonElement>? scriptParams { get; set; } // user params (unwrapped for ScriptGlobals.Params)
+        public string? outputDir { get; set; }                             // dir the script's SavePart writes STLs + manifest into
 
         public static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -198,7 +203,8 @@ namespace Anvil.Worker
                 case "fuse":       RunFuse(job); break;
                 case "coarseonly": RunCoarseOnly(job); break;
                 case "op":         OpJob.Run(job); break;
-                default: throw new ArgumentException($"unknown mode: '{job.mode}' (expected single|fuse|coarseOnly|op)");
+                case "script":     ScriptJob.Run(job); break;
+                default: throw new ArgumentException($"unknown mode: '{job.mode}' (expected single|fuse|coarseOnly|op|script)");
             }
         }
 

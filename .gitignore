@@ -4,6 +4,8 @@ obj/
 
 # Runtime data (uploads, jobs, results)
 data/
+# User-saved scripts (the versioned seeds live in scripts-library/, which IS tracked)
+data/scripts/
 
 # Python
 __pycache__/

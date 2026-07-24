@@ -105,6 +105,30 @@ export async function startStepExport(id, targetTriangles) {
   return res.json().catch(() => ({}));
 }
 
+// ── Stage-5 scripting (POST /api/scripts/run, GET /api/scripts) ────────
+/** List library + user scripts. Returns [{id,name,source,savedUtc}]. */
+export async function listScripts() {
+  const res = await fetch(`${BASE}/scripts`);
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+/** Fetch one script's source by id. Returns { id, name, code, source }. */
+export async function getScript(id) {
+  const res = await fetch(`${BASE}/scripts/${encodeURIComponent(id)}`);
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+/** Run a script (compile + execute in a worker). Returns { jobId }. */
+export async function runScript(body) {
+  const res = await fetch(`${BASE}/scripts/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
 // ── URL helpers (used directly by <a>/download links and the STL loader) ──
 export const partMeshUrl = (id) => `${BASE}/parts/${encodeURIComponent(id)}/mesh.stl`;
 export const previewUrl  = (id, download = false) =>

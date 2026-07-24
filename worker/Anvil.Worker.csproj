@@ -17,6 +17,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- In-app C# scripting (LEAP71-style code-to-geometry): the worker compiles
+         and runs user .csx against the PicoGK + Anvil.Worker APIs in a per-job
+         process. Worker-ONLY (the server never references Roslyn or PicoGK). -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.14.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Copy PicoGK native runtime DLLs next to the worker exe so it does not
          depend on the System32-installed copy. -->
     <None Include="..\..\PicoGK\runtime\native\win-x64\*.dll">

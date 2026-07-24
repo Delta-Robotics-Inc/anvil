@@ -28,6 +28,7 @@ public sealed class JobManager : IAsyncDisposable
 {
     private readonly string _workerPath;   // abs AnvilWorker.exe
     private readonly string _jobsDir;      // abs {DataDir}/jobs
+    private readonly string _partsDir;     // abs {DataDir}/parts (script parts land here)
     private readonly string _repoRoot;
     private readonly PythonSidecar _sidecar;
     private readonly PartStore _parts;     // derived-op outputs register here
@@ -46,17 +47,19 @@ public sealed class JobManager : IAsyncDisposable
         WriteIndented = true,
     };
 
-    public JobManager(string workerPath, string jobsDir, string repoRoot,
+    public JobManager(string workerPath, string jobsDir, string partsDir, string repoRoot,
         int maxConcurrent, PythonSidecar sidecar, PartStore parts, ILogger<JobManager> log)
     {
         _workerPath = workerPath;
         _jobsDir = jobsDir;
+        _partsDir = partsDir;
         _repoRoot = repoRoot;
         _sidecar = sidecar;
         _parts = parts;
         _log = log;
         _slots = new SemaphoreSlim(Math.Max(1, maxConcurrent), Math.Max(1, maxConcurrent));
         Directory.CreateDirectory(_jobsDir);
+        Directory.CreateDirectory(_partsDir);
         _dispatcher = Task.Run(DispatchLoopAsync);
 
         if (!File.Exists(_workerPath))
@@ -268,6 +271,65 @@ public sealed class JobManager : IAsyncDisposable
         return id;
     }
 
+    /// <summary>
+    /// Submit a script job (mode == "script"). Writes the user code to
+    /// &lt;jobDir&gt;\script.csx and a worker job.json pointing at it, then enqueues
+    /// through the SAME channel + slot gate as generate/op jobs. On success each
+    /// part the script SavePart-ed is registered in the PartStore (via
+    /// FinalizeScriptParts) and exposed on JobStatus.parts. The script SOURCE is
+    /// never stored in part provenance — only its SHA-256 + name + params.
+    /// </summary>
+    public string SubmitScript(string code, string? name, JsonNode? scriptParams, double voxelSizeMM)
+    {
+        string id = "j_" + Token.New();
+        string dir = Path.Combine(_jobsDir, id);
+        Directory.CreateDirectory(dir);
+        string scriptPath = Path.Combine(dir, "script.csx");
+        string outputDir = Path.Combine(dir, "parts");
+        string jobJson = Path.Combine(dir, "job.json");
+
+        File.WriteAllText(scriptPath, code);
+
+        // scriptSha256 (hex) — stamped into every part's provenance instead of code.
+        string sha = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(code))).ToLowerInvariant();
+
+        var workerJob = new Dictionary<string, object?>
+        {
+            ["mode"] = "script",
+            ["scriptPath"] = scriptPath,
+            ["voxelSizeMM"] = voxelSizeMM,
+            ["outputDir"] = outputDir,
+            ["cleanup"] = true,
+        };
+        if (scriptParams is JsonObject po && po.Count > 0)
+            workerJob["scriptParams"] = JsonNode.Parse(po.ToJsonString());
+
+        File.WriteAllText(jobJson, JsonSerializer.Serialize(workerJob, CamelOut));
+
+        string dispName = string.IsNullOrWhiteSpace(name) ? "script" : name!.Trim();
+        var rec = new JobRecord
+        {
+            Id = id,
+            Dir = dir,
+            JobJsonPath = jobJson,
+            ResultStlPath = Path.Combine(dir, "result.stl"), // unused for scripts
+            ResultStepPath = Path.Combine(dir, "result.step"),
+            VoxelSizeMM = voxelSizeMM,
+            State = JobState.Queued,
+            Stage = "queued",
+            Kind = JobKind.Script,
+            PendingScriptName = dispName,
+            PendingScriptSha = sha,
+            PendingScriptParams = scriptParams is JsonObject sp && sp.Count > 0
+                ? (JsonNode)JsonNode.Parse(sp.ToJsonString())! : null,
+        };
+        _jobs[id] = rec;
+        _queue.Writer.TryWrite(rec);
+        _log.LogInformation("script job {Id} submitted ('{Name}', voxel {Voxel})", id, dispName, voxelSizeMM);
+        return id;
+    }
+
     public JobRecord? Get(string id) => _jobs.TryGetValue(id, out var r) ? r : null;
 
     public JobStatusDto? Status(string id) => _jobs.TryGetValue(id, out var r) ? r.Snapshot() : null;
@@ -344,58 +406,57 @@ public sealed class JobManager : IAsyncDisposable
 
         await proc.WaitForExitAsync();
         int exit = proc.ExitCode;
+        proc.Dispose();
 
-        JobState finalState;
-        lock (rec.Gate)
+        bool cancelled;
+        lock (rec.Gate) { rec.Proc = null; cancelled = rec.CancelRequested; }
+
+        if (cancelled)
         {
-            rec.Proc = null;
-            if (rec.CancelRequested)
+            lock (rec.Gate) { rec.State = JobState.Cancelled; rec.Stage = "cancelled"; }
+            if (rec.Kind == JobKind.Op) TryDeleteDir(rec.PendingPartDir);
+        }
+        else if (exit == 0)
+        {
+            // Register outputs BEFORE the job becomes observably "done", so any
+            // client that sees state==done also sees the registered part(s) — no
+            // finalize-after-done race. A registration failure flips it to Failed.
+            bool registered = true;
+            if (rec.Kind == JobKind.Op)
             {
-                rec.State = JobState.Cancelled;
-                rec.Stage = "cancelled";
+                try { FinalizeOpPart(rec); }
+                catch (Exception ex)
+                {
+                    registered = false;
+                    _log.LogError(ex, "op job {Id} produced output but part registration failed", rec.Id);
+                    lock (rec.Gate) { rec.State = JobState.Failed; rec.Stage = "failed"; rec.Error = $"op output registration failed: {ex.Message}"; }
+                    TryDeleteDir(rec.PendingPartDir);
+                }
             }
-            else if (exit == 0)
+            else if (rec.Kind == JobKind.Script)
             {
-                rec.State = JobState.Done;
-                rec.Stage = "done";
-                rec.Progress = 1.0;
+                try { FinalizeScriptParts(rec); }
+                catch (Exception ex)
+                {
+                    registered = false;
+                    _log.LogError(ex, "script job {Id} produced output but part registration failed", rec.Id);
+                    lock (rec.Gate) { rec.State = JobState.Failed; rec.Stage = "failed"; rec.Error = $"script part registration failed: {ex.Message}"; }
+                }
             }
-            else
+
+            if (registered)
+                lock (rec.Gate) { rec.State = JobState.Done; rec.Stage = "done"; rec.Progress = 1.0; }
+        }
+        else
+        {
+            lock (rec.Gate)
             {
                 rec.State = JobState.Failed;
                 rec.Stage = "failed";
                 rec.Error = ParseWorkerError(rec.Stderr.ToString(), exit);
+                rec.ErrorData = ParseWorkerErrorData(rec.Stderr.ToString());
             }
-            finalState = rec.State;
-        }
-        proc.Dispose();
-
-        // ---- Wave-1 op finalization: register the derived part on success,
-        //      delete the reserved dir on failure/cancel. ----
-        if (rec.Kind == JobKind.Op)
-        {
-            if (finalState == JobState.Done)
-            {
-                try
-                {
-                    FinalizeOpPart(rec);
-                }
-                catch (Exception ex)
-                {
-                    _log.LogError(ex, "op job {Id} produced output but part registration failed", rec.Id);
-                    lock (rec.Gate)
-                    {
-                        rec.State = JobState.Failed;
-                        rec.Stage = "failed";
-                        rec.Error = $"op output registration failed: {ex.Message}";
-                    }
-                    TryDeleteDir(rec.PendingPartDir);
-                }
-            }
-            else
-            {
-                TryDeleteDir(rec.PendingPartDir);
-            }
+            if (rec.Kind == JobKind.Op) TryDeleteDir(rec.PendingPartDir);
         }
 
         _log.LogInformation("job {Id} finished: {State} (exit {Exit})", rec.Id, rec.State, exit);
@@ -441,6 +502,81 @@ public sealed class JobManager : IAsyncDisposable
             rec.Id, part.id, part.name, part.triangles, part.volumeMM3);
     }
 
+    /// <summary>
+    /// Register EVERY part a script SavePart-ed. The worker's done-stats carry a
+    /// "parts" manifest (each with an abs STL path in the job's parts dir); for
+    /// each entry we reserve a part id + dir, COPY the STL to
+    /// data\parts\{id}\mesh.stl, read its mass props, and register a derived
+    /// PartInfo (op:"script", label:"SCRIPT · {name}", provenance = name + params
+    /// + scriptSha256 — never the code). Exposed via JobStatus.parts.
+    /// </summary>
+    private void FinalizeScriptParts(JobRecord rec)
+    {
+        var registered = new List<PartInfo>();
+        JsonNode? statsNode;
+        lock (rec.Gate) statsNode = rec.Stats;
+
+        var manifest = (statsNode as JsonObject)?["parts"] as JsonArray;
+        if (manifest is not null)
+        {
+            foreach (var node in manifest)
+            {
+                if (node is not JsonObject entry) continue;
+                string srcStl = entry["path"]?.GetValue<string>() ?? "";
+                if (string.IsNullOrEmpty(srcStl) || !File.Exists(srcStl))
+                {
+                    _log.LogWarning("script job {Id}: manifest STL missing, skipping: {Path}", rec.Id, srcStl);
+                    continue;
+                }
+
+                string partId = "p_" + Token.New();
+                string partDir = Path.Combine(_partsDir, partId);
+                Directory.CreateDirectory(partDir);
+                string meshStl = Path.Combine(partDir, "mesh.stl");
+                File.Copy(srcStl, meshStl, overwrite: true);
+
+                var info = StlInfo.ReadBinary(meshStl);
+                bool? watertight = entry["watertight"] is JsonValue wv && wv.TryGetValue(out bool wt) ? wt : null;
+                string partName = entry["name"]?.GetValue<string>() ?? partId;
+
+                var opParams = new JsonObject
+                {
+                    ["name"] = rec.PendingScriptName,
+                    ["params"] = rec.PendingScriptParams is JsonNode pn ? JsonNode.Parse(pn.ToJsonString()) : null,
+                    ["scriptSha256"] = rec.PendingScriptSha,
+                };
+
+                var part = new PartInfo
+                {
+                    id = partId,
+                    name = partName,
+                    sourceFormat = "derived",
+                    stlUrl = $"/api/parts/{partId}/mesh.stl",
+                    triangles = info.Triangles,
+                    bbox = BboxDto.From(info.Bbox),
+                    volumeMM3 = info.VolumeMM3,
+                    surfaceAreaMM2 = info.SurfaceAreaMM2,
+                    cogMM = info.CogMM,
+                    watertight = watertight,
+                    derived = new DerivedDto
+                    {
+                        op = "script",
+                        label = $"SCRIPT · {rec.PendingScriptName}",
+                        sourceIds = new List<string>(),
+                        opParams = opParams,
+                    },
+                    StlPath = meshStl,
+                    Dir = partDir,
+                };
+                _parts.Add(part);
+                registered.Add(part);
+            }
+        }
+
+        lock (rec.Gate) rec.ResultParts = registered;
+        _log.LogInformation("script job {Id} registered {Count} part(s)", rec.Id, registered.Count);
+    }
+
     private static void TryDeleteDir(string? dir)
     {
         try { if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
@@ -474,6 +610,11 @@ public sealed class JobManager : IAsyncDisposable
                     if (root.TryGetProperty("progress", out var pr) && pr.ValueKind == JsonValueKind.Number)
                         rec.Progress = pr.GetDouble();
                 }
+                else if (root.TryGetProperty("log", out var lg) && lg.ValueKind == JsonValueKind.String)
+                {
+                    // Script Log(...) note — collect into the job's log[] (in order).
+                    rec.LogLines.Add(lg.GetString() ?? "");
+                }
             }
         }
     }
@@ -500,6 +641,33 @@ public sealed class JobManager : IAsyncDisposable
             }
         }
         return $"worker exited with code {exit}";
+    }
+
+    /// <summary>
+    /// If the worker's last stderr JSON line carried MORE than the bare
+    /// {error,stage} (e.g. a script's scriptError[] diagnostics), return that
+    /// whole object so agents get the structured detail. Null otherwise.
+    /// </summary>
+    private static JsonNode? ParseWorkerErrorData(string stderr)
+    {
+        string s = stderr.Trim();
+        if (s.Length == 0) return null;
+        var lines = s.Split('\n');
+        for (int i = lines.Length - 1; i >= 0; i--)
+        {
+            string t = lines[i].Trim();
+            if (t.Length == 0) continue;
+            try
+            {
+                var node = JsonNode.Parse(t);
+                if (node is JsonObject o &&
+                    (o.ContainsKey("scriptError") || o.Count > 2))
+                    return node;
+            }
+            catch { }
+            return null;
+        }
+        return null;
     }
 
     // ---- Cancellation ------------------------------------------------------
@@ -698,7 +866,7 @@ public sealed class JobManager : IAsyncDisposable
 
 public enum JobState { Queued, Running, Done, Failed, Cancelled }
 public enum StepState { None, Running, Done, Failed }
-public enum JobKind { Generate, Op }
+public enum JobKind { Generate, Op, Script }
 
 public sealed class JobRecord
 {
@@ -718,6 +886,13 @@ public sealed class JobRecord
     public DerivedDto? PendingDerived; // provenance to stamp on the result part
     public PartInfo? ResultPart;       // set on success -> exposed via Snapshot
 
+    // ---- Stage 5 script jobs (Kind == Script) ----
+    public string? PendingScriptName;      // display name for SCRIPT · {name}
+    public string? PendingScriptSha;       // sha-256 hex of the code (provenance)
+    public JsonNode? PendingScriptParams;  // user params (provenance)
+    public List<PartInfo>? ResultParts;    // every registered SavePart output
+    public readonly List<string> LogLines = new(); // script Log(...) notes, in order
+
     public readonly object Gate = new();
     public JobState State = JobState.Queued;
     public string Stage = "queued";
@@ -725,6 +900,7 @@ public sealed class JobRecord
     public JsonNode? Stats;
     public string? Warning;
     public string? Error;
+    public JsonNode? ErrorData;         // full worker error JSON (e.g. scriptError[])
     public readonly StringBuilder Stderr = new();
 
     public StepState StepState = StepState.None;
@@ -748,6 +924,7 @@ public sealed class JobRecord
                 stats = Stats,
                 warning = Warning,
                 error = Error,
+                errorData = ErrorData,
                 step = new StepStatusDto
                 {
                     state = StepState.ToString().ToLowerInvariant(),
@@ -756,6 +933,8 @@ public sealed class JobRecord
                     error = StepError,
                 },
                 part = ResultPart,
+                parts = ResultParts,
+                log = LogLines.Count > 0 ? new List<string>(LogLines) : null,
             };
         }
     }

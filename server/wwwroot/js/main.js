@@ -5,6 +5,7 @@
 import * as api from './api.js';
 import * as ui from './ui.js';
 import * as tools from './tools.js';
+import * as scriptsPanel from './scripts.js';
 import { Viewer } from './viewer.js';
 import { isBaseRole, isZoneRole } from './roles.js';
 
@@ -248,6 +249,32 @@ async function addOpPart(part) {
     ui.toast(`"${part.name}" created, but its 3D preview failed: ${err.message}`, 'warn');
   }
 }
+
+// ── Scripting (SCRIPTS panel → /api/scripts/run → poll → new parts) ────
+// A script job registers EVERY part it SavePart-ed; on `done` the server has
+// already populated st.parts (registered before the job flips to done), so we
+// add each through the normal derived-part flow. Returns the added parts.
+async function runScriptFlow(scriptId, name, onProgress) {
+  const { code } = await api.getScript(scriptId);
+  const resp = await api.runScript({ code, name });
+  const parts = await pollScriptJob(resp.jobId, onProgress);
+  for (const p of parts) await addOpPart(p);
+  return parts;
+}
+function pollScriptJob(jobId, onProgress) {
+  return new Promise((resolve, reject) => {
+    const h = setInterval(async () => {
+      let st;
+      try { st = await api.getJob(jobId); }
+      catch (err) { clearInterval(h); reject(new Error(`lost contact with job: ${err.message}`)); return; }
+      onProgress?.(prettyStage(st.stage, st.state));
+      if (st.state === 'done') { clearInterval(h); resolve(st.parts || []); }
+      else if (st.state === 'failed' || st.state === 'error') { clearInterval(h); reject(new Error(st.error || 'script failed')); }
+      else if (st.state === 'cancelled') { clearInterval(h); reject(new Error('script cancelled')); }
+    }, 500);
+  });
+}
+scriptsPanel.initScripts({ runScript: runScriptFlow, toast: (m, k, ms) => ui.toast(m, k, ms) });
 
 // ── Tool controller (passed to tools.initTools) ───────────────────────
 const toolCtx = {

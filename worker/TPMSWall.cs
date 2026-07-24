@@ -24,7 +24,7 @@ namespace Anvil.Worker
     /// Generic triply-periodic minimal surface wall as IImplicit.
     /// Returns approximate signed distance (mm) to the chosen TPMS solid.
     /// </summary>
-    class TPMSWall : IImplicit
+    public class TPMSWall : IImplicit
     {
         public enum EFn { Gyroid, SchwarzP, SchwarzD, Lidinoid, Neovius }
         public enum ELattice { Sheet, Skeletal }

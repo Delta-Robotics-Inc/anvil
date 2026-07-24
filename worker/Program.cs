@@ -41,6 +41,19 @@ try
     Console.Out.Flush();
     return 0;
 }
+catch (ScriptCompilationException sce)
+{
+    // A script that failed to COMPILE: emit the structured diagnostics so the
+    // server/agent can point at the offending line(s). stage stays "script".
+    Console.Out.Flush();
+    Console.Error.WriteLine(JsonSerializer.Serialize(new
+    {
+        error = "script compilation failed",
+        stage = "script",
+        scriptError = sce.Diagnostics,
+    }));
+    return 1;
+}
 catch (Exception ex)
 {
     Console.Out.Flush();

@@ -222,4 +222,15 @@ public sealed class JobStatusDto
     // derived part (id, mass props, provenance). Null for generate jobs and for
     // op jobs that have not finished.
     public PartInfo? part { get; set; }
+
+    // ---- Stage 5 script jobs (mode == "script") ----
+    // Every part the script SavePart-ed, registered as a normal derived part.
+    // Null for non-script jobs and for script jobs that have not finished.
+    public List<PartInfo>? parts { get; set; }
+    // Structured progress notes the script emitted via Log(...) (in order).
+    public List<string>? log { get; set; }
+    // On FAILURE only: the worker's full error JSON when it carried more than the
+    // bare {error,stage} (e.g. a script's scriptError[] diagnostics). Null on
+    // success and for plain failures. Passed through verbatim to agents.
+    public JsonNode? errorData { get; set; }
 }

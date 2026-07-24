@@ -27,7 +27,7 @@ namespace Anvil.Worker
     /// scale -> rotX -> rotY -> rotZ -> translate. Scale is reserved (defaults
     /// to 1 on every axis); rotation is in DEGREES; translation is in mm.
     /// </summary>
-    class TransformDto
+    public class TransformDto
     {
         public Vec3? translateMM { get; set; }   // mm
         public Vec3? rotateDeg   { get; set; }   // degrees, X/Y/Z
@@ -35,13 +35,13 @@ namespace Anvil.Worker
     }
 
     /// <summary>An input/zone mesh reference: an STL path plus its current TRS.</summary>
-    class MeshRef
+    public class MeshRef
     {
         public string?       path      { get; set; }
         public TransformDto? transform { get; set; }
     }
 
-    static class MeshUtil
+    public static class MeshUtil
     {
         /// <summary>
         /// The ONE canonical composition, in System.Numerics row-vector form

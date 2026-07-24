@@ -641,6 +641,17 @@ async function pollHealth() {
     if (h.ok && h.workerExists) ui.setHealth('ok', 'local · ready');
     else if (h.ok)              ui.setHealth('warn', 'no worker');
     else                        ui.setHealth('err', 'error');
+    // Reveal the FEEDBACK → GitHub issues link once the server reports a repoUrl.
+    const fb = ui.els.feedbackBtn;
+    if (fb) {
+      const repoUrl = (h.repoUrl || '').trim();
+      if (repoUrl) {
+        fb.href = repoUrl.replace(/\/+$/, '') + '/issues/new';
+        fb.hidden = false;
+      } else {
+        fb.hidden = true;
+      }
+    }
   } catch {
     ui.setHealth('err', 'offline');
   }

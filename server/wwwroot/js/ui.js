@@ -90,6 +90,7 @@ export const els = {
 
   connDot: document.getElementById('conn-dot'),
   connTxt: document.getElementById('conn-txt'),
+  feedbackBtn: document.getElementById('feedback-btn'),
   toastStack:  document.getElementById('toast-stack'),
 
   // ── CAD workspace shell (toolbar · panels · viewport chrome) ──────────

@@ -184,6 +184,28 @@ body::after {
 .anvil-logo { height:16px; width:auto; color:var(--fg); flex:none; filter:drop-shadow(0 0 3px color-mix(in oklch,var(--fg) 30%,transparent)); }
 header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] utility doesn't compile in this runtime build */
 
+/* ── Header neutral link (FEEDBACK → GitHub issues) ───────────────────────
+   Chamfered rim mirroring .tb-btn, but deliberately OUTSIDE the accent state
+   machine: --dim text, --fg on hover, a --line rim over --card fill — never
+   accent orange. Hidden until the health poll reports a non-empty repoUrl. */
+.hdr-link {
+  --c:var(--dim); position:relative; isolation:isolate;
+  display:inline-flex; align-items:center; justify-content:center;
+  padding:4px 10px; margin-left:2px;
+  font-size:10px; font-weight:700; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--c); text-decoration:none; font-family:inherit; white-space:nowrap;
+  transition:color .15s;
+}
+.hdr-link::before { content:""; position:absolute; inset:0; z-index:-2; background:var(--line); transition:background .15s;
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px)); }
+.hdr-link::after  { content:""; position:absolute; inset:1px; z-index:-1; background:var(--card); transition:background .15s;
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px)); }
+.hdr-link:hover { color:var(--fg); }
+.hdr-link:hover::before { background:var(--dim); }
+.hdr-link:focus-visible { color:var(--fg); outline:none; }
+.hdr-link:focus-visible::before { background:var(--dim); }
+.hdr-link[hidden] { display:none; }
+
 /* ── Viewport (flex sizing kept here so the responsive rules can win) ──── */
 .viewport canvas { display:block; }
 

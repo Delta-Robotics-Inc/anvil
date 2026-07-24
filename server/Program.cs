@@ -35,6 +35,7 @@ var cfg = builder.Configuration;
 string pythonPath = cfg["PythonPath"] ?? @"C:\Python314\python.exe";
 string dataDirCfg = cfg["DataDir"] ?? "data";
 string workerCfg = cfg["WorkerPath"] ?? @"worker\bin\Debug\net9.0\AnvilWorker.exe";
+string repoUrl = cfg["RepoUrl"] ?? "";
 int maxConcurrent = int.TryParse(cfg["MaxConcurrentJobs"], out var mc) ? Math.Max(1, mc) : 1;
 
 string dataDir = Path.IsPathRooted(dataDirCfg) ? dataDirCfg : Path.Combine(repoRoot, dataDirCfg);
@@ -105,6 +106,7 @@ app.MapGet("/api/health", () => Results.Ok(new
     workerExists = jm.WorkerExists,
     workerPath,
     python = pythonPath,
+    repoUrl,
 }));
 
 app.MapInfillApi();

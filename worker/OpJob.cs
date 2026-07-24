@@ -6,7 +6,8 @@
 // mode == "op". opKind selects the operation:
 //
 //   MESH-ONLY (exact, no voxelization):
-//     primitive  — Utils.mshCreateCube/Cylinder/GeoSphere/Cone(size, center, sides:0)
+//     primitive  — MeshUtil.CreateBox/Cylinder/Cone/Sphere (hand-rolled, watertight
+//                  by construction; curved shapes facet via MeshUtil.Segments)
 //     transform  — LoadMesh bakes the input's TRS matrix
 //     mirror     — MeshUtil.MirrorWindingFixed (winding-corrected reflection)
 //
@@ -16,9 +17,11 @@
 //     shell      — inside/outside/centered from voxOffset
 //     offset     — voxOffset(signed); errors if the result collapses
 //
-// Every op — even mesh-only — runs inside `using var lib = new Library(voxelSizeMM)`
-// because primitive builders read Library.fVoxelSizeMM. Progress is one JSON
-// line per stage on stdout; the done stats are {volumeMM3, triangles,
+// Every op runs inside `using var lib = new Library(voxelSizeMM)`. Primitives no
+// longer need it (they facet from the job's own voxel size via MeshUtil.Segments),
+// but the voxel ops (boolean/merge/shell/offset) and every `new Voxels(mesh)`
+// require an initialised Library, so it is created unconditionally. Progress is
+// one JSON line per stage on stdout; the done stats are {volumeMM3, triangles,
 // surfaceAreaMM2, cogMM:[x,y,z]}. Errors throw and are emitted by Program.cs as
 // a single JSON object on stderr with a non-zero exit.
 //
@@ -41,7 +44,8 @@ namespace Anvil.Worker
         public string? kind   { get; set; }      // cube|box|cylinder|sphere|cone
         public Vec3?   sizeMM { get; set; }       // full dimensions (X,Y,Z)
         public Vec3?   centerMM { get; set; }     // center (defaults to origin)
-        public int     sides  { get; set; }       // 0 = auto from voxel size
+        public int     sides  { get; set; }       // legacy/ignored — facet count now
+                                                  // derives from MeshUtil.Segments(dia, voxel)
     }
 
     /// <summary>Op done-stats contract (distinct from the flow-metrics Stats).</summary>
@@ -63,14 +67,16 @@ namespace Anvil.Worker
 
             float voxel = job.voxelSizeMM > 0f ? job.voxelSizeMM : 0.3f;
 
-            // A Library MUST exist before ANY mesh op: primitive cylinder/cone/sphere
-            // with sides<=0 read Library.fVoxelSizeMM to pick their tessellation.
+            // A Library MUST exist before any VOXEL op and before `new Voxels(mesh)`.
+            // Hand-rolled primitives no longer read it (they facet from `voxel`
+            // directly), but it is created unconditionally so the voxel path is
+            // always ready.
             using var lib = new PicoGK.Library(voxel);
 
             switch (kind)
             {
                 // ---- mesh-only ----
-                case "primitive": RunPrimitive(job);       break;
+                case "primitive": RunPrimitive(job, voxel); break;
                 case "transform": RunTransformBake(job);   break;
                 case "mirror":    RunMirror(job);          break;
                 // ---- voxel ----
@@ -96,7 +102,7 @@ namespace Anvil.Worker
 
         // ---- mesh-only ops -------------------------------------------------
 
-        static void RunPrimitive(JobRequest job)
+        static void RunPrimitive(JobRequest job, float voxel)
         {
             if (job.primitive is null)
                 throw new ArgumentException("primitive op requires a primitive descriptor");
@@ -112,13 +118,18 @@ namespace Anvil.Worker
 
             Progress.Report("op", 0.4);
             string pk = (p.kind ?? "").Trim().ToLowerInvariant();
+            // Curved primitives facet from the job's voxel size (p.sides is legacy /
+            // ignored). Cylinder & cone use the larger of the X/Y diameters; the
+            // sphere uses the largest of its three axes.
+            int segRound = MeshUtil.Segments(MathF.Max(size.X, size.Y), voxel);
+            int segSphere = MeshUtil.Segments(MathF.Max(size.X, MathF.Max(size.Y, size.Z)), voxel);
             Mesh msh = pk switch
             {
-                "cube" or "box"          => Utils.mshCreateCube(size, center),
-                "cylinder"               => Utils.mshCreateCylinder(size, center, p.sides),
-                "sphere" or "geosphere"  => Utils.mshCreateGeoSphere(size, center, p.sides),
-                "cone"                   => Utils.mshCreateCone(size, center, p.sides),
-                _ => throw new ArgumentException($"unknown primitive kind: '{p.kind}' (cube|cylinder|sphere|cone)"),
+                "cube" or "box"          => MeshUtil.CreateBox(size, center),
+                "cylinder"               => MeshUtil.CreateCylinder(size.X, size.Y, size.Z, center, segRound),
+                "cone"                   => MeshUtil.CreateCone(size.X, size.Y, size.Z, center, segRound),
+                "sphere" or "geosphere"  => MeshUtil.CreateSphere(size, center, segSphere),
+                _ => throw new ArgumentException($"unknown primitive kind: '{p.kind}' (cube|box|cylinder|sphere|cone)"),
             };
 
             FinishMeshOp(job, msh);

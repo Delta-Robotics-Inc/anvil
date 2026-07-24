@@ -174,5 +174,197 @@ namespace Anvil.Worker
             else
                 cogMM = Vector3.Zero;
         }
+
+        // ── Hand-rolled primitive builders ─────────────────────────────────
+        //
+        // These REPLACE PicoGK's Utils.mshCreate* (which are never exercised
+        // upstream and whose GeoSphere projects subdivision midpoints toward the
+        // WORLD ORIGIN — spheres are perfect at the origin and shatter anywhere
+        // else). Every builder here is watertight BY CONSTRUCTION: shared
+        // vertices are added ONCE via nAddVertex and referenced by index, so no
+        // crack can open between adjacent triangles. Winding is CONSISTENTLY
+        // outward (standard normal (v1−v0)×(v2−v0) points away from the solid),
+        // matching PicoGK's own cube/cylinder/cone winding so the meshes
+        // re-voxelize as solids rather than inside-out.
+
+        /// <summary>
+        /// Segments (facets around a curved primitive) from the maximum diameter
+        /// and voxel size: enough facets that a chord spans ~4 voxels, clamped to
+        /// [32, 128]. Curved primitives call this so their tessellation tracks the
+        /// resolution the part will actually be voxelized at.
+        /// </summary>
+        public static int Segments(float maxDiaMM, float voxelMM)
+            => Math.Clamp((int)Math.Ceiling(Math.PI * maxDiaMM / (4.0 * voxelMM)), 32, 128);
+
+        // Round a facet count UP to a multiple of 4 (min 4). This lands ring
+        // vertices exactly on the ±X and ±Y axes, so a curved primitive's bounding
+        // box hits the true diameter on all four cardinal points — its bbox size
+        // equals the requested diameter and its bbox centre equals the requested
+        // centre exactly, rather than drifting inward with an odd, off-axis polygon.
+        static int SnapToQuad(int s) => Math.Max(4, ((s + 3) / 4) * 4);
+
+        /// <summary>
+        /// Axis-aligned box: 8 shared corners, 12 triangles, outward winding.
+        /// sizeMM is the FULL X/Y/Z extent; centerMM is the box centre.
+        /// </summary>
+        public static Mesh CreateBox(Vector3 sizeMM, Vector3 centerMM)
+        {
+            float hx = sizeMM.X * 0.5f, hy = sizeMM.Y * 0.5f, hz = sizeMM.Z * 0.5f;
+            Mesh msh = new Mesh();
+
+            // Corner index = sign bits (bit0 = +X, bit1 = +Y, bit2 = +Z); layout
+            // and per-face winding match PicoGK's (verified-correct) cube.
+            int v0 = msh.nAddVertex(new Vector3(centerMM.X - hx, centerMM.Y - hy, centerMM.Z - hz));
+            int v1 = msh.nAddVertex(new Vector3(centerMM.X - hx, centerMM.Y - hy, centerMM.Z + hz));
+            int v2 = msh.nAddVertex(new Vector3(centerMM.X - hx, centerMM.Y + hy, centerMM.Z - hz));
+            int v3 = msh.nAddVertex(new Vector3(centerMM.X - hx, centerMM.Y + hy, centerMM.Z + hz));
+            int v4 = msh.nAddVertex(new Vector3(centerMM.X + hx, centerMM.Y - hy, centerMM.Z - hz));
+            int v5 = msh.nAddVertex(new Vector3(centerMM.X + hx, centerMM.Y - hy, centerMM.Z + hz));
+            int v6 = msh.nAddVertex(new Vector3(centerMM.X + hx, centerMM.Y + hy, centerMM.Z - hz));
+            int v7 = msh.nAddVertex(new Vector3(centerMM.X + hx, centerMM.Y + hy, centerMM.Z + hz));
+
+            msh.nAddTriangle(v0, v1, v3); msh.nAddTriangle(v0, v3, v2); // −X
+            msh.nAddTriangle(v4, v6, v7); msh.nAddTriangle(v4, v7, v5); // +X
+            msh.nAddTriangle(v0, v2, v6); msh.nAddTriangle(v0, v6, v4); // −Z
+            msh.nAddTriangle(v1, v5, v7); msh.nAddTriangle(v1, v7, v3); // +Z
+            msh.nAddTriangle(v2, v3, v7); msh.nAddTriangle(v2, v7, v6); // +Y
+            msh.nAddTriangle(v0, v4, v5); msh.nAddTriangle(v0, v5, v1); // −Y
+
+            return msh;
+        }
+
+        /// <summary>
+        /// Elliptical cylinder: X/Y are full DIAMETERS, height is along Z centred
+        /// on centerMM. Caps are fan-triangulated from a single centre vertex on
+        /// each end; side quads and both caps share the ring vertices (welded).
+        /// </summary>
+        public static Mesh CreateCylinder(float diaX, float diaY, float heightMM, Vector3 centerMM, int segments)
+        {
+            int n = SnapToQuad(segments);
+            float fA = diaX * 0.5f, fB = diaY * 0.5f;
+            float zB = centerMM.Z - heightMM * 0.5f;
+            float zT = centerMM.Z + heightMM * 0.5f;
+
+            Mesh msh = new Mesh();
+            int iBotC = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, zB));
+            int iTopC = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, zT));
+
+            int[] bot = new int[n], top = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                float a = 2f * MathF.PI * i / n;
+                float x = centerMM.X + MathF.Cos(a) * fA;
+                float y = centerMM.Y + MathF.Sin(a) * fB;
+                bot[i] = msh.nAddVertex(new Vector3(x, y, zB));
+                top[i] = msh.nAddVertex(new Vector3(x, y, zT));
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                int j = (i + 1) % n;
+                msh.nAddTriangle(bot[i], bot[j], top[i]);   // side (outward)
+                msh.nAddTriangle(bot[j], top[j], top[i]);
+                msh.nAddTriangle(iTopC, top[i], top[j]);    // top cap (+Z)
+                msh.nAddTriangle(iBotC, bot[j], bot[i]);    // bottom cap (−Z)
+            }
+
+            return msh;
+        }
+
+        /// <summary>
+        /// Elliptical cone: X/Y are full base DIAMETERS. Base sits at
+        /// centerZ − h/2, apex at centerZ + h/2. Side triangles fan up to a single
+        /// apex vertex; the base cap fans from a single centre vertex.
+        /// </summary>
+        public static Mesh CreateCone(float diaX, float diaY, float heightMM, Vector3 centerMM, int segments)
+        {
+            int n = SnapToQuad(segments);
+            float fA = diaX * 0.5f, fB = diaY * 0.5f;
+            float zB = centerMM.Z - heightMM * 0.5f;
+            float zApex = centerMM.Z + heightMM * 0.5f;
+
+            Mesh msh = new Mesh();
+            int iBotC = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, zB));
+            int iApex = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, zApex));
+
+            int[] bot = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                float a = 2f * MathF.PI * i / n;
+                bot[i] = msh.nAddVertex(new Vector3(
+                    centerMM.X + MathF.Cos(a) * fA,
+                    centerMM.Y + MathF.Sin(a) * fB, zB));
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                int j = (i + 1) % n;
+                msh.nAddTriangle(bot[i], bot[j], iApex);   // side (outward)
+                msh.nAddTriangle(iBotC, bot[j], bot[i]);   // base cap (−Z)
+            }
+
+            return msh;
+        }
+
+        /// <summary>
+        /// UV-sphere / ellipsoid: <paramref name="segments"/> longitudes ×
+        /// max(segments/2, 8) latitude bands, per-axis radii from diaXYZ (an
+        /// ellipsoid when the diameters differ). The two poles are SINGLE shared
+        /// vertices so the cap rows are true triangles (no degenerate zero-area
+        /// quads). Consistent outward winding.
+        /// </summary>
+        public static Mesh CreateSphere(Vector3 diaXYZ, Vector3 centerMM, int segments)
+        {
+            float rx = diaXYZ.X * 0.5f, ry = diaXYZ.Y * 0.5f, rz = diaXYZ.Z * 0.5f;
+            int nLon = SnapToQuad(segments);          // ±X/±Y vertices → exact X/Y bbox
+            int nLat = Math.Max(segments / 2, 8);
+            if ((nLat & 1) == 1) nLat++;              // even → an equator ring exists,
+                                                      // so the X/Y bbox reaches the full radius
+
+            Mesh msh = new Mesh();
+            int iNorth = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, centerMM.Z + rz));
+            int iSouth = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, centerMM.Z - rz));
+
+            // Interior latitude rings j = 1 .. nLat−1 (poles excluded).
+            int[][] ring = new int[nLat][];
+            for (int j = 1; j <= nLat - 1; j++)
+            {
+                float theta = MathF.PI * j / nLat;   // 0 (north) .. π (south)
+                float st = MathF.Sin(theta), ct = MathF.Cos(theta);
+                ring[j] = new int[nLon];
+                for (int i = 0; i < nLon; i++)
+                {
+                    float phi = 2f * MathF.PI * i / nLon;
+                    ring[j][i] = msh.nAddVertex(new Vector3(
+                        centerMM.X + rx * st * MathF.Cos(phi),
+                        centerMM.Y + ry * st * MathF.Sin(phi),
+                        centerMM.Z + rz * ct));
+                }
+            }
+
+            // North cap: pole → ring[1] (outward, +Z-ish).
+            for (int i = 0; i < nLon; i++)
+                msh.nAddTriangle(iNorth, ring[1][i], ring[1][(i + 1) % nLon]);
+
+            // Middle bands: ring[j] (upper) → ring[j+1] (lower), outward radial.
+            for (int j = 1; j <= nLat - 2; j++)
+            {
+                for (int i = 0; i < nLon; i++)
+                {
+                    int k = (i + 1) % nLon;
+                    int aUp = ring[j][i], bUp = ring[j][k];
+                    int aLo = ring[j + 1][i], bLo = ring[j + 1][k];
+                    msh.nAddTriangle(aLo, bLo, aUp);
+                    msh.nAddTriangle(bLo, bUp, aUp);
+                }
+            }
+
+            // South cap: pole → ring[nLat−1] (outward, −Z-ish).
+            int last = nLat - 1;
+            for (int i = 0; i < nLon; i++)
+                msh.nAddTriangle(iSouth, ring[last][(i + 1) % nLon], ring[last][i]);
+
+            return msh;
+        }
     }
 }

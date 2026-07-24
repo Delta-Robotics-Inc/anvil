@@ -159,25 +159,79 @@ const TOOLS = {
     title: 'PRIMITIVE', jp: '基本', confirm: 'CREATE',
     render(host) {
       const c = ctx.unionCenter() || { x: 0, y: 0, z: 0 };
+      let kind = 'box';       // box | cyl | sph | cone
+      let shapeRead = null;   // () -> sizeMM { x, y, z }
+      let inited = false;     // openTool's body-wide initSteppers wires the FIRST build
+
       const seg = segControl(
         [{ val: 'box', label: 'BOX' }, { val: 'cyl', label: 'CYL' },
          { val: 'sph', label: 'SPH' }, { val: 'cone', label: 'CONE' }],
-        'box', () => onChange());
-      const size = tripletStepper('Size', 'mm',
-        { x: 60, y: 40, z: 20 }, 0.5,
-        'Full X/Y/Z dimensions. Cylinder/cone: X,Y = diameters, Z = height. Sphere: X = diameter.');
+        'box', (val) => { kind = val; rebuild(); onChange(); });
+
+      // Shape-specific fields live in their own flex column so the panel's
+      // vertical rhythm is preserved when they are swapped on kind change.
+      const shapeHost = el('div');
+      shapeHost.style.display = 'flex';
+      shapeHost.style.flexDirection = 'column';
+      shapeHost.style.gap = '12px';
+
       const cen = tripletStepper('Center', 'mm',
         { x: round(c.x), y: round(c.y), z: round(c.z) }, 1,
         'Placement of the primitive centre (defaults to the visible-union bbox centre).');
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
+
       host.append(
-        paramBlock('Shape', seg.el, { tip: 'Primitive kind.' }),
-        size.el, cen.el,
+        paramBlock('Shape', seg.el, { tip: 'Box, cylinder, sphere or cone.' }),
+        shapeHost, cen.el,
         paramBlock('Resolution <em>voxel mm</em>', vox.el,
-          { tip: 'Voxel size used to mesh the primitive (curved shapes only).' }),
+          { tip: 'Voxel size the curved shapes (cylinder, sphere, cone) are faceted at — finer = smoother. Box is exact.' }),
       );
+
+      // Rebuild the shape-specific fields for the current kind. On the initial
+      // build openTool's body-wide initSteppers wires them; later kind changes
+      // wire the fresh steppers here (avoids double-binding the first set).
+      function rebuild() {
+        shapeHost.innerHTML = '';
+        if (kind === 'box') {
+          const size = tripletStepper('Size', 'mm', { x: 60, y: 40, z: 20 }, 0.5,
+            'Full X/Y/Z dimensions of the box.');
+          shapeHost.append(size.el);
+          shapeRead = () => xyz(size.inp);
+        } else if (kind === 'cyl') {
+          const dia = stepper({ value: 20, min: 0.1, step: 0.5 });
+          const hgt = stepper({ value: 40, min: 0.1, step: 0.5 });
+          shapeHost.append(
+            paramBlock('Diameter <em>mm</em>', dia.el,
+              { tip: 'Round cross-section (X = Y). Use BOX for a custom rectangular footprint.' }),
+            paramBlock('Height <em>mm</em>', hgt.el,
+              { tip: 'Cylinder height along Z, centred on the centre point.' }),
+          );
+          shapeRead = () => { const d = num(dia.inp, 20); return { x: d, y: d, z: num(hgt.inp, 40) }; };
+        } else if (kind === 'sph') {
+          const dia = stepper({ value: 24, min: 0.1, step: 0.5 });
+          shapeHost.append(
+            paramBlock('Diameter <em>mm</em>', dia.el,
+              { tip: 'Sphere diameter (equal on all axes).' }),
+          );
+          shapeRead = () => { const d = num(dia.inp, 24); return { x: d, y: d, z: d }; };
+        } else { // cone
+          const dia = stepper({ value: 20, min: 0.1, step: 0.5 });
+          const hgt = stepper({ value: 40, min: 0.1, step: 0.5 });
+          shapeHost.append(
+            paramBlock('Base diameter <em>mm</em>', dia.el,
+              { tip: 'Round base (X = Y). Base sits at centre − height/2, apex at centre + height/2.' }),
+            paramBlock('Height <em>mm</em>', hgt.el,
+              { tip: 'Cone height along Z, centred on the centre point.' }),
+          );
+          shapeRead = () => { const d = num(dia.inp, 20); return { x: d, y: d, z: num(hgt.inp, 40) }; };
+        }
+        if (inited) ui.initSteppers(shapeHost);
+      }
+      rebuild();
+      inited = true;
+
       return () => ({
-        kind: seg.get(), size: xyz(size.inp), center: xyz(cen.inp), voxel: num(vox.inp, 0.3),
+        kind, size: shapeRead(), center: xyz(cen.inp), voxel: num(vox.inp, 0.3),
       });
     },
     validate(v) {

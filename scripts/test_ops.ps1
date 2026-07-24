@@ -87,8 +87,62 @@ public static class StlTool {
         }
         return new double[]{ minx,miny,minz, maxx,maxy,maxz, (double)n };
     }
+
+    // Weld vertices by bit-identical position (normalizing -0.0 -> +0.0), then
+    // build the directed-edge multiset. A closed 2-manifold requires every
+    // directed edge (u,v) to be matched by an equal count of (v,u); any edge
+    // where the two directions disagree is an OPEN edge (a boundary/crack).
+    // Returns [watertight(1/0), openEdgeCount, weldedVertexCount].
+    public static double[] Watertight(string path) {
+        byte[] b = File.ReadAllBytes(path);
+        uint n = BitConverter.ToUInt32(b, 80);
+        var index = new System.Collections.Generic.Dictionary<string,int>();
+        var edge  = new System.Collections.Generic.Dictionary<long,int>();
+        int off = 84;
+        int[] tri = new int[3];
+        for (uint i=0; i<n; i++) {
+            int bp = off + (int)i*50 + 12; // skip the 3-float normal
+            for (int v=0; v<3; v++) {
+                int p  = bp + v*12;
+                int xb = BitConverter.ToInt32(b, p);
+                int yb = BitConverter.ToInt32(b, p+4);
+                int zb = BitConverter.ToInt32(b, p+8);
+                if (xb == int.MinValue) xb = 0; // -0.0f -> +0.0f
+                if (yb == int.MinValue) yb = 0;
+                if (zb == int.MinValue) zb = 0;
+                string key = xb + "," + yb + "," + zb;
+                int idx;
+                if (!index.TryGetValue(key, out idx)) { idx = index.Count; index[key] = idx; }
+                tri[v] = idx;
+            }
+            AddEdge(edge, tri[0], tri[1]);
+            AddEdge(edge, tri[1], tri[2]);
+            AddEdge(edge, tri[2], tri[0]);
+        }
+        int open = 0;
+        foreach (var kv in edge) {
+            long k = kv.Key;
+            int u = (int)(k >> 32);
+            int w = (int)(k & 0xffffffffL);
+            long rev = ((long)w << 32) | (uint)u;
+            int cRev; edge.TryGetValue(rev, out cRev);
+            if (cRev != kv.Value) open++;
+        }
+        return new double[]{ open == 0 ? 1.0 : 0.0, (double)open, (double)index.Count };
+    }
+
+    static void AddEdge(System.Collections.Generic.Dictionary<long,int> edge, int a, int b) {
+        long k = ((long)a << 32) | (uint)b;
+        int c; edge.TryGetValue(k, out c); edge[k] = c + 1;
+    }
 }
 '@
+}
+
+function Test-Watertight([string]$name, [string]$path) {
+    $w = [StlTool]::Watertight($path)
+    $ok = ([int]$w[0] -eq 1)
+    Add-Result $name $ok ('openEdges={0} weldedVerts={1}' -f [int]$w[1], [int]$w[2])
 }
 
 function Get-StlBBox([string]$path) {
@@ -120,6 +174,29 @@ function Assert-Close([string]$name, [double]$actual, [double]$expected, [double
 function Assert-AbsClose([string]$name, [double]$actual, [double]$expected, [double]$absTol) {
     $ok = [math]::Abs($actual - $expected) -le $absTol
     Add-Result $name $ok ('actual={0:0.#####} expected={1:0.#####} absTol={2}' -f $actual, $expected, $absTol)
+}
+
+# Asymmetric band: actual must lie within [expected*(1-loFrac), expected*(1+hiFrac)].
+# Used for inscribed-polygon primitives whose polyhedron volume is strictly BELOW
+# the ideal (a small negative deficit, a negligible positive slack).
+function Assert-Band([string]$name, [double]$actual, [double]$expected, [double]$loFrac, [double]$hiFrac) {
+    $lo = $expected * (1.0 - $loFrac)
+    $hi = $expected * (1.0 + $hiFrac)
+    $ok = ($actual -ge $lo) -and ($actual -le $hi)
+    Add-Result $name $ok ('actual={0:0.###} band=[{1:0.###},{2:0.###}]' -f $actual, $lo, $hi)
+}
+
+# Per-axis bbox size AND bbox centre for a primitive placed off the origin. The
+# centre check is the direct regression for the old geosphere bug (which dragged
+# geometry toward the world origin); the size check confirms per-axis extent.
+function Assert-PrimBbox([string]$prefix, [string]$path, [double[]]$expSize, [double[]]$expCenter, [double]$tol) {
+    $bb = Get-StlBBox $path
+    $axes = @('X', 'Y', 'Z')
+    for ($k = 0; $k -lt 3; $k++) {
+        Assert-AbsClose ("$prefix size.$($axes[$k])") ([double]$bb.size[$k]) $expSize[$k] $tol
+        $ctr = ([double]$bb.min[$k] + [double]$bb.max[$k]) / 2.0
+        Assert-AbsClose ("$prefix center.$($axes[$k])") $ctr $expCenter[$k] $tol
+    }
 }
 
 # --- Worker runner: writes job.json, runs, parses the done stats + voidClear --
@@ -204,6 +281,84 @@ $r = Invoke-Worker ([ordered]@{
     primitive=@{ kind='cylinder'; sizeMM=@{x=10;y=10;z=40}; centerMM=@{x=0;y=0;z=0}; sides=0 }
 }) 'prim_cyl_void'
 [void](Test-Ok $r 'primitive cylinder void')
+
+Write-Host "`n== Primitives off-origin (center 37,-22,51) + watertight ==" -ForegroundColor Cyan
+
+# The old PicoGK geosphere projected subdivision midpoints toward the WORLD
+# ORIGIN, so a sphere placed off-origin drifted/shattered (bbox centre wrong).
+# These cases place ALL FOUR primitives at a non-trivial off-origin centre and
+# assert (a) exact per-axis bbox size, (b) exact bbox centre (regression proof),
+# (c) sensible volume, and (d) watertightness by the directed-edge test.
+$OffC   = @{ x = 37; y = -22; z = 51 }
+$OffCtr = @(37.0, -22.0, 51.0)
+$BboxTol = 0.001
+
+# box 60x40x20 off-origin -> size exact, centre exact, vol 48000 (+/-0.1%)
+$offBox = Join-Path $WorkDir 'off_box.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$offBox
+    primitive=@{ kind='box'; sizeMM=@{x=60;y=40;z=20}; centerMM=$OffC; sides=0 }
+}) 'off_box'
+if (Test-Ok $r 'off-origin box') {
+    Assert-Band  'off-origin box volume' ([double]$r.stats.volumeMM3) 48000 0.001 0.001
+    Assert-PrimBbox 'off-origin box' $offBox @(60.0,40.0,20.0) $OffCtr $BboxTol
+    Test-Watertight 'off-origin box watertight' $offBox
+}
+
+# cylinder dia20 h40 off-origin -> X/Y size 20, Z size 40, centre exact,
+# vol pi*r^2*h = 12566.37 within the -1%/+0.1% inscribed-polygon band
+$offCyl = Join-Path $WorkDir 'off_cyl.stl'
+$expCylVol = [math]::PI * 100.0 * 40.0
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$offCyl
+    primitive=@{ kind='cylinder'; sizeMM=@{x=20;y=20;z=40}; centerMM=$OffC; sides=0 }
+}) 'off_cyl'
+if (Test-Ok $r 'off-origin cylinder') {
+    Assert-Band  'off-origin cylinder volume' ([double]$r.stats.volumeMM3) $expCylVol 0.01 0.001
+    Assert-PrimBbox 'off-origin cylinder' $offCyl @(20.0,20.0,40.0) $OffCtr $BboxTol
+    Test-Watertight 'off-origin cylinder watertight' $offCyl
+}
+
+# sphere d24 off-origin -> size 24 on every axis, centre exact,
+# vol (4/3)pi r^3 = 7238.23 (+/-2%); then re-voxelize to prove OUTWARD winding
+$offSph = Join-Path $WorkDir 'off_sph.stl'
+$expSphVol = (4.0/3.0) * [math]::PI * [math]::Pow(12.0,3)
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$offSph
+    primitive=@{ kind='sphere'; sizeMM=@{x=24;y=24;z=24}; centerMM=$OffC; sides=0 }
+}) 'off_sph'
+if (Test-Ok $r 'off-origin sphere') {
+    $sphMeshVol = [double]$r.stats.volumeMM3
+    Assert-Close 'off-origin sphere volume' $sphMeshVol $expSphVol 0.02
+    Assert-PrimBbox 'off-origin sphere' $offSph @(24.0,24.0,24.0) $OffCtr $BboxTol
+    Test-Watertight 'off-origin sphere watertight' $offSph
+    # re-voxelize the off-origin sphere (offset 0). If winding were inward the
+    # SDF would collapse/invert; a non-empty result ~ mesh volume proves it solid.
+    $sphRevox = Join-Path $WorkDir 'off_sph_revox.stl'
+    $r2 = Invoke-Worker ([ordered]@{
+        mode='op'; opKind='offset'; offsetDistMM=0.0; voxelSizeMM=0.3; outputPath=$sphRevox
+        inputs=@(@{ path=$offSph })
+    }) 'off_sph_revox'
+    if (Test-Ok $r2 'off-origin sphere re-voxelize') {
+        $rv = [double]$r2.stats.volumeMM3
+        Add-Result 'off-origin sphere re-voxelize non-empty' ($rv -gt 1.0) ('re-voxelized volume={0:0.##} mm3' -f $rv)
+        Assert-Close 'off-origin sphere re-voxelize ~ mesh volume' $rv $sphMeshVol 0.02
+    }
+}
+
+# cone dia20 h40 off-origin -> X/Y size 20, Z size 40, centre exact,
+# vol pi*r^2*h/3 = 4188.79 (+/-2%)
+$offCone = Join-Path $WorkDir 'off_cone.stl'
+$expConeVol = [math]::PI * 100.0 * 40.0 / 3.0
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$offCone
+    primitive=@{ kind='cone'; sizeMM=@{x=20;y=20;z=40}; centerMM=$OffC; sides=0 }
+}) 'off_cone'
+if (Test-Ok $r 'off-origin cone') {
+    Assert-Close 'off-origin cone volume' ([double]$r.stats.volumeMM3) $expConeVol 0.02
+    Assert-PrimBbox 'off-origin cone' $offCone @(20.0,20.0,40.0) $OffCtr $BboxTol
+    Test-Watertight 'off-origin cone watertight' $offCone
+}
 
 Write-Host "`n== Boolean / Shell / Offset ==" -ForegroundColor Cyan
 

@@ -18,7 +18,7 @@
 using PicoGK;
 using System.Numerics;
 
-namespace InfillWorker
+namespace Anvil.Worker
 {
     /// <summary>
     /// Generic triply-periodic minimal surface wall as IImplicit.

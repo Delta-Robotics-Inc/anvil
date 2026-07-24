@@ -1,5 +1,5 @@
 //
-// InfillWorker — FlowMetrics
+// Anvil.Worker — FlowMetrics
 //
 // Computes flow-oriented metrics for a built lattice, reusing the voxel fields
 // already in hand (no re-voxelization). The key trick: open-area profiles along
@@ -18,7 +18,7 @@
 using System.Numerics;
 using PicoGK;
 
-namespace InfillWorker
+namespace Anvil.Worker
 {
     /// <summary>Downsampled open-area profile along the flow axis.</summary>
     class ProfileDto

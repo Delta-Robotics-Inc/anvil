@@ -21,7 +21,7 @@ lattice — a gyroid (or Schwarz P/D, Lidinoid, Neovius). A TPMS sheet is
 **self-supporting** (no support material needed) and **open-celled** (powder and
 air flow straight through), so it braces the walls while staying light and
 printable. No slicer can do this per-cavity, and nothing else exports the result
-in a **CAD-mergeable** frame. Infill App does both:
+in a **CAD-mergeable** frame. Anvil does both:
 
 - **Workflow A — single part:** import a part → gyroidize the whole solid →
   export it alone, coordinates preserved.
@@ -40,7 +40,7 @@ bumpmesh-style drag-drop → parameters → preview → export loop.
 | **OS** | Windows x64 (Windows 10/11). See the [macOS note](#platform-note) below. |
 | **.NET** | .NET 9 SDK (`dotnet --version` ≥ 9.0). |
 | **PicoGK fork** | A **sibling clone** of the patched PicoGK fork at `..\PicoGK` (i.e. `C:\Users\...\Repos\PicoGK` next to this repo). The worker consumes it via a `ProjectReference` to `..\..\PicoGK\src\PicoGK.csproj` — no NuGet package. |
-| **PicoGK native runtime** | The worker csproj auto-copies the native DLLs (`picogk.1.7.dll`, `blosc.dll`, `lz4.dll`, `tbb12.dll`, `zlib1.dll`, `zstd.dll`) from `PicoGK\runtime\native\win-x64` next to `InfillWorker.exe` on build. **A System32 PicoGK install is NOT required.** |
+| **PicoGK native runtime** | The worker csproj auto-copies the native DLLs (`picogk.1.7.dll`, `blosc.dll`, `lz4.dll`, `tbb12.dll`, `zlib1.dll`, `zstd.dll`) from `PicoGK\runtime\native\win-x64` next to `AnvilWorker.exe` on build. **A System32 PicoGK install is NOT required.** |
 | **Python** | Python 3.14 with `build123d` + `cadquery-ocp` (OCCT 7.9). Default interpreter path `C:\Python314\python.exe`; change it via `PythonPath` in `appsettings.json`. |
 
 `appsettings.json` (repo root) holds the tunables:
@@ -50,7 +50,7 @@ bumpmesh-style drag-drop → parameters → preview → export loop.
   "PythonPath": "C:\\Python314\\python.exe",
   "DataDir": "data",
   "MaxConcurrentJobs": 1,
-  "WorkerPath": "worker\\bin\\Debug\\net9.0\\InfillWorker.exe"
+  "WorkerPath": "worker\\bin\\Debug\\net9.0\\AnvilWorker.exe"
 }
 ```
 
@@ -64,14 +64,14 @@ scripts\run.ps1
 scripts\run.ps1 -NoBrowser
 ```
 
-`run.ps1` works from any directory. It builds `InfillApp.sln` (Debug), checks the
+`run.ps1` works from any directory. It builds `Anvil.sln` (Debug), checks the
 worker exe / Python / sidecar are present with clear errors, starts the server on
 **http://127.0.0.1:5238**, waits for `/api/health`, then opens your browser.
 
 Or run the server directly (build first with `dotnet build`):
 
 ```powershell
-dotnet run --project server\InfillServer.csproj
+dotnet run --project server\Anvil.Server.csproj
 ```
 
 ## Usage
@@ -342,14 +342,14 @@ the web host:
   Browser  (three.js via jsDelivr CDN, no build step)
      │  HTTP  /api   →  http://127.0.0.1:5238
      ▼
-  InfillServer  (ASP.NET minimal API)         ← references NO PicoGK
-     ├─ per job ─▶  InfillWorker.exe          headless PicoGK, one Library/job,
+  AnvilServer   (ASP.NET minimal API)         ← references NO PicoGK
+     ├─ per job ─▶  AnvilWorker.exe           headless PicoGK, one Library/job,
      │                                         crash-isolated, real cancel (Kill)
      └─ STEP↔STL ─▶ cadconvert.py (Python)     OCP / OCCT 7.9 faceted-BRep + mesh
 ```
 
 The server only shells out — it queues jobs (max `MaxConcurrentJobs`), spawns one
-`InfillWorker.exe` per generation with a `job.json`, parses the worker's
+`AnvilWorker.exe` per generation with a `job.json`, parses the worker's
 JSON-lines progress on stdout, and calls the Python sidecar for STEP/STL. All
 voxel math lives in the worker. (The viewer loads three.js from a CDN, so the 3D
 preview needs internet access on first load.)
@@ -521,7 +521,7 @@ side-effect-free against a running dev server** — they build to a scratch outp
 and use an isolated port/data dir, so a live server on `5238` is never touched.
 
 ```powershell
-# Worker CLI — drives InfillWorker.exe directly with generated job.json files.
+# Worker CLI — drives AnvilWorker.exe directly with generated job.json files.
 # Asserts primitive volumes, boolean/shell/offset results, transform-bake and
 # rotate bbox math, the winding-corrected mirror, a full zoned generate
 # (latticeRegion + void-clear), and the legacy single/fuse regression.
@@ -534,7 +534,7 @@ powershell -ExecutionPolicy Bypass -File scripts\test_ops.ps1
 powershell -ExecutionPolicy Bypass -File scripts\test_api.ps1
 ```
 
-A clean `dotnet build InfillApp.sln` plus a green run of both scripts is the
+A clean `dotnet build Anvil.sln` plus a green run of both scripts is the
 Wave-1 gate. (`scripts\test_api.ps1` accepts `-Port` to move its throwaway
 instance off 5239 if needed.)
 
@@ -542,7 +542,7 @@ instance off 5239 if needed.)
 
 PicoGK ships an `osx-arm64` native runtime, so the worker could in principle run
 on Apple Silicon — but this app's launcher (`scripts\run.ps1`), default paths
-(`C:\Python314\python.exe`, `worker\bin\Debug\net9.0\InfillWorker.exe`), and the
+(`C:\Python314\python.exe`, `worker\bin\Debug\net9.0\AnvilWorker.exe`), and the
 native-DLL copy step are **Windows-first and untested on macOS**.
 
 ## Credits & licenses

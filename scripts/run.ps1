@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Build and launch the Infill App (gyroid cavity converter).
+    Build and launch Anvil (gyroid cavity converter).
 
 .DESCRIPTION
-    1. Builds InfillApp.sln in Debug.
+    1. Builds Anvil.sln in Debug.
     2. Verifies the worker executable, the Python interpreter, and the sidecar
        script all exist (clear error messages if not).
     3. Starts the ASP.NET server bound to http://127.0.0.1:5238.
@@ -31,9 +31,9 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir   = $PSScriptRoot
 $RepoRoot    = Split-Path -Parent $ScriptDir
 $ParentDir   = Split-Path -Parent $RepoRoot
-$Sln         = Join-Path $RepoRoot 'InfillApp.sln'
-$ServerExe   = Join-Path $RepoRoot 'server\bin\Debug\net9.0\InfillServer.exe'
-$WorkerExe   = Join-Path $RepoRoot 'worker\bin\Debug\net9.0\InfillWorker.exe'
+$Sln         = Join-Path $RepoRoot 'Anvil.sln'
+$ServerExe   = Join-Path $RepoRoot 'server\bin\Debug\net9.0\AnvilServer.exe'
+$WorkerExe   = Join-Path $RepoRoot 'worker\bin\Debug\net9.0\AnvilWorker.exe'
 $Sidecar     = Join-Path $RepoRoot 'sidecar\cadconvert.py'
 $AppSettings = Join-Path $RepoRoot 'appsettings.json'
 $Url         = 'http://127.0.0.1:5238/'
@@ -45,7 +45,7 @@ function Fail([string]$msg) {
     exit 1
 }
 
-Write-Host 'Infill App launcher' -ForegroundColor Cyan
+Write-Host 'Anvil launcher' -ForegroundColor Cyan
 Write-Host "  repo: $RepoRoot"
 
 # --- Python path comes from appsettings.json (documented default fallback) ---
@@ -62,7 +62,7 @@ if (Test-Path $AppSettings) {
 # --- 1. Build ---------------------------------------------------------------
 if (-not (Test-Path $Sln)) { Fail "solution not found: $Sln" }
 Write-Host ''
-Write-Host '[1/4] Building InfillApp.sln (Debug)...' -ForegroundColor Cyan
+Write-Host '[1/4] Building Anvil.sln (Debug)...' -ForegroundColor Cyan
 dotnet build $Sln -c Debug --nologo
 if ($LASTEXITCODE -ne 0) {
     Fail "build failed (dotnet build exited $LASTEXITCODE). Fix the compile errors above and re-run."
@@ -75,7 +75,7 @@ Write-Host '[2/4] Verifying prerequisites...' -ForegroundColor Cyan
 if (-not (Test-Path $WorkerExe)) {
     Fail ("worker executable not found: $WorkerExe`n" +
           "The build should have produced it. Confirm the sibling PicoGK fork exists at $ParentDir\PicoGK " +
-          "(the worker references ..\PicoGK\src\PicoGK.csproj) and that worker\InfillWorker.csproj built.")
+          "(the worker references ..\PicoGK\src\PicoGK.csproj) and that worker\Anvil.Worker.csproj built.")
 }
 Write-Host "  worker : $WorkerExe"
 

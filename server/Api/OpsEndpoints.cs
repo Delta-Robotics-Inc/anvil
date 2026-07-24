@@ -20,9 +20,9 @@ using System.Globalization;
 using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using InfillServer.Jobs;
+using Anvil.Server.Jobs;
 
-namespace InfillServer.Api;
+namespace Anvil.Server.Api;
 
 public static class OpsEndpoints
 {

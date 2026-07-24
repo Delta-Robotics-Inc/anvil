@@ -1,11 +1,11 @@
 //
 // Endpoints — all /api routes for the Infill App (plan's API table).
 //
-using InfillServer.Jobs;
-using InfillServer.Sidecar;
-using InfillServer.Stl;
+using Anvil.Server.Jobs;
+using Anvil.Server.Sidecar;
+using Anvil.Server.Stl;
 
-namespace InfillServer.Api;
+namespace Anvil.Server.Api;
 
 /// <summary>Resolved absolute paths for the running server (DI singleton).</summary>
 public sealed record AppPaths(

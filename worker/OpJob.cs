@@ -1,5 +1,5 @@
 //
-// InfillWorker — OpJob
+// Anvil.Worker — OpJob
 //
 // Wave-1 "Objects & Ops": each tool op is a SHORT worker job that produces a
 // NEW mesh (data/parts/{id}/mesh.stl). Dispatched from GyroidJob.Run on
@@ -26,7 +26,7 @@
 using System.Numerics;
 using PicoGK;
 
-namespace InfillWorker
+namespace Anvil.Worker
 {
     /// <summary>Mirror plane for the mirror op.</summary>
     class MirrorDto

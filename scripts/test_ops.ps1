@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Builds ONLY the worker (never the full solution, so a running dev server on
-    port 5238 is never touched), then drives InfillWorker.exe directly with
+    port 5238 is never touched), then drives AnvilWorker.exe directly with
     generated job.json files and asserts every check in the approved plan's
     Verification section 2:
 
@@ -39,15 +39,15 @@ $ErrorActionPreference = 'Stop'
 # --- Resolve every path from THIS script's folder (CWD-independent) ----------
 $ScriptDir = $PSScriptRoot
 $RepoRoot  = Split-Path -Parent $ScriptDir
-$WorkerCsproj = Join-Path $RepoRoot 'worker\InfillWorker.csproj'
-$WorkerExe    = Join-Path $RepoRoot 'worker\bin\Debug\net9.0\InfillWorker.exe'
+$WorkerCsproj = Join-Path $RepoRoot 'worker\Anvil.Worker.csproj'
+$WorkerExe    = Join-Path $RepoRoot 'worker\bin\Debug\net9.0\AnvilWorker.exe'
 $Samples   = Join-Path $RepoRoot 'samples'
 $Data      = Join-Path $RepoRoot 'data'
 $Cylinder  = Join-Path $Samples 'Cylinder.stl'
 $PosStl    = Join-Path $Data 'positive.stl'
 $NegStl    = Join-Path $Data 'negative.stl'
 
-$WorkDir = Join-Path $env:TEMP ('infill_test_ops_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+$WorkDir = Join-Path $env:TEMP ('anvil_test_ops_' + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
 Write-Host 'ANVIL Wave-1 — worker ops test harness' -ForegroundColor Cyan
@@ -55,7 +55,7 @@ Write-Host "  repo:    $RepoRoot"
 Write-Host "  workdir: $WorkDir"
 
 # --- Build ONLY the worker (never the .sln; leaves the dev server alone) ------
-Write-Host "`nBuilding worker (worker\InfillWorker.csproj)..." -ForegroundColor Cyan
+Write-Host "`nBuilding worker (worker\Anvil.Worker.csproj)..." -ForegroundColor Cyan
 & dotnet build $WorkerCsproj -v q -nologo
 if ($LASTEXITCODE -ne 0) { Write-Host 'WORKER BUILD FAILED' -ForegroundColor Red; exit 1 }
 if (-not (Test-Path $WorkerExe)) { Write-Host "worker exe not found: $WorkerExe" -ForegroundColor Red; exit 1 }

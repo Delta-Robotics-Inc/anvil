@@ -5,7 +5,7 @@
 .DESCRIPTION
     Self-contained. Implements the approved plan's Verification section 3:
 
-      * builds ONLY server\InfillServer.csproj to a SCRATCH output (never the .sln,
+      * builds ONLY server\Anvil.Server.csproj to a SCRATCH output (never the .sln,
         never server\bin — so a dev server on 5238 keeps its exe locked and alive)
       * starts THAT build on port 5239 with an ISOLATED data dir + the real worker
         exe, from a throwaway "content root" that has no appsettings.json (so the
@@ -45,11 +45,11 @@ Add-Type -AssemblyName System.Net.Http
 # --- Paths (CWD-independent) --------------------------------------------------
 $ScriptDir    = $PSScriptRoot
 $RepoRoot     = Split-Path -Parent $ScriptDir
-$ServerCsproj = Join-Path $RepoRoot 'server\InfillServer.csproj'
-$WorkerExe    = Join-Path $RepoRoot 'worker\bin\Debug\net9.0\InfillWorker.exe'
+$ServerCsproj = Join-Path $RepoRoot 'server\Anvil.Server.csproj'
+$WorkerExe    = Join-Path $RepoRoot 'worker\bin\Debug\net9.0\AnvilWorker.exe'
 $Cylinder     = Join-Path $RepoRoot 'samples\Cylinder.stl'
 
-$WorkTmp  = Join-Path $env:TEMP ('infill_test_api_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+$WorkTmp  = Join-Path $env:TEMP ('anvil_test_api_' + [guid]::NewGuid().ToString('N').Substring(0,8))
 $BuildDir = Join-Path $WorkTmp 'srvbuild'
 $DataDir  = Join-Path $WorkTmp 'data'
 $SrvRoot  = Join-Path $WorkTmp 'srvroot'     # throwaway content root (no appsettings.json)
@@ -73,7 +73,7 @@ if (-not (Test-Path $WorkerExe)) { Write-Host "missing worker exe (build worker 
 Write-Host "`nBuilding server -> $BuildDir ..." -ForegroundColor Cyan
 & dotnet build $ServerCsproj -o $BuildDir -v q -nologo
 if ($LASTEXITCODE -ne 0) { Write-Host 'SERVER BUILD FAILED' -ForegroundColor Red; exit 1 }
-$ServerExe = Join-Path $BuildDir 'InfillServer.exe'
+$ServerExe = Join-Path $BuildDir 'AnvilServer.exe'
 
 # --- HTTP client + helpers ---------------------------------------------------
 $client = New-Object System.Net.Http.HttpClient
@@ -145,7 +145,7 @@ try {
     if (Test-Path $ServerExe) {
         $fp = $ServerExe; $allArgs = $srvArgs
     } else {
-        $fp = 'dotnet'; $allArgs = "`"$(Join-Path $BuildDir 'InfillServer.dll')`" $srvArgs"
+        $fp = 'dotnet'; $allArgs = "`"$(Join-Path $BuildDir 'AnvilServer.dll')`" $srvArgs"
     }
     Write-Host "`nStarting server: $fp $allArgs" -ForegroundColor Cyan
     $serverProc = Start-Process -FilePath $fp -ArgumentList $allArgs -WorkingDirectory $SrvRoot `

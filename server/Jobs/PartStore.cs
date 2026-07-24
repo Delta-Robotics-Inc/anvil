@@ -9,7 +9,7 @@
 //
 using System.Collections.Concurrent;
 
-namespace InfillServer.Jobs;
+namespace Anvil.Server.Jobs;
 
 public sealed class PartStore
 {

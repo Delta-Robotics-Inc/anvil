@@ -1,7 +1,7 @@
 //
-// InfillWorker — entry point
+// Anvil.Worker — entry point
 //
-// Usage: InfillWorker <job.json>
+// Usage: AnvilWorker <job.json>
 //
 // Reads a JobRequest from job.json, runs the gyroid pipeline, streams JSON-line
 // progress on stdout, exits 0 on success. On failure, prints a single JSON error
@@ -9,7 +9,7 @@
 //
 
 using System.Text.Json;
-using InfillWorker;
+using Anvil.Worker;
 
 // Auto-flush stdout so the server can stream progress line-by-line.
 var stdout = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
@@ -17,7 +17,7 @@ Console.SetOut(stdout);
 
 if (args.Length < 1)
 {
-    Console.Error.WriteLine(JsonSerializer.Serialize(new { error = "usage: InfillWorker <job.json>", stage = "args" }));
+    Console.Error.WriteLine(JsonSerializer.Serialize(new { error = "usage: AnvilWorker <job.json>", stage = "args" }));
     return 2;
 }
 

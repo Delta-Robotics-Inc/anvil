@@ -1,5 +1,5 @@
 //
-// InfillWorker — GyroidJob
+// Anvil.Worker — GyroidJob
 //
 // Implements the gyroid-cavity pipeline (Workflow A single / Workflow B fuse)
 // exactly per the Infill App plan's "Gyroid core (worker)" section, plus a
@@ -14,7 +14,7 @@ using System.Numerics;
 using System.Text.Json;
 using PicoGK;
 
-namespace InfillWorker
+namespace Anvil.Worker
 {
     // ---- Job model (JobRequest schema from the plan) ----
     class Vec3

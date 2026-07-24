@@ -13,7 +13,7 @@
 //
 using System.Text;
 
-namespace InfillServer.Stl;
+namespace Anvil.Server.Stl;
 
 public enum StlKind { Binary, Ascii, Invalid }
 

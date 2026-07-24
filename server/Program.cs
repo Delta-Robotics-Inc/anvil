@@ -1,20 +1,20 @@
 //
-// InfillServer — ASP.NET minimal API host (milestone M2).
+// Anvil.Server — ASP.NET minimal API host (milestone M2).
 //
 // Binds http://127.0.0.1:5238, serves the static frontend from wwwroot/, and
 // exposes the /api surface (parts, jobs). All heavy voxel work is delegated to
-// InfillWorker.exe (spawned per job) and STEP<->STL to the Python sidecar; this
+// AnvilWorker.exe (spawned per job) and STEP<->STL to the Python sidecar; this
 // process references neither PicoGK nor the worker assembly.
 //
 // Paths (DataDir, WorkerPath) resolve relative to the REPO ROOT (the folder
-// containing InfillApp.sln), discovered by walking up from the executable —
+// containing Anvil.sln), discovered by walking up from the executable —
 // never relative to the current working directory.
 //
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using InfillServer.Api;
-using InfillServer.Jobs;
-using InfillServer.Sidecar;
+using Anvil.Server.Api;
+using Anvil.Server.Jobs;
+using Anvil.Server.Sidecar;
 using Microsoft.AspNetCore.Http.Features;
 
 string repoRoot = FindRepoRoot(AppContext.BaseDirectory);
@@ -34,7 +34,7 @@ builder.Configuration.AddJsonFile(Path.Combine(repoRoot, "appsettings.json"),
 var cfg = builder.Configuration;
 string pythonPath = cfg["PythonPath"] ?? @"C:\Python314\python.exe";
 string dataDirCfg = cfg["DataDir"] ?? "data";
-string workerCfg = cfg["WorkerPath"] ?? @"worker\bin\Debug\net9.0\InfillWorker.exe";
+string workerCfg = cfg["WorkerPath"] ?? @"worker\bin\Debug\net9.0\AnvilWorker.exe";
 int maxConcurrent = int.TryParse(cfg["MaxConcurrentJobs"], out var mc) ? Math.Max(1, mc) : 1;
 
 string dataDir = Path.IsPathRooted(dataDirCfg) ? dataDirCfg : Path.Combine(repoRoot, dataDirCfg);
@@ -87,7 +87,7 @@ var app = builder.Build();
 // Force-construct the JobManager so its dispatcher starts immediately.
 var jm = app.Services.GetRequiredService<JobManager>();
 
-app.Logger.LogInformation("Infill App server");
+app.Logger.LogInformation("Anvil server");
 app.Logger.LogInformation("  repoRoot   : {RepoRoot}", repoRoot);
 app.Logger.LogInformation("  dataDir    : {DataDir}", dataDir);
 app.Logger.LogInformation("  workerPath : {WorkerPath} (exists: {Exists})", workerPath, jm.WorkerExists);
@@ -118,7 +118,7 @@ static string FindRepoRoot(string start)
     var dir = new DirectoryInfo(start);
     while (dir != null)
     {
-        if (File.Exists(Path.Combine(dir.FullName, "InfillApp.sln")))
+        if (File.Exists(Path.Combine(dir.FullName, "Anvil.sln")))
             return dir.FullName;
         dir = dir.Parent;
     }

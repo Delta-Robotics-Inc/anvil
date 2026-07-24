@@ -1,5 +1,5 @@
 //
-// InfillWorker — MeshUtil
+// Anvil.Worker — MeshUtil
 //
 // Shared mesh helpers for Wave-1 "Objects & Ops":
 //   * LoadMesh(path, TransformDto?)  — FORCE-MM load + the ONE canonical TRS
@@ -20,7 +20,7 @@
 using System.Numerics;
 using PicoGK;
 
-namespace InfillWorker
+namespace Anvil.Worker
 {
     /// <summary>
     /// Per-part non-destructive TRS. Composition is fixed and canonical:

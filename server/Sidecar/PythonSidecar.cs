@@ -10,7 +10,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
-namespace InfillServer.Sidecar;
+namespace Anvil.Server.Sidecar;
 
 public sealed class SidecarException : Exception
 {

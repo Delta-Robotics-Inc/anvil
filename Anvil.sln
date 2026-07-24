@@ -5,11 +5,11 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "worker", "worker", "{6A5F9DDE-3B88-372A-C771-C486FF97143A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InfillWorker", "worker\InfillWorker.csproj", "{5CE33E95-25CF-4BFD-86F6-159C757E5055}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Anvil.Worker", "worker\Anvil.Worker.csproj", "{5CE33E95-25CF-4BFD-86F6-159C757E5055}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "server", "server", "{DAD03CFC-D5FA-AC94-41C7-9ABAB326F09E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InfillServer", "server\InfillServer.csproj", "{8BA94903-56CF-42CC-A1F5-F7F5F296DC9B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Anvil.Server", "server\Anvil.Server.csproj", "{8BA94903-56CF-42CC-A1F5-F7F5F296DC9B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

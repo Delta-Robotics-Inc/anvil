@@ -1,5 +1,5 @@
 //
-// JobManager — spawns/tracks/kills InfillWorker.exe processes.
+// JobManager — spawns/tracks/kills AnvilWorker.exe processes.
 //
 // * FIFO queue via a Channel; a single dispatcher admits jobs in order and
 //   runs up to MaxConcurrentJobs workers at once (SemaphoreSlim slots). The
@@ -19,14 +19,14 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
-using InfillServer.Sidecar;
-using InfillServer.Stl;
+using Anvil.Server.Sidecar;
+using Anvil.Server.Stl;
 
-namespace InfillServer.Jobs;
+namespace Anvil.Server.Jobs;
 
 public sealed class JobManager : IAsyncDisposable
 {
-    private readonly string _workerPath;   // abs InfillWorker.exe
+    private readonly string _workerPath;   // abs AnvilWorker.exe
     private readonly string _jobsDir;      // abs {DataDir}/jobs
     private readonly string _repoRoot;
     private readonly PythonSidecar _sidecar;
@@ -309,7 +309,7 @@ public sealed class JobManager : IAsyncDisposable
             {
                 rec.State = JobState.Failed;
                 rec.Stage = "failed";
-                rec.Error = $"worker executable not found: {_workerPath}. Build the worker project (worker/InfillWorker.csproj).";
+                rec.Error = $"worker executable not found: {_workerPath}. Build the worker project (worker/Anvil.Worker.csproj).";
                 return;
             }
 

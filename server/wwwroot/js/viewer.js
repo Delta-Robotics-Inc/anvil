@@ -109,6 +109,46 @@ export class Viewer {
     p.mesh.material.color.setHex(roleColorInt(role));
   }
 
+  // ── Per-part non-destructive TRS (live transform preview) ─────────────
+  // Canonical composition (MUST match worker MeshUtil + server BuildMatrix):
+  //   scale → rotX → rotY → rotZ → translate.
+  // three.js is column-vector (v' = M·v), so scale is the RIGHTMOST factor.
+  // Building via premultiply from makeScale yields M = T·Rz·Ry·Rx·S, i.e.
+  //   M·v = T(Rz(Ry(Rx(S·v)))) — scale first, translate last. matrixAutoUpdate
+  // is disabled so the hand-built matrix is used verbatim (no recentering).
+  setPartTransform(id, trs) {
+    const p = this.parts.get(id);
+    if (!p) return;
+    p.trs = trs || null;
+    this._applyPartMatrix(p);
+    this.fitView();
+  }
+  clearPartTransform(id) {
+    const p = this.parts.get(id);
+    if (!p) return;
+    p.trs = null;
+    const m = p.mesh;
+    m.matrixAutoUpdate = false;
+    m.matrix.identity();
+    m.updateMatrixWorld(true);
+    this.fitView();
+  }
+  _applyPartMatrix(p) {
+    const trs = p.trs || {};
+    const t = trs.translateMM || { x: 0, y: 0, z: 0 };
+    const r = trs.rotateDeg   || { x: 0, y: 0, z: 0 };
+    const s = trs.scale       || { x: 1, y: 1, z: 1 };
+    const D = Math.PI / 180;
+    const m = new THREE.Matrix4().makeScale(s.x || 1, s.y || 1, s.z || 1);
+    m.premultiply(new THREE.Matrix4().makeRotationX((r.x || 0) * D));
+    m.premultiply(new THREE.Matrix4().makeRotationY((r.y || 0) * D));
+    m.premultiply(new THREE.Matrix4().makeRotationZ((r.z || 0) * D));
+    m.premultiply(new THREE.Matrix4().makeTranslation(t.x || 0, t.y || 0, t.z || 0));
+    p.mesh.matrixAutoUpdate = false;
+    p.mesh.matrix.copy(m);
+    p.mesh.updateMatrixWorld(true);   // fitView/_visibleBox read matrixWorld
+  }
+
   setPartVisible(id, visible) {
     const p = this.parts.get(id);
     if (!p) return;
@@ -216,6 +256,13 @@ export class Viewer {
   getVisibleSize() {
     const box = this._visibleBox();
     return box ? box.getSize(new THREE.Vector3()) : null;
+  }
+
+  /** {x,y,z} center of the visible union bbox, or null. Feeds the primitive
+   *  tool's default centre (fallback origin when nothing is visible). */
+  getVisibleCenter() {
+    const box = this._visibleBox();
+    return box ? box.getCenter(new THREE.Vector3()) : null;
   }
 
   // ── Camera fit (Box3 union of visible objects) ──────────────────────

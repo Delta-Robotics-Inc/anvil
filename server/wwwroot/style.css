@@ -72,7 +72,7 @@ body::after {
   clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px));
 }
 
-.barcode { display:flex; gap:1px; height:20px; align-items:stretch; }
+.barcode { display:flex; gap:1px; height:10px; align-items:stretch; opacity:.7; }
 .barcode i { display:block; background:var(--dim); flex:none; }
 .barcode i.off { background:transparent; }
 
@@ -155,12 +155,34 @@ body::after {
 .btn.generating { --c:var(--red); color:var(--bg); opacity:1 !important; animation:cycpulse-red 1.4s ease-in-out infinite; }
 .cancel-btn { letter-spacing:.16em; padding:7px 12px; }
 
+/* ── Export split-menu ─────────────────────────────────────────────────── */
+.export-menu { position:relative; }
+.export-trigger { display:flex; align-items:center; justify-content:center; gap:8px; }
+.export-caret { font-size:10px; opacity:.75; }
+.export-opts {
+  position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:40;
+  display:flex; flex-direction:column; gap:2px; padding:3px;
+  background:var(--card); border:1px solid var(--line);
+}
+.export-opts.hidden { display:none; }
+.export-opt {
+  text-align:left; padding:8px 10px; background:transparent; border:0; cursor:pointer;
+  color:var(--fg); font:inherit; font-size:.72rem; letter-spacing:.14em; text-transform:uppercase;
+}
+.export-opt:hover, .export-opt:focus-visible {
+  background:color-mix(in oklch,var(--primary) 15%,var(--card)); color:var(--primary);
+  outline:none; filter:drop-shadow(0 0 4px color-mix(in oklch,var(--primary) 40%,transparent));
+}
+.export-opt .regmark { text-transform:none; letter-spacing:.03em; color:var(--dim); }
+
 /* ── Header conn indicator ────────────────────────────────────────────── */
 .conn-dot { width:9px; height:9px; border-radius:50%; background:var(--dim); transition:background .2s,box-shadow .2s; }
 .conn-dot.ok   { background:var(--green); box-shadow:0 0 9px var(--green); }
 .conn-dot.warn { background:var(--amber); box-shadow:0 0 9px var(--amber); }
 .conn-dot.err  { background:var(--red);   box-shadow:0 0 9px var(--red); }
 .brand-title .slash { color:var(--primary); }
+.anvil-logo { height:16px; width:auto; color:var(--fg); flex:none; filter:drop-shadow(0 0 3px color-mix(in oklch,var(--fg) 30%,transparent)); }
+header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] utility doesn't compile in this runtime build */
 
 /* ── Viewport (flex sizing kept here so the responsive rules can win) ──── */
 .viewport canvas { display:block; }
@@ -175,7 +197,7 @@ body::after {
 
 .vp-chrome { position:absolute; z-index:2; pointer-events:none; }
 .vp-tl { top:12px; left:14px; }
-.vp-bl { bottom:12px; left:14px; display:flex; flex-direction:column; gap:6px; }
+.vp-bl { bottom:10px; left:14px; display:flex; flex-direction:column; gap:3px; }
 
 /* ── Drop zone — two-layer chamfer rim (no real border → clean corners) ── */
 .dropzone {
@@ -323,12 +345,15 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 }
 .step-btn:hover:not(:disabled) { --c:var(--primary); }
 
-/* Outward chamfers — override the symmetric .btn corner cuts. The minus keeps
-   its right edge square (butts the field), the plus keeps its left edge square. */
-.step-btn.flip::before      { clip-path:polygon(9px 0,100% 0,100% 100%,9px 100%,0 calc(100% - 9px),0 9px); }
+/* Borderless steppers: no rim, both OUTER corners (top + bottom) chamfered. The
+   minus keeps its two left cuts, the plus its two right cuts; inner edges stay
+   straight against the field. Orange (--primary) fill on hover. */
+.step-btn::before { display:none; }
+.step-btn::after  { inset:0; background:var(--muted); }
 .step-btn.flip::after       { clip-path:polygon(8px 0,100% 0,100% 100%,8px 100%,0 calc(100% - 8px),0 8px); }
-.step-btn:not(.flip)::before { clip-path:polygon(0 0,calc(100% - 9px) 0,100% 9px,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%); }
-.step-btn:not(.flip)::after  { clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%); }
+.step-btn:not(.flip)::after { clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%); }
+.step-btn:hover:not(:disabled)::after { background:var(--primary); }
+.step-btn:disabled:not(.generating)::after { background:color-mix(in oklch,var(--muted) 45%,transparent); }
 
 /* part-role select shares the field rim but sizes to its content */
 .field-role { display:inline-block; align-self:center; }
@@ -722,26 +747,27 @@ body.drag-active .viewport::after { opacity:1; }
    and steal their clicks. The tab is already a tall 46px target, so it's left at
    its visual width rather than introducing that regression. */
 .panel-chevron svg { width:13px; height:13px; transition:transform .2s; }
-.panel-left  .panel-chevron { right:-10px; clip-path:polygon(0 0,100% 9px,100% calc(100% - 9px),0 100%); }
-.panel-right .panel-chevron { left:-10px;  clip-path:polygon(100% 0,0 9px,0 calc(100% - 9px),100% 100%); }
+.panel-left  .panel-chevron { right:-20px; clip-path:polygon(0 0,100% 9px,100% calc(100% - 9px),0 100%); }
+.panel-right .panel-chevron { left:-20px;  clip-path:polygon(100% 0,0 9px,0 calc(100% - 9px),100% 100%); }
 
 /* rotated rail label (revealed only when collapsed) */
 .rail-label {
-  position:absolute; inset:0; display:none; align-items:center; justify-content:center; gap:10px; pointer-events:none;
+  position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px; pointer-events:none;
 }
-.rail-label .label, .rail-label .jp { writing-mode:vertical-rl; letter-spacing:.3em; }
+.rail-label .label, .rail-label .jp { writing-mode:vertical-rl; text-orientation:upright; letter-spacing:.3em; }
 .rail-label .jp { color:var(--dim); }
 
 /* collapsed → slim rail */
 .panel.collapsed { flex-basis:var(--rail-w); width:var(--rail-w); }
 .panel.collapsed .panel-inner { display:none; }
 .panel.collapsed .rail-label { display:flex; }
-.panel.collapsed .panel-chevron { left:50%; right:auto; transform:translate(-50%,-50%); }
+/* collapsed: the trapezoid tab keeps its normal edge position (outside the rail
+   border, vertically centred) — only the arrow flips to point "expand". */
 .panel.collapsed .panel-chevron svg { transform:rotate(180deg); }
 
 /* ── Region 5 — floating right-edge view strip ───────────────────────── */
 .view-strip {
-  position:absolute; top:50%; right:12px; transform:translateY(-50%); z-index:4;
+  position:absolute; top:50%; right:26px; transform:translateY(-50%); z-index:4;
   display:flex; flex-direction:column; align-items:center; gap:7px;
 }
 .vstrip-btn {
@@ -800,6 +826,77 @@ body.drag-active .viewport::after { opacity:1; }
 @keyframes sec-flash {
   0%   { box-shadow:0 0 0 1px var(--primary), 0 0 18px color-mix(in oklch,var(--primary) 45%,transparent); }
   100% { box-shadow:0 0 0 0 transparent, 0 0 0 transparent; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   WAVE-1 — contextual tool panel (#sec-tool) · ZONES tile · role optgroups
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* generic hide for the tool + zones tiles (belt-and-suspenders with Tailwind) */
+.tile.hidden { display:none; }
+
+/* ── Contextual tool panel (top of the left panel; HyDesign "Confirm" pattern) ── */
+/* an armed tool reads active: its rim is orange-tinted vs the neutral --line tiles */
+.tool-tile::before { background:color-mix(in oklch,var(--primary) 42%,var(--line)); }
+.tool-tile .thead { margin-bottom:12px; }
+.tool-close {
+  background:none; border:0; cursor:pointer; color:var(--dim);
+  font-family:inherit; font-size:9px; letter-spacing:.14em; padding:2px 3px; white-space:nowrap;
+  transition:color .15s;
+}
+.tool-close:hover, .tool-close:focus-visible { color:var(--primary); outline:none; }
+.tool-body { display:flex; flex-direction:column; gap:12px; }
+.tool-foot { margin-top:13px; }
+.tool-confirm { height:38px; }
+.tool-note {
+  margin-top:9px; font-size:9px; letter-spacing:.1em; text-transform:uppercase; line-height:1.6;
+  color:var(--dim); text-align:center; min-height:14px;
+}
+.tool-note.ok   { color:var(--green); }
+.tool-note.warn { color:var(--amber); }
+.tool-note.err  { color:var(--red); }
+.tool-progress { margin-top:11px; display:flex; align-items:center; gap:9px; color:var(--primary); }
+.tool-progress.hidden { display:none; }
+.tool-prog-stage {
+  font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+/* per-tool inline sub-notes (e.g. difference "MAIN − SECONDARY", offset warn) */
+.tool-hint { display:block; margin-top:6px; }
+.tool-hint.warn { color:var(--amber); }
+/* CENTER/APPLY inline action buttons inside the TRANSFORM tool */
+.tool-actions { display:flex; gap:7px; margin-top:2px; }
+.tool-actions .btn { flex:1 1 0; padding:8px 10px; }
+.tool-mini { --c:var(--dim); }
+.tool-mini:hover:not(:disabled) { --c:var(--primary); }
+
+/* ── ZONES tile — legend + promise + V2 tag ───────────────────────────── */
+.zone-legend { display:flex; gap:14px; margin-bottom:10px; }
+.zone-promise { font-size:9.5px; line-height:1.55; letter-spacing:.02em; color:var(--dim); margin:0 0 12px; }
+.zone-promise b { font-weight:600; color:var(--fg); }
+.zone-promise .zp-l { color:#4da3ff; }
+.zone-promise .zp-k { color:#47c86e; }
+.zone-promise .zp-v { color:#ff4747; }
+.zl-item { display:inline-flex; align-items:center; gap:6px; font-size:9px; letter-spacing:.12em; color:var(--dim); }
+.zl-dot {
+  width:9px; height:9px; flex:none; background:var(--zc,var(--dim));
+  box-shadow:0 0 7px color-mix(in oklch,var(--zc,var(--dim)) 62%,transparent);
+  clip-path:polygon(0 0,calc(100% - 3px) 0,100% 3px,100% 100%,3px 100%,0 calc(100% - 3px));
+}
+.v2-tag {
+  background:transparent; color:color-mix(in oklch,var(--amber) 88%,var(--fg));
+  border:1px solid color-mix(in oklch,var(--amber) 42%,transparent);
+  clip-path:none; padding:1px 5px; letter-spacing:.06em; text-transform:none;
+}
+
+/* ── OBJECTS provenance node — zone lines read fully in the zone colour ── */
+.part-node.zone-node .nk, .part-node.zone-node .nr { color:inherit; }
+
+/* ── Role select optgroup labels (BASE / ZONES) in the base-select picker ── */
+.field-role > select optgroup,
+.field > select optgroup {
+  font-size:8px; letter-spacing:.18em; text-transform:uppercase; font-weight:700;
+  color:var(--dim); background:var(--card); padding:5px 9px 3px;
 }
 
 /* ── Responsive (~≤1000px): panels OVERLAY the viewport (no squeeze) ─────

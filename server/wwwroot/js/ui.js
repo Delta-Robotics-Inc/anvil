@@ -4,7 +4,7 @@
 // main.js owns app state + orchestration and calls into these. This module
 // only touches the DOM; it holds no application state beyond cached elements.
 //
-import { roleColorHex } from './roles.js';
+import { roleColorHex, roleLabel, ROLE_GROUPS, isZoneRole } from './roles.js';
 
 export const els = {
   viewport:     document.getElementById('viewport'),
@@ -84,6 +84,7 @@ export const els = {
   statTris:   document.getElementById('stat-tris'),
   exportStl:  document.getElementById('export-stl-btn'),
   exportStep: document.getElementById('export-step-btn'),
+  exportBtn:  document.getElementById('export-btn'),
   stepSpinner: document.getElementById('step-spinner'),
   stepStatus: document.getElementById('step-status'),
 
@@ -93,12 +94,37 @@ export const els = {
 
   // ── CAD workspace shell (toolbar · panels · viewport chrome) ──────────
   tbImport:   document.getElementById('tb-import'),
+  tbPrim:     document.getElementById('tb-prim'),
+  tbBool:     document.getElementById('tb-bool'),
+  tbMerge:    document.getElementById('tb-merge'),
+  tbShell:    document.getElementById('tb-shell'),
+  tbOffset:   document.getElementById('tb-offset'),
+  tbXform:    document.getElementById('tb-xform'),
+  tbMirror:   document.getElementById('tb-mirror'),
+  tbDupe:     document.getElementById('tb-dupe'),
   tbTpms:     document.getElementById('tb-tpms'),
   tbOrient:   document.getElementById('tb-orient'),
   tbGenerate: document.getElementById('tb-generate'),
   tbFlow:     document.getElementById('tb-flow'),
   tbStl:      document.getElementById('tb-stl'),
   tbStep:     document.getElementById('tb-step'),
+
+  // ── Contextual tool panel (#sec-tool — top of the left panel) ─────────
+  secTool:      document.getElementById('sec-tool'),
+  toolTitle:    document.getElementById('tool-title'),
+  toolTitleJp:  document.getElementById('tool-title-jp'),
+  toolBody:     document.getElementById('tool-body'),
+  toolConfirm:  document.getElementById('tool-confirm'),
+  toolCancel:   document.getElementById('tool-cancel'),
+  toolNote:     document.getElementById('tool-note'),
+  toolProgress: document.getElementById('tool-progress'),
+  toolProgStage: document.getElementById('tool-prog-stage'),
+
+  // ── ZONES tile (#sec-zones — revealed when a zone role exists) ────────
+  secZones:    document.getElementById('sec-zones'),
+  zSkin:       document.getElementById('z-skin'),
+  zTransition: document.getElementById('z-transition'),
+  zKeepOut:    document.getElementById('z-keepout'),
 
   panelLeft:    document.getElementById('panel-left'),
   panelRight:   document.getElementById('panel-right'),
@@ -115,8 +141,9 @@ export const els = {
   vpDims:          document.getElementById('vp-dims'),
 };
 
-const ROLE_LABEL = { part: 'Part', positive: 'Positive', negative: 'Negative' };
-const ROLE_TIP   = 'Part = gyroidize the whole part. One Positive + one Negative = fuse mode.';
+const ROLE_TIP = 'BASE: Part = gyroidize the whole part; one Positive + one Negative = fuse. '
+               + 'ZONES: Lattice (blue) / Keep-solid (green) / Void (red) regions layered on a base part.';
+const ROLE_GROUP_LABEL = { base: 'BASE', zone: 'ZONES' };
 
 // ── Parts list ────────────────────────────────────────────────────────
 // `pending` are synchronous, not-yet-uploaded placeholders (one per dropped
@@ -150,7 +177,9 @@ export function renderParts(parts, pending, handlers) {
     name.title = p.name;
     const meta = document.createElement('div');
     meta.className = 'part-meta';
-    meta.textContent = `${fmtInt(p.triangles)} tris` + (p.sourceFormat ? ` · ${p.sourceFormat.toUpperCase()}` : '');
+    meta.textContent = `${fmtInt(p.triangles)} tris`
+      + (p.sourceFormat ? ` · ${p.sourceFormat.toUpperCase()}` : '')
+      + (p.volumeMM3 != null ? ` · ${fmtVolume(p.volumeMM3)}` : '');
     main.append(name, meta);
 
     // wrapper supplies the two-layer chamfer rim (a <select> can't carry
@@ -162,14 +191,20 @@ export function renderParts(parts, pending, handlers) {
     role.className = 'part-role';
     role.name = `role-${p.id}`;
     role.setAttribute('aria-label', `Role for ${p.name}`);
-    role.title = 'Role — determines single vs fuse mode';
+    role.title = 'Role — BASE decides single/fuse; ZONES mark lattice/keep/void regions';
     role.style.color = roleColorHex(p.role);   // Fix 1 — role colour as text, no orange fill
-    for (const key of ['part', 'positive', 'negative']) {
-      const opt = document.createElement('option');
-      opt.value = key;
-      opt.textContent = ROLE_LABEL[key];
-      if (p.role === key) opt.selected = true;
-      role.appendChild(opt);
+    // Two optgroups: BASE (part/positive/negative) then ZONES (lattice/keep/void).
+    for (const group of ['base', 'zone']) {
+      const og = document.createElement('optgroup');
+      og.label = ROLE_GROUP_LABEL[group];
+      for (const key of ROLE_GROUPS[group]) {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = roleLabel(key);
+        if (p.role === key) opt.selected = true;
+        og.appendChild(opt);
+      }
+      role.appendChild(og);
     }
     role.addEventListener('change', () => handlers.onRoleChange(p.id, role.value));
     roleWrap.appendChild(role);
@@ -195,13 +230,26 @@ export function renderParts(parts, pending, handlers) {
 
     tools.append(eye, del);
 
-    // Nested tree node — one-line child showing this part's lattice operation.
-    // Display only (no logic): updates as role or pattern changes via re-render.
+    // Nested tree node — one-line provenance/operation child. Three cases:
+    //   derived part  → the op label verbatim ("└ BOOLEAN · A − B", "└ PRIM · BOX…")
+    //   zone role     → "└ ZONE · LATTICE|KEEP|VOID", coloured by the zone role
+    //   base upload   → "└ TPMS · <PATTERN> · <ROLE>" (the legacy lattice line)
     const node = document.createElement('div');
     node.className = 'part-node';
     node.style.setProperty('--role-color', roleColorHex(p.role));
-    const patt = (els.pattern?.value || 'gyroid').toUpperCase();
-    node.innerHTML = `└ <span class="nk">TPMS · ${patt}</span> · <span class="nr">${(p.role || 'part').toUpperCase()}</span>`;
+    if (isZoneRole(p.role)) {
+      // Zone marker takes priority (a derived primitive used AS a zone reads as a
+      // zone). Whole line in the zone colour so the provenance is unmistakable.
+      const zk = p.role.replace('zone-', '').toUpperCase();
+      node.classList.add('zone-node');
+      node.style.color = roleColorHex(p.role);
+      node.innerHTML = `└ <span class="nk">ZONE</span> · <span class="nr">${zk}</span>`;
+    } else if (p.derived && p.derived.label) {
+      node.innerHTML = `└ <span class="nk">${escapeHtml(p.derived.label)}</span>`;
+    } else {
+      const patt = (els.pattern?.value || 'gyroid').toUpperCase();
+      node.innerHTML = `└ <span class="nk">TPMS · ${patt}</span> · <span class="nr">${(p.role || 'part').toUpperCase()}</span>`;
+    }
 
     row.append(main, roleWrap, tools, node);
     list.appendChild(row);
@@ -395,8 +443,8 @@ function setCellMode(mode) {
 // (respecting min/max, fallback step 1), then fires input + change so the
 // app's mode/validation logic stays in sync with typed entry. The flanking
 // buttons mirror the input's disabled state (e.g. Overlap in single mode).
-export function initSteppers() {
-  for (const group of document.querySelectorAll('.step-group')) {
+export function initSteppers(root = document) {
+  for (const group of root.querySelectorAll('.step-group')) {
     const input = group.querySelector('input[type="number"]');
     if (!input) continue;
     const btns = group.querySelectorAll('.step-btn');
@@ -703,7 +751,22 @@ export function setResultTools(enabled) {
 /** Pinned GENERATE solid fill (armed or generating) vs outline. */
 export function setGenerateFilled(filled) { els.generate.classList.toggle('solid', filled); }
 /** EXPORT STL solid fill — only when the currently-shown result is fresh. */
-export function setExportStlFilled(filled) { els.exportStl.classList.toggle('solid', filled); }
+export function setExportStlFilled(filled) { els.exportBtn.classList.toggle('solid', filled); }
+/** Tool CONFIRM solid fill — holds the single fill while an open tool is valid
+ *  (GENERATE / EXPORT ghost meanwhile). See main.updateAccents' toolOpen branch. */
+export function setToolConfirmFilled(filled) { els.toolConfirm?.classList.toggle('solid', !!filled); }
+
+// ── ZONES tile (progressive disclosure; revealed when a zone role exists) ──
+/** Show/hide the #sec-zones tile (skin · transition · keep-out grow steppers). */
+export function setZonesVisible(show) { els.secZones?.classList.toggle('hidden', !show); }
+/** Read the zone offset steppers → { skinThicknessMM, transitionMM, keepOutGrowMM }. */
+export function readZones() {
+  return {
+    skinThicknessMM: Math.max(0, numOr(els.zSkin?.value, 0)),
+    transitionMM:    Math.max(0, numOr(els.zTransition?.value, 0)),
+    keepOutGrowMM:   Math.max(0, numOr(els.zKeepOut?.value, 0)),
+  };
+}
 
 /** Fix 6 — top-left viewport context line: "PATTERN · LATTICE · MODE". */
 export function setViewportContext(text) { if (els.vpContext) els.vpContext.textContent = text; }
@@ -812,16 +875,12 @@ export function initTooltips() {
   tip.className = 'hud-tip';
   tip.setAttribute('role', 'tooltip');
   document.body.appendChild(tip);
-  let current = null;
+  let current = null, pending = null, timer = null;
+  const DELAY = 600;   // long-hover intent before a tip appears
 
-  function tipTarget(el) {
-    if (!el) return null;
-    const direct = el.closest('[data-tip]');
-    if (direct) return direct;
-    // A focused control (input/select) surfaces its parameter's label tip.
-    const param = el.closest('.param, .subparam');
-    return param ? param.querySelector('[data-tip]:not([hidden])') : null;
-  }
+  // Tooltips attach ONLY to text carrying `.has-tip` (parameter + metric labels) —
+  // never to inputs, selects, or buttons.
+  const tipTarget = (el) => el?.closest?.('.has-tip[data-tip]') || null;
 
   function place(el) {
     const r = el.getBoundingClientRect();
@@ -836,7 +895,6 @@ export function initTooltips() {
     tip.style.top  = `${Math.round(top)}px`;
     tip.classList.toggle('below', below);
   }
-
   function show(el) {
     const text = el.getAttribute('data-tip');
     if (!text) return;
@@ -845,25 +903,22 @@ export function initTooltips() {
     tip.classList.add('show');
     place(el);
   }
-  function hide(el) {
-    if (el && el !== current) return;
-    current = null;
+  function hide() {
+    clearTimeout(timer); timer = null; pending = null; current = null;
     tip.classList.remove('show');
   }
 
   document.addEventListener('pointerover', (e) => {
     const t = tipTarget(e.target);
-    if (t && t !== current) show(t);
+    if (!t || t === current || t === pending) return;
+    clearTimeout(timer);
+    pending = t;
+    timer = setTimeout(() => { show(t); pending = null; }, DELAY);
   });
   document.addEventListener('pointerout', (e) => {
-    const t = e.target.closest?.('[data-tip]');
-    if (t && (!e.relatedTarget || !t.contains(e.relatedTarget))) hide(t);
-  });
-  document.addEventListener('focusin', (e) => {
     const t = tipTarget(e.target);
-    if (t) show(t); else hide(current);
+    if (t && (!e.relatedTarget || !t.contains(e.relatedTarget))) hide();
   });
-  document.addEventListener('focusout', () => hide(current));
   // Keep the panel pinned to a scrolling label; drop it if the row scrolls off.
   window.addEventListener('scroll', () => { if (current) place(current); }, true);
 }
@@ -916,6 +971,16 @@ function numOr(v, fallback) {
 }
 function fmtInt(n) { return (n ?? 0).toLocaleString('en-US'); }
 function fmtNum(n, dp) { return (n ?? 0).toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp }); }
+// Volume readout for part rows: cm³ once ≥ 1000 mm³, else mm³.
+function fmtVolume(mm3) {
+  if (!Number.isFinite(mm3)) return '';
+  if (mm3 >= 1000) { const cm3 = mm3 / 1000; return `${fmtNum(cm3, cm3 >= 100 ? 0 : cm3 >= 10 ? 1 : 2)} cm³`; }
+  return `${fmtNum(mm3, mm3 >= 100 ? 0 : 1)} mm³`;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 // ── inline icons ──────────────────────────────────────────────────────
 const ICON_EYE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';

@@ -1,14 +1,14 @@
 <!DOCTYPE html>
-<!-- Infill App — AeroFlex Telemetry HUD design language. Dark-only. CAD-style workspace
+<!-- Anvil — AeroFlex Telemetry HUD design language. Dark-only. CAD-style workspace
      (HyDesign structural patterns) over the HUD skin. Tailwind v4 (browser build) for a
      few layout utilities; chamfer/glow/hazard components live in style.css. -->
 <html lang="en" class="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>INFILL // APP — ジャイロイド充填</title>
+  <title>ANVIL // 金床</title>
   <meta name="description" content="Convert solid parts and cavities into 3D-printable TPMS gyroid infill. PicoGK-powered, runs locally." />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23ff5c00' d='M12 2 3 7v10l9 5 9-5V7l-9-5Zm0 2.3 6.5 3.6-6.5 3.6L5.5 7.9 12 4.3Zm-7 5.1 6 3.3v6.6l-6-3.3V9.4Zm14 0v6.6l-6 3.3v-6.6l6-3.3Z'/%3E%3C/svg%3E" />
+  <link rel="icon" href="anvil.svg" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -33,13 +33,13 @@
 <body class="font-mono h-full flex flex-col overflow-hidden">
 
   <!-- ═══ Region 1 — top app bar ═══════════════════════════════════════ -->
-  <header class="app-bar shrink-0 flex items-center gap-[14px] px-[18px] py-[8px] relative z-50 border-b border-[var(--line)] backdrop-blur-[6px] bg-[color-mix(in_oklch,var(--bg)_82%,transparent)]">
-    <div class="flex flex-col gap-[2px] leading-none min-w-0">
-      <h1 class="brand-title glow text-[15px] font-bold tracking-[0.22em]">INFILL <span class="text-[var(--primary)]">//</span> APP</h1>
-      <div class="label jp tracking-[0.05em]">ジャイロイド充填 · GYROID CAVITY CONVERTER<span class="cursor">_</span></div>
-    </div>
+  <header class="app-bar shrink-0 flex items-center gap-[10px] px-[16px] py-[12px] relative z-50 border-b border-[var(--line)] backdrop-blur-[6px] bg-[color-mix(in_oklch,var(--bg)_82%,transparent)]">
+    <svg class="anvil-logo" width="26" height="16" viewBox="0 0 135.33395 84.138771" aria-hidden="true"><path fill="currentColor" transform="translate(-42.153826,-17.092803)" d="m 67.922841,100.85334 c -0.45166,-0.19661 -1.106503,-0.75749 -1.455209,-1.246406 l -0.63401,-0.88894 v -7.85195 c 0,-7.51775 0.02322,-7.88305 0.545515,-8.58261 1.345185,-1.80173 1.369297,-1.80729 8.535317,-1.96938 5.795909,-0.1311 6.702977,-0.21147 8.072748,-0.71525 4.508255,-1.65806 8.134439,-5.37538 9.611125,-9.85268 0.445239,-1.34997 0.489787,-3.2157 0.615956,-25.79688 l 0.136005,-24.34166 0.634644,-0.88983 c 1.232893,-1.72864 -1.444457,-1.62372 41.434108,-1.62372 42.87856,0 40.20121,-0.10492 41.4341,1.62372 l 0.63464,0.88983 v 8.77799 c 0,8.45304 -0.0202,8.80504 -0.54551,9.50865 -1.31718,1.76421 -1.42826,1.79188 -7.99818,1.99184 -9.12989,0.27788 -15.44091,1.05127 -21.57903,2.64444 -13.91752,3.61233 -20.77126,10.88151 -20.79574,22.05624 -0.0153,7.00251 3.99872,12.81085 10.43722,15.10263 1.07616,0.38306 2.54081,0.49901 7.8525,0.62163 7.16527,0.16542 7.19054,0.17126 8.53531,1.97243 0.5223,0.69956 0.54552,1.06486 0.54552,8.58261 v 7.85195 l -0.63465,0.88983 c -1.18095,1.655806 -0.82575,1.623706 -17.9705,1.623706 -10.7155,0 -15.84195,-0.0915 -16.42031,-0.29313 -0.49728,-0.17336 -1.44925,-1.011236 -2.3297,-2.050516 -1.73194,-2.04436 -3.01984,-3.05856 -4.58541,-3.61092 -2.87459,-1.01422 -5.50338,0.0115 -8.50352,3.318 -1.0396,1.14576 -2.24735,2.207706 -2.68388,2.359886 -0.519,0.18092 -6.205715,0.2731 -16.430781,0.26633 -12.534287,-0.008 -15.800027,-0.0813 -16.458278,-0.36784 z m -3.80901,-48.083756 c -5.719429,-0.80639 -12.152424,-4.47002 -15.964965,-9.09214 -3.585755,-4.34718 -5.996999,-10.81682 -5.995039,-16.08536 5.34e-4,-1.43643 0.699865,-2.79605 1.824653,-3.54746 l 0.899023,-0.60059 H 65.079 85.280496 v 14.81667 14.81667 l -9.723437,-0.0327 c -5.34789,-0.018 -10.497343,-0.14177 -11.443228,-0.27513 z"/></svg>
+    <h1 class="brand-title glow text-[13px] font-bold tracking-[0.2em] leading-none whitespace-nowrap">ANVIL <span class="text-[var(--primary)]">//</span> 金床</h1>
+    <span class="label jp tracking-[0.05em] leading-none whitespace-nowrap opacity-60 hidden sm:inline">· LATTICE FORGE<span class="cursor">_</span></span>
     <div class="flex-1"></div>
-    <div class="flex items-center gap-2" title="Server / worker health">
+    <div class="barcode hidden md:flex" data-seed="4412" data-bars="22"></div>
+    <div class="flex items-center gap-2 shrink-0" title="Server / worker health">
       <span id="conn-dot" class="conn-dot"></span>
       <span id="conn-txt" class="label">connecting</span>
     </div>
@@ -49,8 +49,52 @@
   <nav class="toolbar shrink-0 relative z-40" id="toolbar" aria-label="Pipeline">
     <div class="tb-group" data-group="import">
       <button type="button" class="tb-btn" id="tb-import" data-tip="Import STL / STEP parts (same as the drop zone).">
-        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3"/></svg>
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/></svg>
         <span class="tb-label">IMPORT</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="primitive">
+      <button type="button" class="tb-btn" id="tb-prim" data-tip="Primitive — add a box, cylinder, sphere or cone at a chosen centre.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/></svg>
+        <span class="tb-label">PRIM</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="combine">
+      <button type="button" class="tb-btn" id="tb-bool" data-tip="Boolean — union, difference or intersection of two parts (MAIN − SECONDARY).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg>
+        <span class="tb-label">BOOL</span>
+      </button>
+      <button type="button" class="tb-btn" id="tb-merge" data-tip="Merge — smooth (filleted) union of two parts.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="11" height="11" rx="2"/><rect x="9" y="8" width="11" height="11" rx="2"/></svg>
+        <span class="tb-label">MERGE</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="modify">
+      <button type="button" class="tb-btn" id="tb-shell" data-tip="Shell — hollow a part inward, outward or centred by a wall thickness.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16"/><rect x="8" y="8" width="8" height="8"/></svg>
+        <span class="tb-label">SHELL</span>
+      </button>
+      <button type="button" class="tb-btn" id="tb-offset" data-tip="Offset — grow (+) or shrink (−) a part by a signed distance.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10"/><path d="M3 9V3h6M21 15v6h-6"/></svg>
+        <span class="tb-label">OFFSET</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="place">
+      <button type="button" class="tb-btn" id="tb-xform" data-tip="Transform — translate / rotate a part (live preview); APPLY bakes it.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><path d="m8 7 4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>
+        <span class="tb-label">XFORM</span>
+      </button>
+      <button type="button" class="tb-btn" id="tb-mirror" data-tip="Mirror — reflect a part across the XY, YZ or XZ plane (winding-corrected).">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18" stroke-dasharray="2 3"/><path d="M9 7 5 12l4 5ZM15 7l4 5-4 5Z"/></svg>
+        <span class="tb-label">MIRROR</span>
+      </button>
+      <button type="button" class="tb-btn" id="tb-dupe" data-tip="Duplicate — an instant independent copy of a part.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="1"/><path d="M4 16V5a1 1 0 0 1 1-1h11"/></svg>
+        <span class="tb-label">DUPE</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
@@ -62,13 +106,6 @@
       <button type="button" class="tb-btn" id="tb-orient" data-tip="Jump to the LATTICE 格子 advanced controls (rotation, phase, per-axis cell).">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
         <span class="tb-label">ORIENT</span>
-      </button>
-    </div>
-    <span class="tb-sep" aria-hidden="true"></span>
-    <div class="tb-group" data-group="generate">
-      <button type="button" class="tb-btn tb-primary" id="tb-generate" disabled data-tip="Generate the lattice (mirrors the panel button).">
-        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>
-        <span class="tb-label">GENERATE</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
@@ -98,6 +135,23 @@
     <aside class="panel panel-left" id="panel-left">
       <div class="panel-inner">
         <div class="panel-scroll">
+
+          <!-- Contextual TOOL panel (populated by js/tools.js; hidden when idle) -->
+          <div class="tile tool-tile hidden" id="sec-tool">
+            <div class="thead">
+              <span class="lbls"><span class="label" id="tool-title">TOOL</span><span class="jp label" id="tool-title-jp"></span></span>
+              <button type="button" class="tool-close" id="tool-cancel" title="Close tool (Esc)" aria-label="Close tool">ESC ✕</button>
+            </div>
+            <div class="tool-body" id="tool-body"></div>
+            <div class="tool-foot">
+              <button type="button" class="btn btn-block tool-confirm" id="tool-confirm">CONFIRM</button>
+              <div class="tool-note" id="tool-note"></div>
+              <div class="tool-progress hidden" id="tool-progress">
+                <span class="spinner" aria-hidden="true"></span>
+                <span class="tool-prog-stage" id="tool-prog-stage">Working…</span>
+              </div>
+            </div>
+          </div>
 
           <!-- TPMS parameters -->
           <div class="tile" id="sec-tpms">
@@ -177,6 +231,49 @@
                   <button type="button" class="fchip active" data-val="z" aria-pressed="true">Z</button>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <!-- ZONES — GD keep/void/lattice offsets (revealed when a zone role exists) -->
+          <div class="tile hidden" id="sec-zones">
+            <div class="thead">
+              <span class="lbls"><span class="label">ZONES</span><span class="jp label">領域</span></span>
+              <span class="tag">GD</span>
+            </div>
+            <div class="zone-legend">
+              <span class="zl-item"><i class="zl-dot" style="--zc:#4da3ff"></i>LATTICE</span>
+              <span class="zl-item"><i class="zl-dot" style="--zc:#47c86e"></i>KEEP</span>
+              <span class="zl-item"><i class="zl-dot" style="--zc:#ff4747"></i>VOID</span>
+            </div>
+            <p class="zone-promise">Lattice fills <b class="zp-l">blue</b> zones, stays <b>SKIN</b> mm inside the surface, keeps <b class="zp-k">green</b> solid, never enters <b class="zp-v">red</b> (+<b>GROW</b> mm).</p>
+            <div class="param-grid grid grid-cols-2 gap-[10px]">
+              <label class="param param-wide" for="z-skin">
+                <span class="label has-tip" data-tip="Inward skin off the base part surface the lattice keeps clear (single mode). Blue zones stay this many mm inside the wall.">Skin <em>mm</em></span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease skin">−</button>
+                  <span class="field"><input id="z-skin" type="number" value="1.5" min="0" step="0.1" /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase skin">＋</button>
+                </span>
+              </label>
+              <label class="param param-wide" for="z-transition">
+                <span class="label">
+                  <span class="has-tip" data-tip="Reserved for a smooth solid↔lattice blend. Wave-1 uses a hard edge; this value is accepted but not yet applied.">Transition <em>mm</em></span>
+                  <span class="tag v2-tag">V2 — hard edge for now</span>
+                </span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease transition">−</button>
+                  <span class="field"><input id="z-transition" type="number" value="0" min="0" step="0.1" /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase transition">＋</button>
+                </span>
+              </label>
+              <label class="param param-wide" for="z-keepout">
+                <span class="label has-tip" data-tip="Outward growth of red VOID zones. The lattice (and body) is carved back this many mm around every void — a safety margin.">Keep-out grow <em>mm</em></span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease keep-out grow">−</button>
+                  <span class="field"><input id="z-keepout" type="number" value="0.5" min="0" step="0.1" /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase keep-out grow">＋</button>
+                </span>
+              </label>
             </div>
           </div>
 
@@ -329,10 +426,6 @@
         <div class="jp regmark">STL · STEP 投入 // クリックで参照</div>
       </div>
       <div class="vp-chrome vp-tl regmark" id="vp-context">GYROID · SHEET · SINGLE</div>
-      <div class="vp-chrome vp-bl">
-        <div class="barcode" data-seed="4412" data-bars="46"></div>
-        <div class="regmark">TPMS // FIELD-DRIVEN LATTICE · ジャイロイド格子</div>
-      </div>
 
       <!-- floating right-edge vertical view strip -->
       <div class="view-strip" id="view-strip" role="group" aria-label="View controls">
@@ -391,12 +484,18 @@
               <div class="stat"><div class="stat-val num" id="stat-infill">&mdash;</div><div class="stat-label label">Infill</div></div>
               <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label">Tris</div></div>
             </div>
-            <div class="result-actions flex flex-col gap-2">
-              <button id="export-stl-btn" class="btn btn-block" type="button">Export STL</button>
-              <button id="export-step-btn" class="btn btn-block" type="button">
-                <span class="btn-label">Export STEP</span>
-                <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
-              </button>
+            <div class="result-actions">
+              <div class="export-menu" id="export-menu">
+                <button id="export-btn" class="btn btn-block export-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+                  <span class="btn-label">Export</span>
+                  <span class="export-caret" aria-hidden="true">▾</span>
+                  <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
+                </button>
+                <div class="export-opts hidden" id="export-opts" role="menu">
+                  <button type="button" class="export-opt" id="export-stl-btn" role="menuitem">STL<span class="regmark"> · mesh</span></button>
+                  <button type="button" class="export-opt" id="export-step-btn" role="menuitem">STEP<span class="regmark"> · faceted B-rep</span></button>
+                </div>
+              </div>
             </div>
             <div id="step-status" class="step-status hidden"></div>
           </div>
@@ -445,7 +544,7 @@
 
   </main>
 
-  <footer class="foot jp shrink-0 py-[7px] px-[14px] text-center border-t border-[var(--line)] text-[10px] tracking-[0.05em] text-[var(--dim)] opacity-60">DELTA ROBOTICS ⟢ INFILL APP ⟢ ジャイロイド充填 ⟢ PICOGK</footer>
+  <footer class="foot jp shrink-0 py-[7px] px-[14px] text-center border-t border-[var(--line)] text-[10px] tracking-[0.05em] text-[var(--dim)] opacity-60">DELTA ROBOTICS ⟢ ANVIL ⟢ 金床 ⟢ PICOGK</footer>
 
   <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
 

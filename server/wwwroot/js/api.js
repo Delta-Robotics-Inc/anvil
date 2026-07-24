@@ -72,6 +72,28 @@ export async function cancelJob(id) {
   if (!res.ok && res.status !== 404) throw await errorFrom(res);
 }
 
+// ── Wave-1 tool ops (POST /api/ops) ────────────────────────────────────
+// Runs a tool op that produces a NEW derived part. Response shape depends on op:
+//   duplicate → 200 with the PartInfo object DIRECTLY (id, derived, mass props…)
+//   all others → 202 { jobId, partId, warning } — poll GET /jobs/{id} for .part
+// Returns the parsed body verbatim; the caller branches on `.jobId` vs `.id`.
+export async function runOp(body) {
+  const res = await fetch(`${BASE}/ops`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
+/** List every registered part (uploads + derived). Returns PartInfo[]. */
+export async function listParts() {
+  const res = await fetch(`${BASE}/parts`);
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
 /** Kick off the faceted-STEP export (async; watch JobStatus.step for progress). */
 export async function startStepExport(id, targetTriangles) {
   const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}/step`, {

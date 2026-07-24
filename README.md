@@ -1,8 +1,10 @@
-# Infill App — Gyroid Cavity Converter
+# Anvil — Gyroid Cavity Forge
 
-A local web app that converts a **solid part** or an **enclosed cavity** into a
-self-supporting **gyroid TPMS lattice** and exports it so it drops straight back
-into your CAD assembly, in place.
+**Anvil** is a local web app that converts a **solid part** or an **enclosed
+cavity** into a self-supporting **gyroid TPMS lattice** and exports it so it
+drops straight back into your CAD assembly, in place. The volumetric-geometry
+forge in the Delta Robotics toolchain — where raw parts are beaten into
+printable form.
 
 ## What it is
 
@@ -83,6 +85,11 @@ workflow:
 | exactly one **Part** | **single** | The whole solid is gyroidized (Workflow A). |
 | one **Positive** + one **Negative** | **fuse** | The Negative's volume is latticed and merged into the Positive (Workflow B). |
 
+Only **base** roles (Part / Positive / Negative) decide the mode. **Zone** roles
+(Zone · Lattice / Keep / Void) and derived parts layer on top without changing it
+— see [Zoned lattice](#zoned-lattice). Beyond importing, you can also **build and
+edit parts in-app** with [the tool palette](#the-tool-palette).
+
 Uploaded parts render translucent; the generated result renders solid. Nothing is
 ever recentered — the preview sits exactly where CAD will place it.
 
@@ -157,6 +164,117 @@ The lattice family and its orientation interact with both flow and printability:
   toward horizontal introduces overhangs that may need support or sag. For FDM, prefer
   rotations that keep sheet walls near-vertical along the print Z; for SLS/MJF (powder
   support) orientation is unconstrained.
+
+## The tool palette
+
+Wave 1 turns Anvil into a HyDesign-style **object workspace**. The pipeline
+toolbar's middle groups — **PRIM · BOOL · MERGE · SHELL · OFFSET · XFORM ·
+MIRROR · DUPE** — each open a contextual panel at the top of the left column
+(part pickers + parameters + **CONFIRM**, with inline progress; **Esc** or the
+✕ closes it).
+
+Every tool is **non-destructive**: it runs a short worker job that produces a
+**new derived part** (its mesh at `data/parts/{id}/mesh.stl`, registered in the
+PartStore) and leaves its sources untouched. The derived part shows a
+**provenance line** in the OBJECTS tree — e.g. `└ BOOLEAN · A − B`,
+`└ SHELL · INSIDE 2mm` — and carries a replayable snapshot of the op request.
+There is no live modifier stack: **undo = delete the derived part.**
+
+| Tool | What it does | Key params |
+|---|---|---|
+| **Primitive** | Adds a box / cylinder / sphere / cone as a new part. | `kind`, `sizeMM` (full X/Y/Z), `centerMM` (defaults to the visible-union bbox centre), resolution (voxel mm) |
+| **Boolean** | Union, difference or intersection of two parts (`MAIN − SECONDARY`). | main, secondary, operation (`union` \| `difference` \| `intersection`), voxel |
+| **Merge** | Smooth (filleted) union of two parts. | A, B, blend (fillet mm), voxel |
+| **Shell** | Hollows a part into a wall — inward, outward or centred on the surface. | part, direction (`inside` \| `outside` \| `centered`), thickness mm, voxel |
+| **Offset** | Grows (+) or shrinks (−) a part by a signed distance. | part, distance (signed mm), voxel |
+| **Transform** | Non-destructive translate / rotate with live preview; **APPLY** bakes a new part. See [Transforms](#transforms). | part, translate mm, rotate deg, **CENTER** preset, **APPLY** |
+| **Mirror** | Reflects a part across the XY / YZ / XZ plane (winding-corrected). | part, plane, plane offset mm |
+| **Duplicate** | An instant, independent copy. | part |
+
+- **Mesh-exact vs voxelized.** **Primitive**, **Transform (APPLY)** and
+  **Mirror** are **mesh-only** — they never touch the voxel kernel, so they are
+  geometrically exact (no half-voxel loss). **Boolean**, **Merge**, **Shell**
+  and **Offset** run through PicoGK and are accurate to **± half a voxel**. Each
+  voxel op carries its own **Resolution (voxel mm)** field (prefilled from the
+  current TPMS voxel size); smaller = finer but heavier. Feature sizes must
+  clear the grid: shell thickness and `|offset|` must exceed **1.5 × voxel**, and
+  the server rejects an op whose union bounding box would blow the same
+  [resolution guard](#parameters) the generate path uses.
+- **Duplicate is synchronous** (a file copy, returned `200`); every other op is
+  an async worker job (`202`, then it finishes like a generate job).
+- **In-memory registry.** The PartStore is in memory only. Uploaded and derived
+  parts (and their `data/parts/{id}/` folders) are **not restored after a server
+  restart** — a fresh server starts with an empty parts list.
+
+## Transforms
+
+Each part carries an optional **non-destructive TRS** — translate (mm) + rotate
+(degrees); scale is reserved (= 1). It lives on the part record, **not** baked
+into geometry:
+
+- **Live preview.** The **TRANSFORM** tool edits translate/rotate with the
+  viewer applying the identical matrix instantly. The one canonical composition,
+  shared by worker and viewer, is **scale → rotX → rotY → rotZ → translate**.
+- **It travels with the part.** The TRS is folded into the mesh load
+  server-side (before voxelization) for **any** op or **Generate** that consumes
+  the part, so voxel and mesh ops both see the transformed part.
+- **APPLY bakes** the TRS mesh-to-mesh into a new part (exact, zero resolution
+  loss) beside the source, then resets the source's TRS to identity.
+- **CENTER** is a preset that writes an explicit `translate` moving the part's
+  bbox centre to the origin. Like every transform it is **visible, editable and
+  clearable — never a silent recentre.**
+
+This preserves Anvil's [coordinate guarantee](#coordinate-preservation-guarantee):
+ops never recenter, primitives are placed at an explicit `centerMM`, and the TRS
+is explicit and previewed 1:1.
+
+## Zoned lattice
+
+Instead of latticing a whole body, you can **section off regions** with
+Autodesk-generative-design-style keep/avoid roles, layered on a base part. Assign
+these roles in the parts list exactly like base roles; the **ZONES** tile appears
+as soon as one exists:
+
+- **Zone · Lattice** (blue) — the lattice fills here.
+- **Zone · Keep** (green) — stays solid.
+- **Zone · Void** (red) — never latticed.
+
+> **The promise:** *the lattice fills the blue zones, stays **SKIN** mm inside
+> the surface, keeps green solid, and never enters red (+**GROW** mm).*
+
+The **ZONES** tile exposes three offsets:
+
+| Offset | Meaning |
+|---|---|
+| **Skin (mm)** | Inward skin off the base part surface the lattice keeps clear (single mode). Blue zones stay this many mm inside the wall. |
+| **Transition (mm)** | **V2 — hard edge for now.** Reserved for a smooth solid↔lattice blend. The value is accepted and stored but **not yet applied** in Wave 1. |
+| **Keep-out grow (mm)** | Outward growth of the red void zones. The lattice (and the body) is carved back this many mm around every void — a safety margin. |
+
+Zone algebra (single mode), in order: the lattice region = the blue zones ∩ the
+body (or the whole body if no blue zone), pulled **SKIN** mm inside the surface,
+minus the green keep zones; the clipped TPMS fills that region and is merged back
+into the body; then — **last, so void always wins** — the grown red voids are
+subtracted. A self-check confirms the voids are clear.
+
+- **Fuse mode.** Zones also apply to Workflow B: **skin is ignored** (the server
+  zeroes it and warns), **keep** zones inside the cavity are re-added solid, and
+  **voids carve last** (they may cut into the positive — intended).
+- **Zone-scoped flow metrics.** With zones, the flow envelope becomes the
+  **lattice region** (not the whole part). A new stat
+  **`latticeRegionVolumeMM3`** reports that region's volume, and porosity / infill
+  are measured against it rather than the full bounding volume.
+
+## Volume analysis
+
+Every part — uploaded, converted-from-STEP, or derived from an op — carries
+**mass properties** computed by one divergence-theorem pass over its mesh:
+
+- **Volume** (`volumeMM3`), **surface area** (`surfaceAreaMM2`), and **centre of
+  gravity** (`cogMM`).
+
+They are surfaced per part in the sidebar and returned by `POST /api/parts`,
+`GET /api/parts`, and — for a derived part — in `JobStatus.part` when its op
+completes.
 
 ## Flow metrics
 
@@ -246,6 +364,8 @@ Base path `/api`, JSON is camelCase. The server binds `http://127.0.0.1:5238`.
 | `POST` | `/api/parts` | multipart upload `.stl` / `.step` / `.stp` (STEP is converted to STL via the sidecar first) → `{ id, name, sourceFormat, stlUrl, triangles, bbox }` |
 | `GET` | `/api/parts/{id}/mesh.stl` | binary STL for the preview |
 | `DELETE` | `/api/parts/{id}` | remove a part |
+| `GET` | `/api/parts` | list every registered part (uploads + derived) → `[PartInfo]` |
+| `POST` | `/api/ops` | run a tool op → a new derived part. `duplicate` returns `200 { …PartInfo }` (synchronous file copy); every other op returns `202 { jobId, partId }` and finishes as an op job (watch `part` in JobStatus). See [Objects & Ops](#objects--ops-post-apiops). |
 | `POST` | `/api/jobs` | JobRequest (below) → `202 { jobId, warning }` |
 | `GET` | `/api/jobs/{id}` | JobStatus (below); the frontend polls @ 500 ms |
 | `POST` | `/api/jobs/{id}/cancel` | kill the worker for a running job |
@@ -288,6 +408,7 @@ Base path `/api`, JSON is camelCase. The server binds `http://127.0.0.1:5238`.
   "progress": 0.6,
   "stats": {
     "volumeMM3": 0, "envelopeVolumeMM3": 0, "infillPct": 0, "triangles": 0,
+    "latticeRegionVolumeMM3": 0,   // zoned generate: volume of the lattice region (envelope for flow)
     // ── flow metrics (present when the analysis ran) ──
     "airVolumeMM3": 0, "porosityPct": 0,
     "minOpenAreaMM2": 0, "minAtMM": 0, "chokeRatio": 0, "grossAreaMM2": 0,
@@ -305,7 +426,8 @@ Base path `/api`, JSON is camelCase. The server binds `http://127.0.0.1:5238`.
   "step":  { "state": "none",    // none | running | done | failed
              "triangles": null, "warning": null, "error": null },
   "warning": null,
-  "error": null                  // set to the worker's message when state == "failed"
+  "error": null,                 // set to the worker's message when state == "failed"
+  "part": null                   // op jobs only — the derived PartInfo once state == "done"
 }
 ```
 
@@ -313,6 +435,72 @@ Base path `/api`, JSON is camelCase. The server binds `http://127.0.0.1:5238`.
 > worker's stderr message in `error`. A failed STEP conversion (e.g. the >500 000
 > triangle refusal) sets `step.state: "failed"` with the sidecar's actionable
 > `{detail}` in `step.error`. The UI surfaces both as toasts.
+
+### Objects & Ops (`POST /api/ops`)
+
+One endpoint drives the whole [tool palette](#the-tool-palette). The `op` field
+selects the tool; the rest of the body is op-specific. `duplicate` returns `200`
+with the finished `PartInfo`; every other op returns `202 { jobId, partId }` and
+completes as an op job.
+
+```jsonc
+{
+  "op": "boolean",               // boolean|merge|shell|offset|transform|mirror|primitive|duplicate
+  "inputs": [                     // source parts (0 for primitive, 1 or 2 otherwise)
+    { "partId": "p_…",
+      "transform": {              // OPTIONAL per-input TRS, folded into the mesh load
+        "translateMM": { "x": 0, "y": 0, "z": 0 },   // NOTE the field name: translateMM (mm), not "translate"/"position"
+        "rotateDeg":   { "x": 0, "y": 0, "z": 0 }    // degrees; scale is reserved
+      } }
+  ],
+  "name": "optional display name",
+  "voxelSizeMM": 0.3,             // voxel ops only (boolean/merge/shell/offset)
+  "booleanKind": "difference",    // boolean: union|difference|intersection
+  "filletMM": 1.0,                // merge: blend radius
+  "shellDirection": "inside",     // shell: inside|outside|centered
+  "shellThicknessMM": 2.0,        // shell (> 1.5 × voxel)
+  "offsetDistMM": -2.0,           // offset: signed (|d| > 1.5 × voxel)
+  "bake": true,                   // transform: bake the input TRS mesh-to-mesh (APPLY)
+  "mirror":    { "planePoint": {"x":0,"y":0,"z":0}, "planeNormal": {"x":1,"y":0,"z":0} },
+  "primitive": { "kind": "box", "sizeMM": {"x":60,"y":40,"z":20}, "centerMM": {"x":0,"y":0,"z":0}, "sides": 0 }
+}
+```
+
+Validation is strict (`400` on failure): unknown `op`/`booleanKind`/`shellDirection`,
+non-distinct or missing input parts, feature sizes ≤ 1.5 × voxel, and the union
+bbox blowing the [resolution guard](#parameters).
+
+### Zones & transforms on `POST /api/jobs`
+
+`JobRequest` gains two optional fields; omit both and the generate path is
+byte-identical to the legacy behaviour.
+
+```jsonc
+{
+  // …all existing JobRequest fields…
+  "zones": {
+    "latticeIds": ["p_…"],        // blue  — lattice-only regions
+    "keepIds":    ["p_…"],        // green — stay-solid regions
+    "voidIds":    ["p_…"],        // red   — never-enter regions
+    "skinThicknessMM": 1.5,       // inward skin off the surface (single mode; zeroed + warned in fuse)
+    "transitionMM": 0,            // V2 — accepted & stored, NOT applied in Wave 1 (hard edge)
+    "keepOutGrowMM": 0.5          // outward growth of the void zones
+  },
+  "transforms": {                 // per-part non-destructive TRS, keyed by part id (base AND zone parts)
+    "p_…": { "translateMM": { "x": 10, "y": 0, "z": 0 }, "rotateDeg": { "x": 0, "y": 0, "z": 0 } }
+  }
+}
+```
+
+> **`translateMM`, not `translate`.** The TRS translation field is **`translateMM`**
+> (millimetres) everywhere — the op `inputs[].transform`, the job `transforms`
+> map, and the internal `TransformDto`. Sending `translate` or `position` is
+> silently ignored.
+
+> **In-memory PartStore.** Both endpoints register parts in an in-memory store
+> that starts empty on every launch — parts (uploads and derived alike) **do not
+> survive a server restart**, even though their `data/parts/{id}/` folders remain
+> on disk.
 
 ## Samples
 
@@ -325,6 +513,30 @@ Base path `/api`, JSON is camelCase. The server binds `http://127.0.0.1:5238`.
 | `negative.step` | The 50×30×12 cavity solid alone, in the **same world frame** it occupies inside `positive.step` — Workflow B **negative**. |
 | `hollow_bracket.step` | A single-solid L-bracket (~50 mm) for Workflow A. |
 | `make_test_parts.py` | Regenerates the three STEP parts: `C:\Python314\python.exe samples\make_test_parts.py`. |
+
+## Testing
+
+Two PowerShell harnesses cover the Wave-1 surface. Both are **self-contained and
+side-effect-free against a running dev server** — they build to a scratch output
+and use an isolated port/data dir, so a live server on `5238` is never touched.
+
+```powershell
+# Worker CLI — drives InfillWorker.exe directly with generated job.json files.
+# Asserts primitive volumes, boolean/shell/offset results, transform-bake and
+# rotate bbox math, the winding-corrected mirror, a full zoned generate
+# (latticeRegion + void-clear), and the legacy single/fuse regression.
+powershell -ExecutionPolicy Bypass -File scripts\test_ops.ps1
+
+# HTTP API — builds the server to a scratch dir, runs it on port 5239, then:
+# upload → POST /api/ops boolean → poll → GET /api/parts (derived w/ mass props)
+# → duplicate 200 → a zoned /api/jobs on op-created primitives → preview.stl,
+# plus the negative cases (zone == base, unknown op, over-resolution → 400).
+powershell -ExecutionPolicy Bypass -File scripts\test_api.ps1
+```
+
+A clean `dotnet build InfillApp.sln` plus a green run of both scripts is the
+Wave-1 gate. (`scripts\test_api.ps1` accepts `-Port` to move its throwaway
+instance off 5239 if needed.)
 
 ## Platform note
 

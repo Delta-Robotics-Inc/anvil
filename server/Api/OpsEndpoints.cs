@@ -130,6 +130,7 @@ public static class OpsEndpoints
                 volumeMM3 = src.volumeMM3,
                 surfaceAreaMM2 = src.surfaceAreaMM2,
                 cogMM = (double[])src.cogMM.Clone(),
+                watertight = src.watertight,   // a copy shares the source's watertightness
                 derived = new DerivedDto
                 {
                     op = "duplicate",

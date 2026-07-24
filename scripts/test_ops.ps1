@@ -479,6 +479,67 @@ if (Test-Ok $r 'zoned generate') {
     Add-Result 'zoned bbox unchanged (60x40x20)' $sizeOk ('size=({0:0.##},{1:0.##},{2:0.##})' -f [double]$bb.size[0],[double]$bb.size[1],[double]$bb.size[2])
     $infill = [double]$r.stats.infillPct
     Add-Result 'zoned infillPct in (0,100)' (($infill -gt 0.0) -and ($infill -lt 100.0)) ('infillPct={0:0.###}' -f $infill)
+
+    # Stage 3: cleanup runs by default on generate; result must be watertight and
+    # carry a cleanup summary.
+    Add-Result 'zoned watertight' ([bool]$r.stats.watertight) `
+        ('watertight={0} openEdges={1}' -f [bool]$r.stats.watertight, [int]$r.stats.openEdges)
+    Add-Result 'zoned cleanup present' ($null -ne $r.stats.cleanup) `
+        ('components={0} removedComponents={1}' -f [int]$r.stats.cleanup.components, [int]$r.stats.cleanup.removedComponents)
+}
+
+Write-Host "`n== Mesh cleanup - island removal + watertight (Stage 3) ==" -ForegroundColor Cyan
+
+# box 40^3 @ origin (the body) + a 0.2^3 speck 60mm away. A voxel merge welds
+# them into one Voxels field that meshes to TWO disconnected shells; cleanup
+# drops the sub-threshold speck (always keeping the largest component).
+$clBox = Join-Path $WorkDir 'cl_box.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$clBox
+    primitive=@{ kind='box'; sizeMM=@{x=40;y=40;z=40}; centerMM=@{x=0;y=0;z=0}; sides=0 }
+}) 'cl_box'
+[void](Test-Ok $r 'cleanup base box40')
+
+$clSpeck = Join-Path $WorkDir 'cl_speck.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$clSpeck
+    primitive=@{ kind='box'; sizeMM=@{x=0.2;y=0.2;z=0.2}; centerMM=@{x=60;y=0;z=0}; sides=0 }
+}) 'cl_speck'
+[void](Test-Ok $r 'cleanup speck')
+
+# merge with cleanup ON -> the far speck is removed as an island.
+$clMerge = Join-Path $WorkDir 'cl_merge_on.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='merge'; filletMM=0; voxelSizeMM=0.3; outputPath=$clMerge; cleanup=$true
+    inputs=@(@{ path=$clBox }, @{ path=$clSpeck })
+}) 'cl_merge_on'
+if (Test-Ok $r 'cleanup merge (islands removed)') {
+    $rc = [int]$r.stats.cleanup.removedComponents
+    Add-Result 'cleanup removedComponents == 1' ($rc -eq 1) `
+        ('removedComponents={0} components={1} removedVol={2:0.######}' -f $rc, [int]$r.stats.cleanup.components, [double]$r.stats.cleanup.removedVolumeMM3)
+    # result volume ~ 40^3 (the speck is negligible; voxel-truth ~ box).
+    Assert-Band 'cleanup result volume ~ 40^3' ([double]$r.stats.volumeMM3) 64000 0.02 0.02
+    Add-Result 'cleanup result watertight' ([bool]$r.stats.watertight) `
+        ('watertight={0} openEdges={1}' -f [bool]$r.stats.watertight, [int]$r.stats.openEdges)
+    # after island removal the output bbox is the box only (max.X ~ 20, not ~60).
+    $bb = Get-StlBBox $clMerge
+    Add-Result 'cleanup removed the far speck (bbox max.X ~ 20)' `
+        ([math]::Abs([double]$bb.max[0] - 20.0) -lt 1.0) ('max.X={0:0.###}' -f [double]$bb.max[0])
+}
+
+# same merge, cleanup OFF -> the speck SURVIVES (bbox still reaches x~60) and no
+# cleanup summary is reported.
+$clMergeF = Join-Path $WorkDir 'cl_merge_off.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='merge'; filletMM=0; voxelSizeMM=0.3; outputPath=$clMergeF; cleanup=$false
+    inputs=@(@{ path=$clBox }, @{ path=$clSpeck })
+}) 'cl_merge_off'
+if (Test-Ok $r 'cleanup:false regression (speck survives)') {
+    Add-Result 'cleanup:false reports no island removal' ($null -eq $r.stats.cleanup) `
+        ('cleanup={0}' -f $(if ($null -eq $r.stats.cleanup) { 'null' } else { 'present' }))
+    $bb = Get-StlBBox $clMergeF
+    Add-Result 'cleanup:false speck survives (bbox max.X > 40)' `
+        ([double]$bb.max[0] -gt 40.0) ('max.X={0:0.###}' -f [double]$bb.max[0])
 }
 
 Write-Host "`n== Legacy regression (byte-compat) ==" -ForegroundColor Cyan

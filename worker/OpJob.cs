@@ -55,6 +55,11 @@ namespace Anvil.Worker
         public int     triangles      { get; set; }
         public float   surfaceAreaMM2 { get; set; }
         public float[] cogMM          { get; set; } = new float[3];
+
+        // ---- mesh hygiene (Stage 3) ----
+        public bool         watertight { get; set; }   // export mesh directed-edge closed
+        public int          openEdges  { get; set; }   // unmatched directed edges (0 == watertight)
+        public CleanupInfo? cleanup    { get; set; }   // island-removal summary (null for mesh-only ops / cleanup off)
     }
 
     static class OpJob
@@ -165,12 +170,17 @@ namespace Anvil.Worker
         static void FinishMeshOp(JobRequest job, Mesh msh)
         {
             MeshUtil.MeshMassProps(msh, out float vol, out float area, out Vector3 cog);
+            // Mesh-only ops (primitive/transform/mirror) are watertight BY
+            // CONSTRUCTION — no island removal, just a directed-edge sanity check.
+            MeshClean.CheckWatertight(msh, 1e-4, out bool bWatertight, out int nOpenEdges);
             var stats = new OpStats
             {
                 volumeMM3      = vol,
                 triangles      = msh.nTriangleCount(),
                 surfaceAreaMM2 = area,
                 cogMM          = new[] { cog.X, cog.Y, cog.Z },
+                watertight     = bWatertight,
+                openEdges      = nOpenEdges,
             };
             Progress.Report("saving", 0.9);
             msh.SaveToStlFile(job.outputPath, Mesh.EStlUnit.MM); // FORCE MM
@@ -285,10 +295,20 @@ namespace Anvil.Worker
         {
             float fVol;
             if (fVolKnown is float fv) fVol = fv;
-            else vox.CalculateProperties(out fVol, out _);
+            else vox.CalculateProperties(out fVol, out _);   // voxel truth (pre-cleanup)
 
             Progress.Report("meshing", 0.8);
             Mesh msh = new Mesh(vox);
+
+            // ---- mesh hygiene: island removal + watertight check (cleanup ON
+            //      for ops unless the caller explicitly set cleanup:false) ----
+            float voxel = job.voxelSizeMM > 0f ? job.voxelSizeMM : 0.3f;
+            Progress.Report("cleanup", 0.88);
+            msh = MeshClean.CleanAndReport(msh, job.cleanup ?? true, voxel,
+                out bool bWatertight, out int nOpenEdges, out CleanupInfo? cleanupInfo);
+
+            // Surface area + CoG + triangle count reflect the CLEANED export mesh;
+            // volume stays the voxel-truth figure (matches legacy op semantics).
             MeshUtil.MeshMassProps(msh, out _, out float area, out Vector3 cog);
 
             var stats = new OpStats
@@ -297,6 +317,9 @@ namespace Anvil.Worker
                 triangles      = msh.nTriangleCount(),
                 surfaceAreaMM2 = area,
                 cogMM          = new[] { cog.X, cog.Y, cog.Z },
+                watertight     = bWatertight,
+                openEdges      = nOpenEdges,
+                cleanup        = cleanupInfo,
             };
 
             Progress.Report("saving", 0.95);

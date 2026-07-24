@@ -143,13 +143,9 @@ namespace Anvil.Worker
                 double bx = b.X, by = b.Y, bz = b.Z;
                 double cxx = c.X, cyy = c.Y, czz = c.Z;
 
-                // b × c
-                double crX = by * czz - bz * cyy;
-                double crY = bz * cxx - bx * czz;
-                double crZ = bx * cyy - by * cxx;
-
-                // dv = a · (b × c) / 6
-                double dv = (ax * crX + ay * crY + az * crZ) / 6.0;
+                // dv = a · (b × c) / 6 — shared with MeshClean's per-component
+                // accumulation so both sum the SAME divergence-theorem term.
+                double dv = TetraSignedVolume(ax, ay, az, bx, by, bz, cxx, cyy, czz);
                 vSigned += dv;
 
                 // centroid of tetra (origin,a,b,c) = (a+b+c)/4, weighted by dv
@@ -173,6 +169,25 @@ namespace Anvil.Worker
                 cogMM = new Vector3((float)(cx / vSigned), (float)(cy / vSigned), (float)(cz / vSigned));
             else
                 cogMM = Vector3.Zero;
+        }
+
+        /// <summary>
+        /// Signed volume of the tetrahedron (origin, A, B, C) = A · (B × C) / 6,
+        /// in double precision. This is the exact per-triangle term the
+        /// divergence-theorem volume sums. Components are passed as doubles
+        /// (already widened from the mesh's float positions) so the arithmetic
+        /// order is byte-identical to the original inlined MeshMassProps math;
+        /// MeshClean reuses it for its per-component volume accumulation.
+        /// </summary>
+        internal static double TetraSignedVolume(
+            double ax, double ay, double az,
+            double bx, double by, double bz,
+            double cx, double cy, double cz)
+        {
+            double crX = by * cz - bz * cy;
+            double crY = bz * cx - bx * cz;
+            double crZ = bx * cy - by * cx;
+            return (ax * crX + ay * crY + az * crZ) / 6.0;
         }
 
         // ── Hand-rolled primitive builders ─────────────────────────────────

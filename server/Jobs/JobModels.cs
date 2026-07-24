@@ -28,6 +28,10 @@ public sealed class PartInfo
     public double surfaceAreaMM2 { get; set; }
     public double[] cogMM { get; set; } = new double[3];
 
+    // ---- mesh hygiene: watertight per the worker's directed-edge check
+    //      (set for derived op parts from op stats; null for uploads) ----
+    public bool? watertight { get; set; }
+
     // ---- provenance for parts produced by a tool op (null for uploads) ----
     public DerivedDto? derived { get; set; }
 
@@ -158,6 +162,10 @@ public sealed class JobRequestDto
     public double overlapMM { get; set; } = 0.3;         // fuse
     public double smoothOffsetMM { get; set; } = 0;
     public StepExportDto? stepExport { get; set; }
+
+    // Mesh cleanup before export (remove floating islands). null = worker default
+    // (on); passed through verbatim to the worker job.json when present.
+    public bool? cleanup { get; set; }
 
     // ---- flow metrics v1 additions (all optional; defaults preserve behavior) ----
     public string latticeType { get; set; } = "sheet";   // sheet | skeletal

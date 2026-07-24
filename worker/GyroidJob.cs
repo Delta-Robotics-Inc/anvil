@@ -45,6 +45,10 @@ namespace Anvil.Worker
         public string outputPath { get; set; } = "";
         public StepExport? stepExport { get; set; }
 
+        // Mesh cleanup before export (remove floating islands). null/true = on;
+        // false = watertight check only. Backward-compatible (absent -> on).
+        public bool? cleanup { get; set; }
+
         // ---- flow metrics v1 additions (all optional; defaults preserve behavior) ----
         public string latticeType { get; set; } = "sheet";   // sheet | skeletal
         public float biasMM { get; set; } = 0f;               // skeletal bias
@@ -106,6 +110,11 @@ namespace Anvil.Worker
 
         // ---- zoned generate (0 on the legacy no-zone path) ----
         public float latticeRegionVolumeMM3 { get; set; }
+
+        // ---- mesh hygiene (Stage 3) ----
+        public bool watertight { get; set; }              // rebuilt/export mesh directed-edge closed
+        public int openEdges { get; set; }                // unmatched directed edges (0 == watertight)
+        public CleanupInfo? cleanup { get; set; }         // island-removal summary (null when cleanup off)
 
         // ---- flow metrics v1 ----
         public float airVolumeMM3 { get; set; }
@@ -207,6 +216,9 @@ namespace Anvil.Worker
             string.Equals((s ?? "").Trim(), "skeletal", StringComparison.OrdinalIgnoreCase)
                 ? TPMSWall.ELattice.Skeletal
                 : TPMSWall.ELattice.Sheet;
+
+        // Mesh cleanup defaults ON (null/true = on); false = watertight check only.
+        static bool CleanupEnabled(JobRequest job) => job.cleanup ?? true;
 
         // Per-axis cell size, falling back to scalar cellSizeMM where absent/invalid.
         static Vector3 CellVec(JobRequest job)
@@ -362,6 +374,15 @@ namespace Anvil.Worker
                 stats.Apply(metrics);
                 EmitAssert(metrics, fEnv);
 
+                // ---- mesh hygiene: island removal + watertight check ----
+                Progress.Report("cleanup", 0.93);
+                mshResult = MeshClean.CleanAndReport(mshResult, CleanupEnabled(job), job.voxelSizeMM,
+                    out bool bWatertight, out int nOpenEdges, out CleanupInfo? cleanupInfo);
+                stats.triangles  = mshResult.nTriangleCount();
+                stats.watertight = bWatertight;
+                stats.openEdges  = nOpenEdges;
+                stats.cleanup    = cleanupInfo;
+
                 Progress.Report("saving", 0.95);
                 mshResult.SaveToStlFile(job.outputPath, Mesh.EStlUnit.MM);
             } // first Library disposed here -> native run-once guard released
@@ -494,6 +515,15 @@ namespace Anvil.Worker
                 stats.warnings = zoneWarnings.Concat(metrics.warnings).ToArray();
                 EmitAssert(metrics, fRegionVol);
 
+                // ---- mesh hygiene: island removal + watertight check ----
+                Progress.Report("cleanup", 0.93);
+                mshResult = MeshClean.CleanAndReport(mshResult, CleanupEnabled(job), job.voxelSizeMM,
+                    out bool bWatertight, out int nOpenEdges, out CleanupInfo? cleanupInfo);
+                stats.triangles  = mshResult.nTriangleCount();
+                stats.watertight = bWatertight;
+                stats.openEdges  = nOpenEdges;
+                stats.cleanup    = cleanupInfo;
+
                 Progress.Report("saving", 0.95);
                 mshResult.SaveToStlFile(job.outputPath, Mesh.EStlUnit.MM);
             }
@@ -582,6 +612,15 @@ namespace Anvil.Worker
                     job.flowAxis, job.pattern, job.latticeType, job.wallThicknessMM, job.refFlowLpm);
                 stats.Apply(metrics);
                 EmitAssert(metrics, fCavity);
+
+                // ---- mesh hygiene: island removal + watertight check ----
+                Progress.Report("cleanup", 0.93);
+                mshResult = MeshClean.CleanAndReport(mshResult, CleanupEnabled(job), job.voxelSizeMM,
+                    out bool bWatertight, out int nOpenEdges, out CleanupInfo? cleanupInfo);
+                stats.triangles  = mshResult.nTriangleCount();
+                stats.watertight = bWatertight;
+                stats.openEdges  = nOpenEdges;
+                stats.cleanup    = cleanupInfo;
 
                 Progress.Report("saving", 0.95);
                 mshResult.SaveToStlFile(job.outputPath, Mesh.EStlUnit.MM);
@@ -717,6 +756,15 @@ namespace Anvil.Worker
                 stats.warnings = zoneWarnings.Concat(metrics.warnings).ToArray();
                 EmitAssert(metrics, fRegionVol);
 
+                // ---- mesh hygiene: island removal + watertight check ----
+                Progress.Report("cleanup", 0.93);
+                mshResult = MeshClean.CleanAndReport(mshResult, CleanupEnabled(job), job.voxelSizeMM,
+                    out bool bWatertight, out int nOpenEdges, out CleanupInfo? cleanupInfo);
+                stats.triangles  = mshResult.nTriangleCount();
+                stats.watertight = bWatertight;
+                stats.openEdges  = nOpenEdges;
+                stats.cleanup    = cleanupInfo;
+
                 Progress.Report("saving", 0.95);
                 mshResult.SaveToStlFile(job.outputPath, Mesh.EStlUnit.MM);
             }
@@ -769,7 +817,15 @@ namespace Anvil.Worker
 
                 Progress.Report("meshing", 0.8);
                 Mesh mshCoarse = new Mesh(vox);
-                stats.triangles = mshCoarse.nTriangleCount();
+
+                // ---- mesh hygiene: island removal + watertight check ----
+                Progress.Report("cleanup", 0.93);
+                mshCoarse = MeshClean.CleanAndReport(mshCoarse, CleanupEnabled(job), job.voxelSizeMM,
+                    out bool bWatertight, out int nOpenEdges, out CleanupInfo? cleanupInfo);
+                stats.triangles  = mshCoarse.nTriangleCount();
+                stats.watertight = bWatertight;
+                stats.openEdges  = nOpenEdges;
+                stats.cleanup    = cleanupInfo;
 
                 Progress.Report("saving", 0.95);
                 mshCoarse.SaveToStlFile(job.outputPath, Mesh.EStlUnit.MM);

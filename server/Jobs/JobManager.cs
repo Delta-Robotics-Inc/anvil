@@ -136,6 +136,9 @@ public sealed class JobManager : IAsyncDisposable
                 ["coarseStlPath"] = coarseStl,
             };
         }
+        // Mesh cleanup passthrough (only when the caller set it -> legacy job.json
+        // stays byte-identical when cleanup is absent; the worker defaults to on).
+        if (req.cleanup is bool cleanup) workerJob["cleanup"] = cleanup;
 
         // ---- Wave-1 base transforms (only emitted when present -> legacy job.json
         //      is byte-identical when there are no transforms and no zones) ----
@@ -211,6 +214,9 @@ public sealed class JobManager : IAsyncDisposable
             ["opKind"] = op,
             ["voxelSizeMM"] = req.voxelSizeMM,
             ["outputPath"] = outputStl,
+            // Ops always run mesh cleanup (island removal + watertight) before
+            // the derived part is registered.
+            ["cleanup"] = true,
         };
         if (inputs.Count > 0)
             workerJob["inputs"] = inputs.Select(MeshRefDict).ToList();
@@ -402,6 +408,15 @@ public sealed class JobManager : IAsyncDisposable
     private void FinalizeOpPart(JobRecord rec)
     {
         var info = StlInfo.ReadBinary(rec.ResultStlPath);
+        // Watertightness comes from the worker's op stats (directed-edge check),
+        // not the mass-props reader — carry it onto the registered part.
+        bool? watertight = null;
+        lock (rec.Gate)
+        {
+            if (rec.Stats is JsonObject so && so.TryGetPropertyValue("watertight", out var wtNode)
+                && wtNode is JsonValue wtVal && wtVal.TryGetValue(out bool wt))
+                watertight = wt;
+        }
         var part = new PartInfo
         {
             id = rec.PendingPartId!,
@@ -415,6 +430,7 @@ public sealed class JobManager : IAsyncDisposable
             volumeMM3 = info.VolumeMM3,
             surfaceAreaMM2 = info.SurfaceAreaMM2,
             cogMM = info.CogMM,
+            watertight = watertight,
             derived = rec.PendingDerived,
             StlPath = rec.ResultStlPath,
             Dir = rec.PendingPartDir ?? Path.GetDirectoryName(rec.ResultStlPath)!,

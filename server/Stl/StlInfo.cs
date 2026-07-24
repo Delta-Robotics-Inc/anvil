@@ -19,7 +19,16 @@ public enum StlKind { Binary, Ascii, Invalid }
 
 public sealed record StlBbox(double[] Min, double[] Max);
 
-public sealed record StlResult(int Triangles, StlBbox Bbox);
+/// <summary>
+/// Triangle count + world-frame bbox + mass properties (divergence theorem) for
+/// a binary STL. VolumeMM3/SurfaceAreaMM2/CogMM use the SAME formulas as the
+/// worker's MeshUtil.MeshMassProps so uploads, STEP-converted parts and derived
+/// op outputs all carry consistent, exact mesh mass props (= Wave-1 volume
+/// analysis). CogMM is a 3-element {x,y,z} array.
+/// </summary>
+public sealed record StlResult(
+    int Triangles, StlBbox Bbox,
+    double VolumeMM3, double SurfaceAreaMM2, double[] CogMM);
 
 public static class StlInfo
 {
@@ -79,10 +88,21 @@ public static class StlInfo
                 $"not a binary STL (length {bytes.Length} != 84 + {count}*50 = {expected}): {path}");
 
         if (count == 0)
-            return new StlResult(0, new StlBbox(new[] { 0.0, 0, 0 }, new[] { 0.0, 0, 0 }));
+            return new StlResult(0,
+                new StlBbox(new[] { 0.0, 0, 0 }, new[] { 0.0, 0, 0 }),
+                0.0, 0.0, new[] { 0.0, 0, 0 });
 
         double minX = double.MaxValue, minY = double.MaxValue, minZ = double.MaxValue;
         double maxX = double.MinValue, maxY = double.MinValue, maxZ = double.MinValue;
+
+        // Mass properties by the divergence theorem over signed tetrahedra
+        // (origin, A, B, C) — identical formulas to worker MeshUtil.MeshMassProps.
+        //   dv   = a·(b×c)/6           (signed)
+        //   V    = |Σ dv|             (abs at end)
+        //   CoG  = (1/Σdv) Σ ((a+b+c)/4)·dv
+        //   area = Σ |(b−a)×(c−a)| / 2
+        // Accumulated in double precision for accuracy.
+        double vSigned = 0.0, cx = 0.0, cy = 0.0, cz = 0.0, area = 0.0;
 
         var span = bytes.AsSpan();
         int off = 84;
@@ -90,6 +110,7 @@ public static class StlInfo
         {
             // Skip the 12-byte face normal; read the three vertices.
             int v = off + 12;
+            double ax = 0, ay = 0, az = 0, bx = 0, by = 0, bz = 0, ccx = 0, ccy = 0, ccz = 0;
             for (int k = 0; k < 3; k++)
             {
                 float x = BitConverter.ToSingle(span.Slice(v, 4));
@@ -99,12 +120,43 @@ public static class StlInfo
                 if (x < minX) minX = x; if (x > maxX) maxX = x;
                 if (y < minY) minY = y; if (y > maxY) maxY = y;
                 if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+                switch (k)
+                {
+                    case 0: ax = x; ay = y; az = z; break;
+                    case 1: bx = x; by = y; bz = z; break;
+                    default: ccx = x; ccy = y; ccz = z; break;
+                }
             }
             off += 50; // 50-byte record stride
+
+            // dv = a · (b × c) / 6
+            double crX = by * ccz - bz * ccy;
+            double crY = bz * ccx - bx * ccz;
+            double crZ = bx * ccy - by * ccx;
+            double dv = (ax * crX + ay * crY + az * crZ) / 6.0;
+            vSigned += dv;
+
+            cx += (ax + bx + ccx) * 0.25 * dv;
+            cy += (ay + by + ccy) * 0.25 * dv;
+            cz += (az + bz + ccz) * 0.25 * dv;
+
+            // triangle area = |(b−a) × (c−a)| / 2
+            double e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+            double e2x = ccx - ax, e2y = ccy - ay, e2z = ccz - az;
+            double nx = e1y * e2z - e1z * e2y;
+            double ny = e1z * e2x - e1x * e2z;
+            double nz = e1x * e2y - e1y * e2x;
+            area += 0.5 * Math.Sqrt(nx * nx + ny * ny + nz * nz);
         }
 
+        double vol = Math.Abs(vSigned);
+        double[] cog = Math.Abs(vSigned) > 1e-9
+            ? new[] { cx / vSigned, cy / vSigned, cz / vSigned }
+            : new[] { 0.0, 0, 0 };
+
         return new StlResult((int)count,
-            new StlBbox(new[] { minX, minY, minZ }, new[] { maxX, maxY, maxZ }));
+            new StlBbox(new[] { minX, minY, minZ }, new[] { maxX, maxY, maxZ }),
+            vol, area, cog);
     }
 
     private static int ReadFully(Stream s, Span<byte> buf)

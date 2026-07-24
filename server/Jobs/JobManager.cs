@@ -30,6 +30,7 @@ public sealed class JobManager : IAsyncDisposable
     private readonly string _jobsDir;      // abs {DataDir}/jobs
     private readonly string _repoRoot;
     private readonly PythonSidecar _sidecar;
+    private readonly PartStore _parts;     // derived-op outputs register here
     private readonly ILogger<JobManager> _log;
 
     private readonly ConcurrentDictionary<string, JobRecord> _jobs = new();
@@ -46,12 +47,13 @@ public sealed class JobManager : IAsyncDisposable
     };
 
     public JobManager(string workerPath, string jobsDir, string repoRoot,
-        int maxConcurrent, PythonSidecar sidecar, ILogger<JobManager> log)
+        int maxConcurrent, PythonSidecar sidecar, PartStore parts, ILogger<JobManager> log)
     {
         _workerPath = workerPath;
         _jobsDir = jobsDir;
         _repoRoot = repoRoot;
         _sidecar = sidecar;
+        _parts = parts;
         _log = log;
         _slots = new SemaphoreSlim(Math.Max(1, maxConcurrent), Math.Max(1, maxConcurrent));
         Directory.CreateDirectory(_jobsDir);
@@ -68,8 +70,22 @@ public sealed class JobManager : IAsyncDisposable
 
     public sealed record WorkerInputs(string Mode, string? StlPath, string? PositiveStlPath, string? NegativeStlPath);
 
+    /// <summary>A resolved zone/op mesh reference: an abs STL path + its current TRS.</summary>
+    public sealed record MeshRefPayload(string Path, TransformDto? Transform);
+
+    /// <summary>Resolved zone MeshRefs by class + the zone offsets, for a generate job.</summary>
+    public sealed record ZonePayload(
+        IReadOnlyList<MeshRefPayload> Lattice,
+        IReadOnlyList<MeshRefPayload> Keep,
+        IReadOnlyList<MeshRefPayload> Void,
+        double SkinThicknessMM, double TransitionMM, double KeepOutGrowMM);
+
+    /// <summary>Base-part transforms folded into a generate job (single vs fuse).</summary>
+    public sealed record BaseTransforms(TransformDto? Stl, TransformDto? Positive, TransformDto? Negative);
+
     /// <summary>Create a job folder, write job.json, enqueue. Returns the job id.</summary>
-    public string Submit(JobRequestDto req, WorkerInputs inputs, string? warning)
+    public string Submit(JobRequestDto req, WorkerInputs inputs, string? warning,
+        ZonePayload? zones = null, BaseTransforms? baseTransforms = null)
     {
         string id = "j_" + Token.New();
         string dir = Path.Combine(_jobsDir, id);
@@ -120,6 +136,33 @@ public sealed class JobManager : IAsyncDisposable
                 ["coarseStlPath"] = coarseStl,
             };
         }
+
+        // ---- Wave-1 base transforms (only emitted when present -> legacy job.json
+        //      is byte-identical when there are no transforms and no zones) ----
+        if (baseTransforms is not null)
+        {
+            if (inputs.Mode == "fuse")
+            {
+                if (TrsDict(baseTransforms.Positive) is { } pt) workerJob["positiveTransform"] = pt;
+                if (TrsDict(baseTransforms.Negative) is { } nt) workerJob["negativeTransform"] = nt;
+            }
+            else
+            {
+                if (TrsDict(baseTransforms.Stl) is { } st) workerJob["stlTransform"] = st;
+            }
+        }
+
+        // ---- Wave-1 zones (zone MeshRefs carry each zone part's TRS) ----
+        if (zones is not null)
+        {
+            if (zones.Lattice.Count > 0) workerJob["zoneLattice"] = zones.Lattice.Select(MeshRefDict).ToList();
+            if (zones.Keep.Count > 0)    workerJob["zoneKeep"]    = zones.Keep.Select(MeshRefDict).ToList();
+            if (zones.Void.Count > 0)    workerJob["zoneVoid"]    = zones.Void.Select(MeshRefDict).ToList();
+            workerJob["skinThicknessMM"] = zones.SkinThicknessMM;
+            workerJob["transitionMM"]    = zones.TransitionMM;
+            workerJob["keepOutGrowMM"]   = zones.KeepOutGrowMM;
+        }
+
         File.WriteAllText(jobJson, JsonSerializer.Serialize(workerJob, CamelOut));
 
         var rec = new JobRecord
@@ -138,6 +181,84 @@ public sealed class JobManager : IAsyncDisposable
         _jobs[id] = rec;
         _queue.Writer.TryWrite(rec);
         _log.LogInformation("job {Id} submitted ({Mode})", id, inputs.Mode);
+        return id;
+    }
+
+    /// <summary>
+    /// Submit a derived-part op job (mode == "op"). The caller has already
+    /// reserved the destination part id + dir (outputStl = {dir}/mesh.stl) and
+    /// resolved every input id -> abs STL path (folding each input's current TRS
+    /// into the MeshRef). Emits a worker op job.json, shares the same channel +
+    /// slot gate as generate jobs, and returns the job id. On success the worker
+    /// output is read (StlInfo mass props) into a PartInfo, registered in the
+    /// PartStore and exposed via JobStatus.part; on failure/cancel the reserved
+    /// dir is deleted.
+    /// </summary>
+    public string SubmitOp(
+        OpRequestDto req, IReadOnlyList<MeshRefPayload> inputs,
+        string reservedPartId, string reservedPartDir, string outputStl,
+        string pendingName, DerivedDto derived, string? warning)
+    {
+        string id = "j_" + Token.New();
+        string dir = Path.Combine(_jobsDir, id);
+        Directory.CreateDirectory(dir);
+        string jobJson = Path.Combine(dir, "job.json");
+
+        string op = (req.op ?? "").Trim().ToLowerInvariant();
+        var workerJob = new Dictionary<string, object?>
+        {
+            ["mode"] = "op",
+            ["opKind"] = op,
+            ["voxelSizeMM"] = req.voxelSizeMM,
+            ["outputPath"] = outputStl,
+        };
+        if (inputs.Count > 0)
+            workerJob["inputs"] = inputs.Select(MeshRefDict).ToList();
+        if (!string.IsNullOrWhiteSpace(req.booleanKind))
+            workerJob["booleanKind"] = req.booleanKind!.Trim().ToLowerInvariant();
+        workerJob["filletMM"] = req.filletMM;
+        if (!string.IsNullOrWhiteSpace(req.shellDirection))
+            workerJob["shellDirection"] = req.shellDirection!.Trim().ToLowerInvariant();
+        workerJob["shellThicknessMM"] = req.shellThicknessMM;
+        workerJob["offsetDistMM"] = req.offsetDistMM;
+        workerJob["bake"] = req.bake;
+        if (req.mirror is MirrorDto m)
+            workerJob["mirror"] = new Dictionary<string, object?>
+            {
+                ["planePoint"] = Vec(m.planePoint),
+                ["planeNormal"] = Vec(m.planeNormal),
+            };
+        if (req.primitive is PrimitiveDto p)
+            workerJob["primitive"] = new Dictionary<string, object?>
+            {
+                ["kind"] = (p.kind ?? "").Trim().ToLowerInvariant(),
+                ["sizeMM"] = Vec(p.sizeMM),
+                ["centerMM"] = Vec(p.centerMM),
+                ["sides"] = p.sides,
+            };
+
+        File.WriteAllText(jobJson, JsonSerializer.Serialize(workerJob, CamelOut));
+
+        var rec = new JobRecord
+        {
+            Id = id,
+            Dir = dir,
+            JobJsonPath = jobJson,
+            ResultStlPath = outputStl,        // the derived part's mesh.stl
+            ResultStepPath = Path.Combine(dir, "result.step"),
+            VoxelSizeMM = req.voxelSizeMM,
+            Warning = warning,
+            State = JobState.Queued,
+            Stage = "queued",
+            Kind = JobKind.Op,
+            PendingPartId = reservedPartId,
+            PendingPartDir = reservedPartDir,
+            PendingPartName = pendingName,
+            PendingDerived = derived,
+        };
+        _jobs[id] = rec;
+        _queue.Writer.TryWrite(rec);
+        _log.LogInformation("op job {Id} submitted ({Op} -> part {PartId})", id, op, reservedPartId);
         return id;
     }
 
@@ -218,6 +339,7 @@ public sealed class JobManager : IAsyncDisposable
         await proc.WaitForExitAsync();
         int exit = proc.ExitCode;
 
+        JobState finalState;
         lock (rec.Gate)
         {
             rec.Proc = null;
@@ -238,9 +360,75 @@ public sealed class JobManager : IAsyncDisposable
                 rec.Stage = "failed";
                 rec.Error = ParseWorkerError(rec.Stderr.ToString(), exit);
             }
+            finalState = rec.State;
         }
         proc.Dispose();
+
+        // ---- Wave-1 op finalization: register the derived part on success,
+        //      delete the reserved dir on failure/cancel. ----
+        if (rec.Kind == JobKind.Op)
+        {
+            if (finalState == JobState.Done)
+            {
+                try
+                {
+                    FinalizeOpPart(rec);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "op job {Id} produced output but part registration failed", rec.Id);
+                    lock (rec.Gate)
+                    {
+                        rec.State = JobState.Failed;
+                        rec.Stage = "failed";
+                        rec.Error = $"op output registration failed: {ex.Message}";
+                    }
+                    TryDeleteDir(rec.PendingPartDir);
+                }
+            }
+            else
+            {
+                TryDeleteDir(rec.PendingPartDir);
+            }
+        }
+
         _log.LogInformation("job {Id} finished: {State} (exit {Exit})", rec.Id, rec.State, exit);
+    }
+
+    /// <summary>
+    /// Read the op worker's output STL (StlInfo mass props), build the derived
+    /// PartInfo, register it in the PartStore, and expose it via JobStatus.part.
+    /// </summary>
+    private void FinalizeOpPart(JobRecord rec)
+    {
+        var info = StlInfo.ReadBinary(rec.ResultStlPath);
+        var part = new PartInfo
+        {
+            id = rec.PendingPartId!,
+            name = !string.IsNullOrWhiteSpace(rec.PendingPartName)
+                ? rec.PendingPartName!
+                : (rec.PendingDerived?.label ?? rec.PendingPartId!),
+            sourceFormat = "derived",
+            stlUrl = $"/api/parts/{rec.PendingPartId}/mesh.stl",
+            triangles = info.Triangles,
+            bbox = BboxDto.From(info.Bbox),
+            volumeMM3 = info.VolumeMM3,
+            surfaceAreaMM2 = info.SurfaceAreaMM2,
+            cogMM = info.CogMM,
+            derived = rec.PendingDerived,
+            StlPath = rec.ResultStlPath,
+            Dir = rec.PendingPartDir ?? Path.GetDirectoryName(rec.ResultStlPath)!,
+        };
+        _parts.Add(part);
+        lock (rec.Gate) rec.ResultPart = part;
+        _log.LogInformation("op job {Id} registered derived part {PartId} '{Name}' ({Tris} tris, {Vol:0.##} mm3)",
+            rec.Id, part.id, part.name, part.triangles, part.volumeMM3);
+    }
+
+    private static void TryDeleteDir(string? dir)
+    {
+        try { if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+        catch { /* best effort */ }
     }
 
     private void OnWorkerStdout(JobRecord rec, string? line)
@@ -451,6 +639,28 @@ public sealed class JobManager : IAsyncDisposable
         ["z"] = v?.z ?? 0.0,
     };
 
+    /// <summary>
+    /// Serialize a TransformDto to the worker's TRS shape (translateMM/rotateDeg/
+    /// scale, each {x,y,z}), or null if the transform is absent. Only present
+    /// components are emitted so an omitted axis stays at the worker default.
+    /// </summary>
+    private static Dictionary<string, object?>? TrsDict(TransformDto? t)
+    {
+        if (t is null) return null;
+        var d = new Dictionary<string, object?>();
+        if (t.translateMM is not null) d["translateMM"] = Vec(t.translateMM);
+        if (t.rotateDeg is not null)   d["rotateDeg"]   = Vec(t.rotateDeg);
+        if (t.scale is not null)       d["scale"]       = Vec(t.scale);
+        return d.Count > 0 ? d : null;
+    }
+
+    /// <summary>Serialize a resolved MeshRefPayload to {path, transform} for job.json.</summary>
+    private static Dictionary<string, object?> MeshRefDict(MeshRefPayload r) => new()
+    {
+        ["path"] = r.Path,
+        ["transform"] = TrsDict(r.Transform),
+    };
+
     public async ValueTask DisposeAsync()
     {
         _shutdown.Cancel();
@@ -472,6 +682,7 @@ public sealed class JobManager : IAsyncDisposable
 
 public enum JobState { Queued, Running, Done, Failed, Cancelled }
 public enum StepState { None, Running, Done, Failed }
+public enum JobKind { Generate, Op }
 
 public sealed class JobRecord
 {
@@ -482,6 +693,14 @@ public sealed class JobRecord
     public string? CoarseStlPath;
     public string ResultStepPath = "";
     public double VoxelSizeMM;
+
+    // ---- Wave-1 op jobs (Kind == Op) ----
+    public JobKind Kind = JobKind.Generate;
+    public string? PendingPartId;      // reserved destination part id
+    public string? PendingPartDir;     // reserved part dir (deleted on fail/cancel)
+    public string? PendingPartName;    // display name (req.name ?? derived.label)
+    public DerivedDto? PendingDerived; // provenance to stamp on the result part
+    public PartInfo? ResultPart;       // set on success -> exposed via Snapshot
 
     public readonly object Gate = new();
     public JobState State = JobState.Queued;
@@ -520,6 +739,7 @@ public sealed class JobRecord
                     warning = StepWarning,
                     error = StepError,
                 },
+                part = ResultPart,
             };
         }
     }

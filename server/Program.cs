@@ -72,7 +72,9 @@ builder.Services.AddSingleton(sp => new PythonSidecar(
     pythonPath, sidecarScript, sp.GetRequiredService<ILogger<PythonSidecar>>()));
 builder.Services.AddSingleton(sp => new JobManager(
     workerPath, jobsDir, repoRoot, maxConcurrent,
-    sp.GetRequiredService<PythonSidecar>(), sp.GetRequiredService<ILogger<JobManager>>()));
+    sp.GetRequiredService<PythonSidecar>(),
+    sp.GetRequiredService<PartStore>(),
+    sp.GetRequiredService<ILogger<JobManager>>()));
 
 // Bind to 127.0.0.1:5238 by default, but honor an explicit --urls / ASPNETCORE_URLS
 // override (both surface as the "urls" configuration key) so a second instance can
@@ -106,6 +108,7 @@ app.MapGet("/api/health", () => Results.Ok(new
 }));
 
 app.MapInfillApi();
+app.MapOpsApi();
 
 app.Run();
 

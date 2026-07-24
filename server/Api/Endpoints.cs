@@ -19,9 +19,30 @@ public static class Endpoints
     private static readonly string[] LatticeTypes = { "sheet", "skeletal" };
     private static readonly string[] FlowAxes = { "x", "y", "z" };
 
-    // Resolution guard thresholds (plan).
-    private const double MaxDimVoxelRatio = 2000.0;
-    private const double VoxelCountWarn = 2e9;
+    // Resolution guard thresholds (plan). internal so OpsEndpoints reuses them.
+    internal const double MaxDimVoxelRatio = 2000.0;
+    internal const double VoxelCountWarn = 2e9;
+
+    /// <summary>
+    /// Shared resolution-guard error: rejects a voxel size that would put more
+    /// than MaxDimVoxelRatio voxels across the largest dimension. Returns null
+    /// when the resolution is acceptable.
+    /// </summary>
+    internal static string? ResolutionError(double maxDim, double voxel)
+    {
+        if (voxel <= 0) return "voxelSizeMM must be > 0";
+        double across = maxDim / voxel;
+        if (across > MaxDimVoxelRatio)
+            return $"resolution too high: largest dimension {maxDim:0.##} mm / voxel {voxel} mm " +
+                   $"= {across:0} voxels across (limit {MaxDimVoxelRatio:0}). Increase voxelSizeMM.";
+        return null;
+    }
+
+    /// <summary>Shared large-job warning (null when under the voxel-count threshold).</summary>
+    internal static string? ResolutionWarning(double voxelCount)
+        => voxelCount > VoxelCountWarn
+            ? $"large job: ~{voxelCount:0.##e0} effective voxels (> {VoxelCountWarn:0.##e0}); may be slow and memory-heavy"
+            : null;
 
     public static void MapInfillApi(this WebApplication app)
     {
@@ -171,6 +192,9 @@ public static class Endpoints
                     stlUrl = $"/api/parts/{id}/mesh.stl",
                     triangles = info.Triangles,
                     bbox = BboxDto.From(info.Bbox),
+                    volumeMM3 = info.VolumeMM3,
+                    surfaceAreaMM2 = info.SurfaceAreaMM2,
+                    cogMM = info.CogMM,
                     StlPath = meshStl,
                     Dir = dir,
                 };
@@ -195,14 +219,32 @@ public static class Endpoints
                     return Results.BadRequest(new { error = $"STEP conversion failed: {se.Message}", detail = se.Detail });
                 }
 
+                // Mass props from the converted binary mesh.stl (same single pass as
+                // uploads/derived). Fall back to the sidecar's tris/bbox if the reader
+                // trips on the produced STL.
+                int tris = conv.Triangles;
+                var bbox = BboxDto.From(conv.BboxMin, conv.BboxMax);
+                double vol = 0, area = 0; double[] cog = new double[3];
+                try
+                {
+                    var info = StlInfo.ReadBinary(meshStl);
+                    tris = info.Triangles;
+                    bbox = BboxDto.From(info.Bbox);
+                    vol = info.VolumeMM3; area = info.SurfaceAreaMM2; cog = info.CogMM;
+                }
+                catch (Exception ex) { log.LogWarning(ex, "mass-props read failed for STEP part {Id}; using sidecar bbox", id); }
+
                 var part = new PartInfo
                 {
                     id = id,
                     name = name,
                     sourceFormat = "step",
                     stlUrl = $"/api/parts/{id}/mesh.stl",
-                    triangles = conv.Triangles,
-                    bbox = BboxDto.From(conv.BboxMin, conv.BboxMax),
+                    triangles = tris,
+                    bbox = bbox,
+                    volumeMM3 = vol,
+                    surfaceAreaMM2 = area,
+                    cogMM = cog,
                     StlPath = meshStl,
                     Dir = dir,
                 };
@@ -288,24 +330,82 @@ public static class Endpoints
             inputs = new JobManager.WorkerInputs("fuse", null, pos.StlPath, neg.StlPath);
         }
 
-        // Resolution guard.
-        double maxDim = referenced.Max(p => p.bbox.MaxDim());
-        if (maxDim / reqBody.voxelSizeMM > MaxDimVoxelRatio)
-            return Results.BadRequest(new
+        // ---- Wave-1 zones: validate + resolve (ids exist, zone != base, offsets
+        //      >= 0, fuse+skin -> zero+warn) and fold each zone part's TRS in. ----
+        var zoneParts = new List<PartInfo>();
+        JobManager.ZonePayload? zonePayload = null;
+        var warnings = new List<string>();
+
+        if (reqBody.zones is ZonesDto z)
+        {
+            if (z.skinThicknessMM < 0 || z.transitionMM < 0 || z.keepOutGrowMM < 0)
+                return Results.BadRequest(new { error = "zone offsets must be >= 0 (skinThicknessMM, transitionMM, keepOutGrowMM)" });
+
+            double skin = z.skinThicknessMM, transition = z.transitionMM, keepOut = z.keepOutGrowMM;
+
+            var baseIds = new HashSet<string>(StringComparer.Ordinal);
+            if (mode == "single") baseIds.Add(reqBody.partId!);
+            else { baseIds.Add(reqBody.positiveId!); baseIds.Add(reqBody.negativeId!); }
+
+            var lattice = new List<JobManager.MeshRefPayload>();
+            var keep = new List<JobManager.MeshRefPayload>();
+            var voids = new List<JobManager.MeshRefPayload>();
+
+            (List<string>? ids, List<JobManager.MeshRefPayload> bucket, string cls)[] classes =
             {
-                error = $"resolution too high: largest part dimension {maxDim:0.##} mm / voxel {reqBody.voxelSizeMM} mm " +
-                        $"= {maxDim / reqBody.voxelSizeMM:0} voxels across (limit {MaxDimVoxelRatio:0}). " +
-                        "Increase voxelSizeMM."
-            });
+                (z.latticeIds, lattice, "lattice"),
+                (z.keepIds,    keep,    "keep"),
+                (z.voidIds,    voids,   "void"),
+            };
+            foreach (var (ids, bucket, cls) in classes)
+            {
+                if (ids is null) continue;
+                foreach (var zid in ids)
+                {
+                    if (string.IsNullOrWhiteSpace(zid)) continue;
+                    if (baseIds.Contains(zid))
+                        return Results.BadRequest(new { error = $"zone id '{zid}' ({cls}) cannot also be a base part id" });
+                    if (!parts.TryGet(zid, out var zp))
+                        return Results.BadRequest(new { error = $"zone part not found: {zid} ({cls})" });
+                    zoneParts.Add(zp);
+                    bucket.Add(new JobManager.MeshRefPayload(zp.StlPath, GetTransform(reqBody.transforms, zid)));
+                }
+            }
 
-        double voxelCount = referenced.Max(p => p.bbox.VoxelCount(reqBody.voxelSizeMM));
-        string? warning = voxelCount > VoxelCountWarn
-            ? $"large job: ~{voxelCount:0.##e0} effective voxels (> {VoxelCountWarn:0.##e0}); may be slow and memory-heavy"
-            : null;
+            // skinThicknessMM is meaningless in fuse mode: zero it + warn.
+            if (mode == "fuse" && skin > 0)
+            {
+                warnings.Add("skinThicknessMM is ignored in fuse mode (zeroed)");
+                skin = 0;
+            }
 
-        string jobId = jobs.Submit(reqBody, inputs, warning);
+            zonePayload = new JobManager.ZonePayload(lattice, keep, voids, skin, transition, keepOut);
+        }
+
+        // Base-part transforms (from the transforms map keyed by part id).
+        JobManager.BaseTransforms baseTransforms = mode == "single"
+            ? new JobManager.BaseTransforms(GetTransform(reqBody.transforms, reqBody.partId!), null, null)
+            : new JobManager.BaseTransforms(null,
+                GetTransform(reqBody.transforms, reqBody.positiveId!),
+                GetTransform(reqBody.transforms, reqBody.negativeId!));
+
+        // Resolution guard — base parts AND zone parts join the guard (raw bboxes).
+        var guardParts = referenced.Concat(zoneParts).ToList();
+        double maxDim = guardParts.Max(p => p.bbox.MaxDim());
+        if (ResolutionError(maxDim, reqBody.voxelSizeMM) is { } resErr)
+            return Results.BadRequest(new { error = resErr });
+
+        double voxelCount = guardParts.Max(p => p.bbox.VoxelCount(reqBody.voxelSizeMM));
+        if (ResolutionWarning(voxelCount) is { } resWarn) warnings.Add(resWarn);
+        string? warning = warnings.Count > 0 ? string.Join("; ", warnings) : null;
+
+        string jobId = jobs.Submit(reqBody, inputs, warning, zonePayload, baseTransforms);
         return Results.Accepted($"/api/jobs/{jobId}", new { jobId, warning });
     }
+
+    /// <summary>Look up a part's TRS from the request transforms map (null if absent).</summary>
+    private static TransformDto? GetTransform(Dictionary<string, TransformDto>? map, string id)
+        => map != null && map.TryGetValue(id, out var t) ? t : null;
 
     private static void Cleanup(string dir)
     {

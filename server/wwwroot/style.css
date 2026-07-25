@@ -215,14 +215,6 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
 /* ── Viewport (flex sizing kept here so the responsive rules can win) ──── */
 .viewport canvas { display:block; }
 
-.viewport-hint {
-  position:absolute; inset:0; z-index:2;
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
-  color:var(--dim); pointer-events:none; text-align:center; padding:24px;
-}
-.viewport-hint.hidden { display:none; }
-.vp-hint-title { font-size:12px; color:var(--fg); }
-
 .vp-chrome { position:absolute; z-index:2; pointer-events:none; }
 .vp-tl { top:12px; left:14px; }
 .vp-bl { bottom:10px; left:14px; display:flex; flex-direction:column; gap:3px; }
@@ -694,8 +686,6 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 body.drag-active .dropzone { color:var(--primary); filter:drop-shadow(0 0 14px color-mix(in oklch,var(--primary) 34%,transparent)); }
 body.drag-active .dropzone::before { background:var(--primary); }
 body.drag-active .dropzone-title { color:var(--primary); }
-body.drag-active .viewport-hint { color:var(--primary); filter:drop-shadow(0 0 18px color-mix(in oklch,var(--primary) 42%,transparent)); }
-body.drag-active .viewport-hint .vp-hint-title { color:var(--primary); }
 .viewport::after {
   content:""; position:absolute; inset:0; z-index:3; pointer-events:none; opacity:0; transition:opacity .15s;
   box-shadow:inset 0 0 0 2px color-mix(in oklch,var(--primary) 55%,transparent),
@@ -773,6 +763,22 @@ body.drag-active .viewport::after { opacity:1; }
 .tb-btn.active { color:var(--primary); }
 .tb-btn.active::before { background:transparent; }
 .tb-btn.active::after  { background:linear-gradient(to top,var(--primary) 0 1px,transparent 1px),var(--card); }
+
+/* Empty-scene primary (Fix 1, accent budget): with nothing loaded the single
+   solid --primary fill lives on ADD PART — the only useful next action. Fills
+   BOTH chamfer layers so the plate reads as one solid shape, and pins the
+   hover/focus states so the fill does not blink back to the card tone. It is
+   released (JS removes .solid) the instant a part exists, so the "exactly one
+   .solid on screen" invariant still holds. */
+.tb-btn.solid { color:var(--bg); }
+.tb-btn.solid::before,
+.tb-btn.solid::after { background:var(--primary); }
+.tb-btn.solid:hover:not(:disabled),
+.tb-btn.solid:focus-visible:not(:disabled) { color:var(--bg); }
+.tb-btn.solid:hover:not(:disabled)::before,
+.tb-btn.solid:hover:not(:disabled)::after,
+.tb-btn.solid:focus-visible:not(:disabled)::before,
+.tb-btn.solid:focus-visible:not(:disabled)::after { background:var(--primary); }
 
 /* GENERATE toolbar mirror (Fix 1): never filled. Armed = static text-orange;
    running = the SAME orange, pulsing (keeps the % readout via JS). The motion
@@ -874,6 +880,14 @@ body.drag-active .viewport::after { opacity:1; }
 .sec-chip:focus-visible { outline:none; color:var(--primary); filter:drop-shadow(0 0 4px color-mix(in oklch,var(--primary) 42%,transparent)); }
 .sec-invert { font-size:12px; line-height:1; }
 .sec-invert.active { color:var(--primary); }
+
+/* ── MODEL UP selector (view strip, below SECTION) ──────────────────────
+   Same chamfered chip language as the section axis chips, in a 2x2 grid under
+   a small UP label. Always visible: it is a workspace convention, not a mode. */
+.vstrip-up { display:flex; flex-direction:column; align-items:center; gap:4px; padding-top:2px; }
+.vstrip-label { font-size:9px; color:var(--dim); letter-spacing:.14em; line-height:1; }
+.up-axis { display:grid; grid-template-columns:1fr 1fr; gap:3px; width:34px; }
+.up-chip { font-size:9px; letter-spacing:0; padding:3px 0; }
 
 /* ── Wave-2 · Floating selection toolbar (NEUTRAL — outside the accent machine) ──
    Appears with a selection (top-centre of the viewport). MOVE / ROTATE / SCALE

@@ -18,7 +18,7 @@
             derived.label + mass props (volumeMM3 > 0, surfaceAreaMM2 > 0)
           - GET /api/parts contains the derived part
           - POST /api/ops duplicate -> 200 sync with COPIED mass props
-          - create primitives via /api/ops (box 60x40x20, sphere d24, cyl d8 h40)
+          - create primitives via /api/ops (box 60x40x20, sphere d24, cyl d8 h60)
           - POST /api/jobs single-mode ZONED on the op-created box (base) + sphere
             (zone-lattice) + cylinder (zone-void), skin 1.5 / keepOutGrow 0.5
           - poll done -> GET preview.stl 200 & > 0 bytes; stats.latticeRegionVolumeMM3 present
@@ -299,7 +299,9 @@ try {
     }
     $boxId    = New-Primitive 'box'      @{ x=60; y=40; z=20 } 'box 60x40x20'
     $sphereId = New-Primitive 'sphere'   @{ x=24; y=24; z=24 } 'sphere d24'
-    $cylZid   = New-Primitive 'cylinder' @{ x=8;  y=8;  z=40 } 'cylinder d8 h40'
+    # Cylinders STAND IN Y: sizeMM.X/.Z are the diameters, sizeMM.Y the height.
+    # h60 punches clean through the box's 40 mm Y extent as a zone-void.
+    $cylZid   = New-Primitive 'cylinder' @{ x=8;  y=60; z=8 } 'cylinder d8 h60'
 
     Write-Host "`n== Zoned generate (op-created parts) ==" -ForegroundColor Cyan
     if ($boxId -and $sphereId -and $cylZid) {

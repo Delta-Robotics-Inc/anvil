@@ -154,6 +154,11 @@ function inputRef(id) {
   return t ? { partId: id, transform: t } : { partId: id };
 }
 
+// Primitive kinds with a distinguished height axis: the worker authors them
+// along +Y, so under a non-+Y MODEL UP they need a convention rotation to stand
+// display-up. A box or a sphere has no such axis and never gets one.
+const STANDING = new Set(['cyl', 'cone']);
+
 // ══ TOOLS registry ════════════════════════════════════════════════════
 // Each tool: title/jp (heading), confirm (button label), render(host)→read,
 // validate(vals)→{ok,note,noteKind}, build(vals)→request body (null = no-op),
@@ -163,16 +168,19 @@ const TOOLS = {
   primitive: {
     title: 'PRIMITIVE', jp: '基本', confirm: 'CREATE',
     render(host) {
-      const c = ctx.unionCenter() || { x: 0, y: 0, z: 0 };
       let kind = 'box';       // box | cyl | sph | cone
       let shapeRead = null;   // () -> sizeMM { x, y, z }
       let inited = false;     // openTool's body-wide initSteppers wires the FIRST build
-      let zDirty = false;     // the user edited Z himself → stop auto-sitting on the plate
+      let centerDirty = false;   // the user took the centre over → stop auto-placing
+
+      // Where this shape has to be AUTHORED (and with what convention pose) so
+      // it stands display-up on the plate. See viewer.primitiveSpawn.
+      const spawn = () => ctx.primitiveSpawn(shapeRead ? shapeRead().y : 0, STANDING.has(kind));
 
       const seg = segControl(
         [{ val: 'box', label: 'BOX' }, { val: 'cyl', label: 'CYL' },
          { val: 'sph', label: 'SPH' }, { val: 'cone', label: 'CONE' }],
-        'box', (val) => { kind = val; rebuild(); syncZ(); onChange(); });
+        'box', (val) => { kind = val; rebuild(); syncCenter(); onChange(); });
 
       // Shape-specific fields live in their own flex column so the panel's
       // vertical rhythm is preserved when they are swapped on kind change.
@@ -181,15 +189,17 @@ const TOOLS = {
       shapeHost.style.flexDirection = 'column';
       shapeHost.style.gap = '12px';
 
-      // Everything is printed: Z0 is the plate. X/Y still default to the visible-
-      // union bbox centre, but Z defaults to HALF the primitive's height so the
-      // new part rests ON the bed (bbox min Z = 0) instead of straddling it.
-      const cen = tripletStepper('Center', 'mm',
-        { x: round(c.x), y: round(c.y), z: 0 }, 1,
-        'Placement of the primitive centre. X/Y default to the visible-union bbox centre; '
-        + 'Z defaults to half the height so the part sits ON the plate (Z0 = print bed). '
-        + 'Type your own Z and it stops tracking the size.');
-      cen.inp.z.addEventListener('input', () => { zDirty = true; });
+      // The centre is in FILE coordinates — what the worker receives. It defaults
+      // to wherever the part has to be authored so it lands centred on the scene
+      // and RESTING ON THE PLATE in display terms. Under a non-+Y MODEL UP that
+      // is not the same point as where it draws: the convention rotation carries
+      // it there and this centre is its pre-image (viewer.primitiveSpawn).
+      const cen = tripletStepper('Center', 'mm', { x: 0, y: 0, z: 0 }, 1,
+        'Placement of the primitive centre, in file coordinates. Defaults so the new part '
+        + 'sits centred on the visible scene and rests on the plate under the current MODEL '
+        + 'UP. Type your own numbers and it stops tracking the size.');
+      for (const ax of ['x', 'y', 'z'])
+        cen.inp[ax].addEventListener('input', () => { centerDirty = true; });
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
 
       host.append(
@@ -214,11 +224,12 @@ const TOOLS = {
           const hgt = stepper({ value: 40, min: 0.1, step: 0.5 });
           shapeHost.append(
             paramBlock('Diameter <em>mm</em>', dia.el,
-              { tip: 'Round cross-section (X = Y). Use BOX for a custom rectangular footprint.' }),
+              { tip: 'Round cross-section (X = Z). Use BOX for a custom rectangular footprint.' }),
             paramBlock('Height <em>mm</em>', hgt.el,
-              { tip: 'Cylinder height along Z, centred on the centre point.' }),
+              { tip: 'Cylinder height. It is authored along Y and stood up along the display '
+                + 'up axis, centred on the centre point.' }),
           );
-          shapeRead = () => { const d = num(dia.inp, 20); return { x: d, y: d, z: num(hgt.inp, 40) }; };
+          shapeRead = () => { const d = num(dia.inp, 20); return { x: d, y: num(hgt.inp, 40), z: d }; };
         } else if (kind === 'sph') {
           const dia = stepper({ value: 24, min: 0.1, step: 0.5 });
           shapeHost.append(
@@ -231,29 +242,35 @@ const TOOLS = {
           const hgt = stepper({ value: 40, min: 0.1, step: 0.5 });
           shapeHost.append(
             paramBlock('Base diameter <em>mm</em>', dia.el,
-              { tip: 'Round base (X = Y). Base sits at centre − height/2, apex at centre + height/2.' }),
+              { tip: 'Round base (X = Z). Base sits at centre − height/2, apex at centre + height/2.' }),
             paramBlock('Height <em>mm</em>', hgt.el,
-              { tip: 'Cone height along Z, centred on the centre point.' }),
+              { tip: 'Cone height. It is authored along Y and stood up along the display up '
+                + 'axis, so the apex points display-up out of the plate.' }),
           );
-          shapeRead = () => { const d = num(dia.inp, 20); return { x: d, y: d, z: num(hgt.inp, 40) }; };
+          shapeRead = () => { const d = num(dia.inp, 20); return { x: d, y: num(hgt.inp, 40), z: d }; };
         }
         // Every size/height/diameter edit re-seats the part on the plate (until
-        // the user takes Z over). The steppers dispatch a bubbling `input`, so
-        // both typing and −/＋ land here.
+        // the user takes the centre over). The steppers dispatch a bubbling
+        // `input`, so both typing and −/＋ land here.
         for (const inp of shapeHost.querySelectorAll('input[type="number"]'))
-          inp.addEventListener('input', () => { syncZ(); onChange(); });
+          inp.addEventListener('input', () => { syncCenter(); onChange(); });
         if (inited) ui.initSteppers(shapeHost);
       }
 
-      // Z default = half the primitive's height → bbox min Z lands on 0.
-      function syncZ() {
-        if (zDirty || !shapeRead) return;
-        cen.inp.z.value = String(round(shapeRead().z / 2));   // assignment fires no event
+      // Centre default: the authored point that draws centred on the scene and
+      // resting on the plate. All three components move — a convention rotation
+      // permutes the axes — so the whole triplet is rewritten.
+      function syncCenter() {
+        if (centerDirty || !shapeRead) return;
+        const c = spawn().centerMM;
+        cen.inp.x.value = String(round(c.x));   // assignment fires no event
+        cen.inp.y.value = String(round(c.y));
+        cen.inp.z.value = String(round(c.z));
       }
 
       rebuild();
       inited = true;
-      syncZ();
+      syncCenter();
 
       return () => ({
         kind, size: shapeRead(), center: xyz(cen.inp), voxel: num(vox.inp, 0.3),
@@ -263,8 +280,10 @@ const TOOLS = {
       if (v.size.x <= 0 || v.size.y <= 0 || v.size.z <= 0)
         return { ok: false, note: 'Size must be > 0 on all axes', noteKind: 'err' };
       if (v.voxel <= 0) return { ok: false, note: 'Resolution must be > 0', noteKind: 'err' };
-      const onPlate = Math.abs(v.center.z - v.size.z / 2) < 1e-6;
-      return { ok: true, note: `${v.kind.toUpperCase()} · ${onPlate ? 'sits on the plate (Z0)' : `centre Z ${round(v.center.z)} mm`}` };
+      const want = ctx.primitiveSpawn(v.size.y, STANDING.has(v.kind)).centerMM;
+      const onPlate = ['x', 'y', 'z'].every((k) => Math.abs(v.center[k] - want[k]) < 1e-3);
+      const at = `centre ${round(v.center.x)}, ${round(v.center.y)}, ${round(v.center.z)} mm`;
+      return { ok: true, note: `${v.kind.toUpperCase()} · ${onPlate ? 'sits on the plate' : at}` };
     },
     build(v) {
       const kindMap = { box: 'box', cyl: 'cylinder', sph: 'sphere', cone: 'cone' };
@@ -272,6 +291,16 @@ const TOOLS = {
         op: 'primitive', voxelSizeMM: v.voxel,
         primitive: { kind: kindMap[v.kind], sizeMM: v.size, centerMM: v.center, sides: 0 },
       };
+    },
+    // The worker builds cylinders and cones along +Y. Under any other MODEL UP
+    // they arrive lying down, so the tool attaches the convention rotation that
+    // stands them up: a normal, visible, clearable TRS that export bakes. That
+    // is acceptable HERE and only here — a primitive is born in ANVIL, so there
+    // is no external CAD frame to preserve.
+    afterConfirm(v, part) {
+      if (!part) return;
+      const { trs } = ctx.primitiveSpawn(v.size.y, STANDING.has(v.kind));
+      if (trs) ctx.setPartTransform(part.id, trs, { label: 'Stand up (display)', once: true });
     },
   },
 
@@ -436,7 +465,11 @@ const TOOLS = {
       for (const ax of ['x', 'y', 'z']) { scl.inp[ax].min = '0.01'; }
       const center = el('button', 'btn tool-mini'); center.type = 'button'; center.textContent = 'CENTER';
       center.setAttribute('data-tip', 'Preset: translate the part bbox centre to the origin.');
-      const actions = el('div', 'tool-actions'); actions.appendChild(center);
+      const clear = el('button', 'btn tool-mini'); clear.type = 'button'; clear.textContent = 'CLEAR';
+      clear.setAttribute('data-tip',
+        'Reset this part to identity — no translate, no rotate, scale 1. An import never '
+        + 'carries one, so this only ever removes transforms you (or a tool) applied.');
+      const actions = el('div', 'tool-actions'); actions.append(center, clear);
       host.append(paramBlock('Part', part.el, { tip: 'Source part.' }), tr.el, rot.el, scl.el,
         paramBlock('Preset', actions, { tip: 'One-tap placement presets.' }));
 
@@ -467,6 +500,15 @@ const TOOLS = {
         tr.inp.y.value = round(-(bb.min[1] + bb.max[1]) / 2);
         tr.inp.z.value = round(-(bb.min[2] + bb.max[2]) / 2);
         onLive();
+      });
+      // CLEAR — drop the part's whole TRS (identity). Goes through
+      // clearPartTransform so it is ONE undo entry.
+      clear.addEventListener('click', () => {
+        const id = part.get();
+        if (!id) return;
+        ctx.clearPartTransform(id);
+        prefill(id);
+        onChange();
       });
       cur._live = onLive;
       return () => ({ part: part.get(), trs: readTrs() });

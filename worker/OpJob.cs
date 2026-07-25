@@ -124,15 +124,17 @@ namespace Anvil.Worker
             Progress.Report("op", 0.4);
             string pk = (p.kind ?? "").Trim().ToLowerInvariant();
             // Curved primitives facet from the job's voxel size (p.sides is legacy /
-            // ignored). Cylinder & cone use the larger of the X/Y diameters; the
-            // sphere uses the largest of its three axes.
-            int segRound = MeshUtil.Segments(MathF.Max(size.X, size.Y), voxel);
+            // ignored). Cylinder & cone STAND IN Y (the up axis of the Y-up display
+            // convention): sizeMM.X/.Z are their diameters and sizeMM.Y is the
+            // height, so they use the larger of the X/Z diameters. The sphere is
+            // axis-symmetric and uses the largest of its three axes.
+            int segRound = MeshUtil.Segments(MathF.Max(size.X, size.Z), voxel);
             int segSphere = MeshUtil.Segments(MathF.Max(size.X, MathF.Max(size.Y, size.Z)), voxel);
             Mesh msh = pk switch
             {
                 "cube" or "box"          => MeshUtil.CreateBox(size, center),
-                "cylinder"               => MeshUtil.CreateCylinder(size.X, size.Y, size.Z, center, segRound),
-                "cone"                   => MeshUtil.CreateCone(size.X, size.Y, size.Z, center, segRound),
+                "cylinder"               => MeshUtil.CreateCylinder(size.X, size.Z, size.Y, center, segRound),
+                "cone"                   => MeshUtil.CreateCone(size.X, size.Z, size.Y, center, segRound),
                 "sphere" or "geosphere"  => MeshUtil.CreateSphere(size, center, segSphere),
                 _ => throw new ArgumentException($"unknown primitive kind: '{p.kind}' (cube|box|cylinder|sphere|cone)"),
             };

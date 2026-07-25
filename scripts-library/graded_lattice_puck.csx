@@ -14,7 +14,7 @@
 //
 // Parameters (all optional):
 //   diaMM       puck diameter               (default 40)
-//   heightMM    puck height (Z)             (default 15)
+//   heightMM    puck height (Y, the up axis)  (default 15)
 //   cellMM      gyroid unit-cell            (default 6)
 //   biasCenter  skeletal bias at the axis   (default -0.6, sparser)
 //   biasRim     skeletal bias at the rim    (default  0.6, denser)
@@ -51,8 +51,10 @@ class RadialGradedGyroid : IImplicit
 
     public float fSignedDistance(in Vector3 v)
     {
-        float dx = v.X - m_c.X, dy = v.Y - m_c.Y;
-        float r  = MathF.Sqrt(dx * dx + dy * dy);
+        // The puck STANDS IN Y, so the radial coordinate is measured in the
+        // XZ plane — the grading has to run out to the rim, not up the axis.
+        float dx = v.X - m_c.X, dz = v.Z - m_c.Z;
+        float r  = MathF.Sqrt(dx * dx + dz * dz);
         float t  = Math.Clamp(r / m_rMax, 0f, 1f);
         float bias = m_bias0 + (m_bias1 - m_bias0) * t;
 
@@ -66,7 +68,7 @@ class RadialGradedGyroid : IImplicit
     }
 }
 
-// Solid puck envelope (elliptical cylinder with equal diameters).
+// Solid puck envelope (elliptical cylinder with equal diameters, standing in Y).
 int seg = MeshUtil.Segments(diaMM, VoxelSizeMM);
 Mesh mshPuck = MeshUtil.CreateCylinder(diaMM, diaMM, heightMM, Vector3.Zero, seg);
 Voxels voxPuck = new Voxels(mshPuck);

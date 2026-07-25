@@ -8,7 +8,6 @@ import { roleColorHex, roleLabel, ROLE_GROUPS, isZoneRole } from './roles.js';
 
 export const els = {
   viewport:     document.getElementById('viewport'),
-  viewportHint: document.getElementById('viewport-hint'),
   vpContext:    document.getElementById('vp-context'),   // top-left live context line (Fix 6)
 
   dropzone:   document.getElementById('dropzone'),
@@ -464,7 +463,7 @@ function activeVal(group, sel) {
   return on ? on.dataset.val : null;
 }
 export function getLatticeType() { return activeVal(els.latticeSeg, '.seg-btn') || 'sheet'; }
-export function getFlowAxis()    { return activeVal(els.flowAxis, '.fchip') || 'z'; }
+export function getFlowAxis()    { return activeVal(els.flowAxis, '.fchip') || 'y'; }
 export function getCellMode()    { return activeVal(els.cellSeg, '.seg-btn') || 'uniform'; }
 // Cleanup toggle: default ON (removes floating islands before export).
 export function getCleanup()     { return activeVal(els.cleanupSeg, '.seg-btn') !== 'off'; }
@@ -652,7 +651,7 @@ function showFlow(s) {
   flowState = s;
   els.flowCard.classList.remove('hidden');
 
-  const axis = (s.flowAxis || 'z').toUpperCase();
+  const axis = (s.flowAxis || 'y').toUpperCase();
   const freeCm3 = (s.airVolumeMM3 ?? 0) / 1000;
 
   // Stat row
@@ -1014,11 +1013,6 @@ export function clearExportStatus() {
   els.exportStatus.innerHTML = '';
 }
 
-// ── Viewport hint ─────────────────────────────────────────────────────
-export function setViewportHint(show) {
-  els.viewportHint.classList.toggle('hidden', !show);
-}
-
 // ══ CAD workspace shell (toolbar mirroring · panels · sections · dims) ══
 // Pure DOM/localStorage view helpers driven from main.js. The GENERATE
 // toolbar button mirrors the pinned panel button's state without holding a
@@ -1056,6 +1050,10 @@ export function setExportStlFilled(filled) { els.exportBtn?.classList.toggle('so
 /** Tool CONFIRM solid fill — holds the single fill while an open tool is valid
  *  (GENERATE / EXPORT ghost meanwhile). See main.updateAccents' toolOpen branch. */
 export function setToolConfirmFilled(filled) { els.toolConfirm?.classList.toggle('solid', !!filled); }
+/** ADD PART solid fill — the EMPTY-scene state. With nothing loaded there is no
+ *  valid next action but "bring geometry in", so the toolbar's import button
+ *  holds the single fill; it hands it straight back once a part lands. */
+export function setAddPartFilled(filled) { els.tbImport?.classList.toggle('solid', !!filled); }
 
 // ── ZONES tile (progressive disclosure; revealed when a zone role exists) ──
 /** Show/hide the #sec-zones tile (skin · transition · keep-out grow steppers). */

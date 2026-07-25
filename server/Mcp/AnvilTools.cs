@@ -90,7 +90,7 @@ public sealed class AnvilTools
     // ---- Primitives + ops (spawn a worker; polled to completion) ----------
 
     [McpServerTool(Name = "create_primitive"), Description(
-        "Create a primitive solid part. kind: box|cube|cylinder|sphere|cone. sizeMM is the full [x,y,z] extent (cylinder/cone: x,y are base diameters, z is height; sphere: the three diameters). centerMM defaults to the origin.")]
+        "Create a primitive solid part. kind: box|cube|cylinder|sphere|cone. sizeMM is the full [x,y,z] extent (cylinder/cone stand along Y: x,z are the base diameters and y is the height; sphere: the three diameters). centerMM defaults to the origin.")]
     public Task<string> CreatePrimitive(
         [Description("box|cube|cylinder|sphere|cone")] string kind,
         [Description("Full [x,y,z] size in mm.")] double[] sizeMM,

@@ -7,7 +7,7 @@ import * as ui from './ui.js';
 import * as tools from './tools.js';
 import * as scriptsPanel from './scripts.js';
 import * as history from './history.js';
-import { Viewer } from './viewer.js';
+import { Viewer, UP_AXIS_DEFAULT, UP_AXIS_KEYS } from './viewer.js';
 import { isBaseRole, isZoneRole } from './roles.js';
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -29,7 +29,19 @@ const state = {
 };
 let pendingSeq = 0; // monotonic id source for placeholder rows
 
-const viewer = new Viewer(ui.els.viewport);
+// ── MODEL UP (display convention, persisted) ──────────────────────────
+// Which world direction reads screen-up. A pure presentation choice: it moves
+// the camera, the plate and the view-cube labels and NOTHING else, so exports
+// are identical in all four modes. Read BEFORE the viewer is constructed so the
+// very first frame is already in the user's convention.
+const UP_KEY = 'anvil.upAxis';
+function storedUpAxis() {
+  let v = null;
+  try { v = localStorage.getItem(UP_KEY); } catch { /* private mode */ }
+  return UP_AXIS_KEYS.includes(v) ? v : UP_AXIS_DEFAULT;
+}
+
+const viewer = new Viewer(ui.els.viewport, { upAxis: storedUpAxis() });
 viewer.setTheme(ui.isDarkTheme());
 
 // ── Theme ─────────────────────────────────────────────────────────────
@@ -138,6 +150,9 @@ async function handleFiles(files) {
 
     try {
       await viewer.addPart(part.id, rec.stlUrl, rec.role);
+      // Nothing is added to the part here. The plate is ADAPTIVE (it draws at
+      // the scene's resting height along the display up axis), so an import
+      // lands untouched and still reads as sitting on the bed.
       // Roles may have changed via applyAutoRoles — sync viewer colors.
       syncViewerRoles();
       updateDims();
@@ -309,19 +324,27 @@ scriptsPanel.initScripts({ runScript: runScriptFlow, toast: (m, k, ms) => ui.toa
 const toolCtx = {
   listParts: () => state.parts.map((p) => ({ id: p.id, name: p.name, role: p.role })),
   unionCenter: () => viewer.getVisibleCenter(),
+  // Where a fresh primitive of the given display height must be AUTHORED so it
+  // stands display-up on the plate, plus the convention TRS (or null) that gets
+  // it there. The viewer owns the axis math; the tool just reads it.
+  primitiveSpawn: (sizeY, standing) => viewer.primitiveSpawn(sizeY, standing),
   voxelDefault: () => ui.readParams().voxelSizeMM,
   getPartTrs: (id) => state.parts.find((p) => p.id === id)?.trs || null,
   partBbox: (id) => state.parts.find((p) => p.id === id)?.bbox || null,
   // TRANSFORM panel live edit. Every keystroke lands here, so the command
   // COALESCES: successive edits to the same part fold into the one entry (its
   // `prev` stays the TRS the panel opened on) until some other action intervenes.
-  setPartTransform: (id, trs) => {
+  setPartTransform: (id, trs, opts = {}) => {
     const p = state.parts.find((x) => x.id === id);
     if (!p) return;
     const prev = cloneTrs(p.trs);
     applyPanelTrs(id, trs);
     pushTrsCommand(id, prev, cloneTrs(trs), {
-      label: 'Transform (panel)', panel: true, coalesceKey: `panel-trs:${id}`,
+      label: opts.label || 'Transform (panel)',
+      panel: true,
+      // A one-shot write (the primitive's convention pose) must not fold into
+      // the next panel keystroke, so it opts out of coalescing.
+      coalesceKey: opts.once ? null : `panel-trs:${id}`,
     });
   },
   clearPartTransform: (id) => {
@@ -368,7 +391,6 @@ function refreshParts() {
   });
   viewer.setVolumeHint(volumeMap());   // COM weights for fitView's no-selection pivot
   ui.setDropzoneBusy(state.pending.length > 0);
-  ui.setViewportHint(state.parts.length === 0 && !state.job);
   updateMode();
   updateDims();   // union-bbox readout + SECTION availability track the visible set
   updateAccents();          // Fix 1 — refresh the single-fill slot for the new part/role set
@@ -810,11 +832,24 @@ function updateAccents() {
   // machine the moment the tool closes. Exactly one solid fill at all times.
   if (tools.isOpen()) {
     ui.setToolConfirmFilled(tools.isValid());
+    ui.setAddPartFilled(false);
     ui.setGenerateFilled(false);
     ui.setExportStlFilled(false);
     return;
   }
   ui.setToolConfirmFilled(false);
+  // EMPTY scene: the only useful next action is ADD PART, so it takes the slot
+  // (GENERATE is disabled anyway and ghosts via CSS). Same predicate as the
+  // viewport hint, so the hint and the lit button always appear together — and
+  // it deliberately stays lit through an in-flight import, since dropping it
+  // there would leave a frame with NO solid fill at all.
+  if (state.parts.length === 0 && !state.job) {
+    ui.setAddPartFilled(true);
+    ui.setGenerateFilled(false);
+    ui.setExportStlFilled(false);
+    return;
+  }
+  ui.setAddPartFilled(false);
   const generating = ui.isGenerating();
   const fresh = state.resultFresh && !generating;
   const genEnabled = !ui.els.generate.disabled;   // false while generating (disabled) or invalid
@@ -954,7 +989,6 @@ async function onJobDone(jobId, st, stepTarget) {
   state.resultStats = st.stats || null;   // Wave-3 — the EXPORT tile's RESULT row reads its tri count
   state.resultFresh = true;   // Fix 1 — result matches current params: EXPORT takes the fill
   ui.showResult(st.stats);
-  ui.setViewportHint(false);
   updateAccents();
   refreshExport();            // a new result adds/refreshes the RESULT source row
   if (!st.part) {
@@ -1449,6 +1483,33 @@ viewer.onSectionChange = (s) => {
   const txt = `${mm < 0 ? '−' : '+'}${Math.abs(mm).toFixed(1)} mm`;
   secReadout.innerHTML = `<span class="sr-k">SECTION · ${label} · OFFSET </span><span class="sr-v">${txt}</span>`;
 };
+// MODEL UP — the display convention chips (+Y · −Y · +Z · −Z). Changing this
+// re-presents the SAME scene from a different frame: no geometry moves, no part
+// TRS changes, and every export is byte-identical across the four modes. The
+// choice persists so a shop that always works in one CAD convention sets it once.
+const upChips = document.getElementById('vp-up');
+function syncUpChips(axis) {
+  if (!upChips) return;
+  for (const b of upChips.querySelectorAll('.up-chip[data-up]')) {
+    const on = b.dataset.up === axis;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+upChips?.addEventListener('click', (e) => {
+  const chip = e.target.closest('.up-chip[data-up]');
+  if (!chip) return;
+  const want = chip.dataset.up;
+  if (want === viewer.upAxis()) return;
+  const applied = viewer.setUpAxis(want);
+  try { localStorage.setItem(UP_KEY, applied); } catch { /* private mode */ }
+  syncUpChips(applied);
+  updateOrbitPivot();   // the camera re-homed; keep the pivot on the same body
+  updateDims();
+  ui.toast('display convention only - exports unchanged', 'info', 3500);
+});
+syncUpChips(viewer.upAxis());
+
 // Changing the FLOW axis re-aligns an axis-picked section (a face-picked plane
 // is the user's own choice — leave it alone).
 ui.els.flowAxis?.addEventListener('click', () => {
@@ -1540,7 +1601,7 @@ function armLayFlat() {
   viewer.armLayFlat();
   document.body.classList.add('layflat-armed');
   syncSelToolbar();
-  ui.toast('LAY FLAT — click a highlighted face plane (or any face) to rest it on Z = 0.', 'info', 4500);
+  ui.toast('LAY FLAT — click a highlighted face plane (or any face) to rest it on the plate.', 'info', 4500);
 }
 function cancelLayFlat() {
   state.layFlatArmed = false;
@@ -1553,13 +1614,13 @@ selMove?.addEventListener('click', () => setGizmoMode('translate'));
 selRot?.addEventListener('click', () => setGizmoMode('rotate'));
 selScale?.addEventListener('click', () => setGizmoMode('scale'));
 selFlat?.addEventListener('click', () => (state.layFlatArmed ? cancelLayFlat() : armLayFlat()));
-// DROP — Z0 is the print bed: ground the selection (and any ghosts riding it).
+// DROP — ground the selection (and any ghosts riding it) on the plate.
 selDrop?.addEventListener('click', () => {
   if (!state.selectedPartId) return;
   const trs = viewer.dropToPlate(state.selectedPartId);
   if (!trs) return;
   commitTransform(state.selectedPartId, trs);
-  ui.toast('Dropped to Z = 0.', 'success', 2200);
+  ui.toast('Dropped to the plate.', 'success', 2200);
 });
 
 // ── viewer callbacks — the viewer owns pointer routing (cube → section →
@@ -1599,7 +1660,7 @@ viewer.onLayFlat = (id, trs) => {                           // one-shot face pic
   document.body.classList.remove('layflat-armed');
   if (trs) {
     commitTransform(id, trs);
-    ui.toast('Laid flat on Z = 0.', 'success', 2500);
+    ui.toast('Laid flat on the plate.', 'success', 2500);
   }
   syncSelToolbar();
 };

@@ -31,8 +31,97 @@ const PIVOT_SELFTEST = false;
 const AXES_PX = 72;            // bottom-left orientation-triad overlay size
 const AXES_MARGIN = 12;        // px inset of the triad from the viewport corner
 const AXES_CAM_DIST = 4;       // orthographic triad camera distance
-// Default ("HOME") camera: Z-up, front-right-top isometric.
-const HOME_DIR = Object.freeze({ x: 1, y: -0.9, z: 0.65 });
+// ── World display frame (selectable up axis) ─────────────────────────────
+// IRON RULE: geometry is NEVER rotated, mirrored or translated by any of this.
+// These are LABELS on the world axes, not a change of basis. The up axis is a
+// pure DISPLAY / plate convention: it moves the camera up vector, the grid
+// plane, the view-cube labels and the plate math (LAY FLAT, DROP, plate drag,
+// primitive spawn pose) — and nothing else. File coordinates, world coordinates
+// and export coordinates stay identical in every mode.
+//
+// Four modes exist because CAD exports disagree about which way is up. Each is
+// a trio of unit vectors:
+//
+//   UP     the world direction that reads screen-UP.
+//   FRONT  outward normal of the FRONT face = where the camera SITS for a FRONT
+//          view (a FRONT snap therefore looks ALONG −FRONT).
+//   RIGHT  = cross(UP, FRONT). The camera basis is right-handed with
+//          X_cam = screen-right, Y_cam = screen-up (= UP), Z_cam = the direction
+//          back toward the camera (= FRONT at the FRONT view), so screen-right
+//          is cross(up, toCamera).
+//
+// Where FRONT comes from — the one part that was measured, not derived:
+//
+//   FRONT was MEASURED against the reference CAD renders of the pneumatic
+//   manifold (docs/assets/manifold-*.png). In that part's exported STEP the
+//   slit/notch edge and the two front ports sit at −Z and the lone apex port at
+//   +Z, and the CAD view the part is presented in looks at the slit edge.
+//   Parking HOME on the +Z octant showed users the BACK of every import. So
+//   with up on ±Y, FRONT = −Z.
+//
+//   The rule that GENERALISES that to ±Z: X is always the left-right screen
+//   axis (true of every CAD front view), so FRONT is the negative of the one
+//   remaining world axis — −Z when up is ±Y, −Y when up is ±Z. The ±Z entries
+//   are therefore exactly the Onshape / SolidWorks Z-up front view, which looks
+//   at the XZ plane from −Y with +X to the right.
+//
+//   RIGHT then FOLLOWS from the cross product and flips sign with UP, which is
+//   why +Y gives RIGHT = −X while −Y gives RIGHT = +X. (The manifold fixture is
+//   mirror-symmetric about x = 0, so it cannot independently confirm the X
+//   sign — only the FRONT/BACK axis is evidence-backed. Re-measure with a
+//   chiral part if this is ever questioned.)
+//
+//                UP        FRONT     RIGHT = cross(UP, FRONT)
+//   '+y'      ( 0, 1, 0) ( 0,0,−1)   (−1, 0, 0)
+//   '-y'      ( 0,−1, 0) ( 0,0,−1)   ( 1, 0, 0)
+//   '+z'      ( 0, 0, 1) ( 0,−1,0)   ( 1, 0, 0)
+//   '-z'      ( 0, 0,−1) ( 0,−1,0)   (−1, 0, 0)
+//
+// _cubeFaceSpec derives the view-cube labels and per-face glyph rotations from
+// this trio, so labels and camera can never drift apart.
+const UP_AXES = Object.freeze({
+  '+y': Object.freeze({ up: [0, 1, 0], front: [0, 0, -1] }),
+  '-y': Object.freeze({ up: [0, -1, 0], front: [0, 0, -1] }),
+  '+z': Object.freeze({ up: [0, 0, 1], front: [0, -1, 0] }),
+  '-z': Object.freeze({ up: [0, 0, -1], front: [0, -1, 0] }),
+});
+// Default −Y: it is the convention the reference CAD exports are modelled in
+// (feature faces toward −Y, so counterbores open −Y and cavities sit near
+// y-max). Any other document can pick its own mode from the view strip.
+export const UP_AXIS_DEFAULT = '-y';
+export const UP_AXIS_KEYS = Object.freeze(Object.keys(UP_AXES));
+
+const HOME_TILT = 0.8;      // UP share of the HOME iso (FRONT + RIGHT + 0.8·UP)
+// TOP/BOTTOM snaps park a hair OFF the pole instead of moving camera.up: up ∥
+// view is a degenerate lookAt, and swapping camera.up mid-session is what makes
+// orbiting out of a top view feel wrong. ~1.1°, invisible at any print scale.
+const POLE_EPS = 0.02;
+const PLATE_SNAP_MM = 0.01;   // |resting height| under this reads as "sits at zero"
+
+// Convention rotation that stands a worker-authored +Y shape (cylinder, cone)
+// display-up. THREE's rotateX(a) maps +Y → (0, cos a, sin a), so:
+//   180° → −Y      +90° → +Z      −90° → −Z
+const PRIM_ROT = Object.freeze({
+  '+y': null,
+  '-y': Object.freeze({ x: 180, y: 0, z: 0 }),
+  '+z': Object.freeze({ x: 90, y: 0, z: 0 }),
+  '-z': Object.freeze({ x: -90, y: 0, z: 0 }),
+});
+
+// BoxGeometry material-index order, and per face the WORLD directions its
+// texture-right (r) / texture-up (u) map to. Fixed properties of BoxGeometry's
+// authored UVs (a Y-up box), independent of which up axis ANVIL displays.
+const CUBE_FACES = Object.freeze([
+  Object.freeze({ n: [1, 0, 0], r: [0, 0, -1], u: [0, 1, 0] }),    // +X
+  Object.freeze({ n: [-1, 0, 0], r: [0, 0, 1], u: [0, 1, 0] }),    // −X
+  Object.freeze({ n: [0, 1, 0], r: [1, 0, 0], u: [0, 0, -1] }),    // +Y
+  Object.freeze({ n: [0, -1, 0], r: [1, 0, 0], u: [0, 0, 1] }),    // −Y
+  Object.freeze({ n: [0, 0, 1], r: [1, 0, 0], u: [0, 1, 0] }),     // +Z
+  Object.freeze({ n: [0, 0, -1], r: [-1, 0, 0], u: [0, 1, 0] }),   // −Z
+]);
+// Empty-scene plate: the grid + camera framing shown before the first import, so
+// the viewport reads as a build plate instead of a void (mm).
+const EMPTY_PLATE_MM = 120;
 // Axis colours (NO red anywhere in ANVIL): X --primary, Y --green, Z --cyan.
 // Shared by the orientation triad AND the transform gizmo, so a handle and its
 // triad arrow always mean the same axis.
@@ -80,22 +169,32 @@ const RO_RECT    = 200;  // manipulator plane rect / triad / face quads
 const RO_ARROW   = 210;  // arrow (depthTest off — always grabbable)
 
 export class Viewer {
-  constructor(container) {
+  constructor(container, opts = {}) {
     this.container = container;
     this.parts = new Map();   // id -> { mesh, role, visible }
     this.result = null;       // THREE.Mesh | null
     this._volumeHint = null;  // { partId -> volumeMM3 } published by main.js (COM weights)
     this._loader = new STLLoader();
 
+    // Display frame FIRST — the camera, the grid and the view cube are all built
+    // from it, and main.js hands in the persisted choice so the very first frame
+    // is already in the user's convention (no flash, no re-present).
+    this._plateH = 0;         // plate height along UP, as currently DRAWN
+    this._setUpVectors(opts.upAxis || UP_AXIS_DEFAULT);
+
     const scene = new THREE.Scene();
     this.scene = scene;
 
     const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
-    // Z-up world (PicoGK/CAD convention; the view cube labels +Z TOP and lay-flat
-    // rests faces on Z=0). camera.up MUST be set BEFORE OrbitControls is built —
-    // the controls snapshot the up vector to derive their spherical orbit basis.
-    cam.up.set(0, 0, 1);
-    cam.position.set(80, -80, 55);   // front-right-top (−Y is FRONT per the cube)
+    // The view cube labels the UP face TOP, the build plate is the plane normal
+    // to UP at the scene's resting height, and lay-flat rests faces on it. This
+    // is presentation only — geometry is never rotated, so file coords == world
+    // coords == export coords. camera.up MUST be set BEFORE OrbitControls is
+    // built: the controls snapshot the up vector to derive their orbit basis.
+    cam.up.copy(this._up);
+    // Front-right-top per _homeDir(). _emptyView() re-parks this on the empty
+    // plate as soon as the grid exists.
+    cam.position.copy(this._homeDir()).multiplyScalar(128);
     this.camera = cam;
 
     // stencil:true is REQUIRED — three.js defaults it to false since r163 and the
@@ -128,18 +227,19 @@ export class Viewer {
     controls.rotateSpeed = 0.9;
     this.controls = controls;
 
-    // Lighting: hemisphere fill + a key directional. Z-up aimed — the key sits
-    // high on +Z (front-right) so TOP faces read brightest and the two visible
-    // side faces stay distinct; the fill lifts the back-left shadow side.
+    // Lighting: hemisphere fill + a key directional, both aimed from the display
+    // frame — the key sits high on UP over the HOME octant (FRONT + RIGHT) so
+    // display-TOP faces read brightest and the two visible side faces stay
+    // distinct; the fill lifts the back-left shadow side. _aimLights re-points
+    // all three whenever the up axis changes (HemisphereLight reads its POSITION
+    // as the sky direction, so it has to move too).
     this.hemi = new THREE.HemisphereLight(0xffffff, 0x40404a, 1.05);
-    this.hemi.position.set(0, 0, 1);   // hemisphere axis is +Z, not +Y
     scene.add(this.hemi);
     this.key = new THREE.DirectionalLight(0xffffff, 1.35);
-    this.key.position.set(0.6, -0.5, 1);
     scene.add(this.key);
     this.fill = new THREE.DirectionalLight(0xffffff, 0.4);
-    this.fill.position.set(-0.7, 0.5, -0.3);
     scene.add(this.fill);
+    this._aimLights();
 
     // Subtle ground grid (adaptive: repositioned by _updateGrid on each fit).
     this.grid = null;
@@ -195,8 +295,10 @@ export class Viewer {
       const ref = this._dragRef;
       const p = this._selectedId ? this.parts.get(this._selectedId) : null;
       let trs = (p && ref) ? this._readProxyTrs() : null;
-      // Z0 IS the plate: a rotation lands the unit back on the bed. Translate /
-      // scale are left alone (the user may be hovering a part deliberately).
+      // A rotation lands the unit back on the bed — the plate as it was DRAWN
+      // when the drag started (_plateH is only recomputed on commit, never
+      // mid-drag). Translate / scale are left alone (the user may be hovering a
+      // part deliberately).
       if (trs && ref.mode === 'rotate') trs = this._groundTrs(p, trs);
       this._dragRef = null;
       if (trs) this.onTransformCommit?.(p.id, trs);
@@ -228,12 +330,118 @@ export class Viewer {
     this._initAxisTriad();
     this._initPointer();
 
+    // Empty scene ≠ empty viewport: lay the plate and park HOME on it so the
+    // first frame already reads as a build volume (and so the cube/triad have a
+    // ground plane to orient against before anything is imported).
+    this._emptyView();
+
     if (EULER_SELFTEST) { try { this._selfTestEuler(); } catch (err) { console.error('[anvil] euler self-test threw', err); } }
     if (PIVOT_SELFTEST) { try { this._selfTestPivot(); } catch (err) { console.error('[anvil] pivot self-test threw', err); } }
 
     this._running = true;
     this._tick = this._tick.bind(this);
     requestAnimationFrame(this._tick);
+  }
+
+  // ══ MODEL UP — the display frame ═════════════════════════════════════
+  // Pure presentation. Nothing below reads or writes vertex data, and no part
+  // TRS is touched: switching modes re-presents the same scene from a different
+  // convention, so exports are bit-identical across all four.
+
+  /** Load one of UP_AXES into the UP / FRONT / RIGHT trio. Vector math only —
+   *  safe to call before the scene exists (the constructor does). */
+  _setUpVectors(axis) {
+    const key = UP_AXES[axis] ? axis : UP_AXIS_DEFAULT;
+    const d = UP_AXES[key];
+    this._upKey = key;
+    this._up = new THREE.Vector3().fromArray(d.up);
+    this._front = new THREE.Vector3().fromArray(d.front);
+    this._right = new THREE.Vector3().crossVectors(this._up, this._front).normalize();
+    return key;
+  }
+
+  /** Switch the display convention. Returns the key actually applied. */
+  setUpAxis(axis) {
+    const key = this._setUpVectors(axis);
+    this.camera.up.copy(this._up);
+    // OrbitControls (r170) snapshots its orbit-axis quaternion from camera.up
+    // ONCE, in the constructor, and never refreshes it — so a live up change has
+    // to rewrite it by hand or the view keeps orbiting about the old pole.
+    if (this.controls?._quat) {
+      this.controls._quat.setFromUnitVectors(this._up, new THREE.Vector3(0, 1, 0));
+      this.controls._quatInverse.copy(this.controls._quat).invert();
+    }
+    this._aimLights();
+    this._relabelCube();
+    this._gridMeta.size = -1;   // force a rebuild so the plate re-orients
+    this.homeView();            // re-present from the new convention's HOME
+    return key;
+  }
+  upAxis() { return this._upKey; }
+
+  /** HOME iso direction in the current basis: FRONT + RIGHT + 0.8·UP. */
+  _homeDir() {
+    return new THREE.Vector3()
+      .add(this._front).add(this._right).addScaledVector(this._up, HOME_TILT)
+      .normalize();
+  }
+  /** How high a world point reads on screen. */
+  _upCoord(v) { return v.dot(this._up); }
+  /** Lowest UP-coordinate of an axis-aligned box. UP is axis-aligned in every
+   *  mode, so this is just the corner that projects lowest. */
+  _boxFloor(box) {
+    const u = this._up;
+    return (u.x < 0 ? box.max.x : box.min.x) * u.x
+         + (u.y < 0 ? box.max.y : box.min.y) * u.y
+         + (u.z < 0 ? box.max.z : box.min.z) * u.z;
+  }
+  /** The scene's resting height along UP, snapped to 0 when the content already
+   *  sits on the origin plane — so a clean CAD export reads as standing at
+   *  zero instead of at −1.7e-15. */
+  _restingHeight(box) {
+    if (!box) return 0;
+    const h = this._boxFloor(box);
+    return Math.abs(h) < PLATE_SNAP_MM ? 0 : h;
+  }
+  /** The plate as currently DRAWN. Grounding (DROP / LAY FLAT / auto-drop after
+   *  a rotate) targets this, so a part lands on the plate the user can see
+   *  rather than on the one its own new pose would have redefined. */
+  plateHeight() { return this._plateH; }
+
+  _aimLights() {
+    this.hemi.position.copy(this._up);
+    const shoulder = new THREE.Vector3().add(this._front).add(this._right);
+    this.key.position.copy(shoulder).multiplyScalar(0.55).addScaledVector(this._up, 1);
+    this.fill.position.copy(shoulder).multiplyScalar(-0.6).addScaledVector(this._up, -0.3);
+  }
+
+  /** Where a fresh primitive must be AUTHORED so it stands display-up and rests
+   *  on the plate. `standing` marks the shapes with a distinguished height axis
+   *  (the worker builds cylinders and cones along +Y); a box or sphere has none,
+   *  so it needs no convention rotation.
+   *
+   *  Returns { centerMM, trs }. The rotation R maps the part's own +Y onto UP,
+   *  and the DATA centre is R⁻¹·C_world, so the rotated part lands exactly on
+   *  C_world under a PURE rotation TRS — visible in XFORM, clearable, and it
+   *  drops the part back to its authored pose when cleared. trs is null in +Y
+   *  mode (nothing to correct) and for box/sphere. */
+  primitiveSpawn(sizeY, standing) {
+    const half = (Number.isFinite(sizeY) ? sizeY : 0) / 2;
+    const c = this.getVisibleCenter() || new THREE.Vector3();
+    // The visible centre slid onto the plate, then lifted half a height along UP.
+    const world = c.clone().addScaledVector(this._up, this._plateH + half - this._upCoord(c));
+    const rot = standing ? PRIM_ROT[this._upKey] : null;
+    if (!rot) return { centerMM: xyzOf(world), trs: null };
+    const data = world.clone()
+      .applyMatrix4(new THREE.Matrix4().makeRotationX(-rot.x * Math.PI / 180));
+    return {
+      centerMM: xyzOf(data),
+      trs: {
+        translateMM: { x: 0, y: 0, z: 0 },
+        rotateDeg: { ...rot },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    };
   }
 
   // ── Parts ───────────────────────────────────────────────────────────
@@ -438,16 +646,23 @@ export class Viewer {
     const t = this._trsOf(p).translateMM;
     return new THREE.Vector3(t.x, t.y, t.z);
   }
-  /** Same TRS, dropped so the unit's world bboxMin.z lands exactly on 0. */
+  /** Same TRS, slid ALONG UP so the unit's lowest display point lands exactly on
+   *  the plate height as currently drawn. The two axes in the plate plane are
+   *  untouched. */
   _groundTrs(p, trs) {
     const out = {
       translateMM: { ...trs.translateMM }, rotateDeg: { ...trs.rotateDeg }, scale: { ...trs.scale },
     };
     const box = this._unitBox(p, this._matrixFromTrs(out));
-    if (box) out.translateMM.z -= box.min.z;
+    if (box) {
+      const d = this._plateH - this._boxFloor(box);
+      out.translateMM.x += this._up.x * d;
+      out.translateMM.y += this._up.y * d;
+      out.translateMM.z += this._up.z * d;
+    }
     return out;
   }
-  /** DROP: ground the given part's unit on Z = 0. Returns a TRS (or null). */
+  /** DROP: ground the given part's unit on the plate. Returns a TRS (or null). */
   dropToPlate(id) {
     const p = id ? this.parts.get(id) : null;
     if (!p) return null;
@@ -1051,6 +1266,20 @@ export class Viewer {
     return b.isEmpty() ? null : b.getCenter(new THREE.Vector3());
   }
 
+  /** World AABB of a part AS DRAWN (its TRS matrix included), as plain numbers:
+   *  { min:{x,y,z}, max:{x,y,z} }, or null. Verification and callers that need
+   *  world extents in DATA terms read it. */
+  getPartBox(id) {
+    const p = id ? this.parts.get(id) : null;
+    if (!p || !p.mesh) return null;
+    const b = new THREE.Box3().setFromObject(p.mesh);
+    if (b.isEmpty()) return null;
+    return {
+      min: { x: b.min.x, y: b.min.y, z: b.min.z },
+      max: { x: b.max.x, y: b.max.y, z: b.max.z },
+    };
+  }
+
   /** Move the orbit pivot WITHOUT touching camera.position — the view swings to
    *  look at the new target immediately (expected: that IS the pivot change).
    *  null is a no-op so callers can pass a failed lookup straight through. */
@@ -1094,7 +1323,7 @@ export class Viewer {
   // follows the UNION box — the floor must not shrink to a single part.
   fitView(opts = {}) {
     const union = this._visibleBox();
-    if (!union) return;
+    if (!union) { this._emptyView(); return; }
 
     const sel = (!opts.union && this._selectedId) ? this.parts.get(this._selectedId) : null;
     let selBox = (sel && sel.mesh.visible) ? new THREE.Box3().setFromObject(sel.mesh) : null;
@@ -1109,14 +1338,14 @@ export class Viewer {
     let dist = (maxDim / 2) / Math.tan(fov / 2);
     dist *= 1.7;
 
-    // Z-up isometric-ish direction: front-right-top (+X right, −Y front, +Z up).
-    const dir = new THREE.Vector3(HOME_DIR.x, HOME_DIR.y, HOME_DIR.z).normalize();
+    // Isometric-ish direction in the current display frame: FRONT-RIGHT-TOP.
+    const dir = this._homeDir();
     const pivot = selBox ? center : (this.computeCenterOfMass(this._volumeHint) || center);
-    // A TOP/BOTTOM cube snap parks camera.up on ±Y (a top-down view has no Z-up
-    // basis); an oblique fit must stand it back up or the whole world renders
-    // rolled. Drop any in-flight snap too — FIT is an explicit camera command.
+    // camera.up is CONSTANT (= UP) in every view, snaps included, so this is a
+    // re-assert rather than a repair. Drop any in-flight snap — FIT is an
+    // explicit camera command.
     this._cubeAnim = null;
-    this.camera.up.set(0, 0, 1);
+    this.camera.up.copy(this._up);
     this.camera.position.copy(center).add(dir.multiplyScalar(dist));
     this.camera.near = Math.max(dist / 1000, 0.01);
     this.camera.far = dist * 100;
@@ -1127,33 +1356,61 @@ export class Viewer {
     this._refreshGrid(union);
   }
 
-  /** HOME — the documented default camera: iso (1,−0.9,0.65), up +Z, fit to
-   *  EVERYTHING visible (never just the selection). */
+  /** HOME — the documented default camera: the FRONT-RIGHT-TOP iso of the
+   *  current display frame, fit to EVERYTHING visible (never just the
+   *  selection). Falls back to the empty plate when there is nothing to frame. */
   homeView() {
     this._cubeAnim = null;
-    this.camera.up.set(0, 0, 1);
+    this.camera.up.copy(this._up);
     this.fitView({ union: true });
+  }
+
+  /** Empty scene: an origin-centred plate framed from HOME. Same camera math as
+   *  fitView so the transition when the first part lands is a fit, not a jump. */
+  _emptyView() {
+    this._cubeAnim = null;
+    this._updateGrid(new THREE.Vector3(0, 0, 0), EMPTY_PLATE_MM, 0);
+    const fov = this.camera.fov * Math.PI / 180;
+    const dist = ((EMPTY_PLATE_MM / 2) / Math.tan(fov / 2)) * 1.7;
+    this.camera.up.copy(this._up);
+    this.camera.position.copy(this._homeDir()).multiplyScalar(dist);
+    this.camera.near = Math.max(dist / 1000, 0.01);
+    this.camera.far = dist * 100;
+    this.camera.updateProjectionMatrix();
+    this.controls.target.set(0, 0, 0);
+    this.controls.update();
   }
 
   /** Re-place the plate grid without touching the camera (no-fit commits). */
   _refreshGrid(union) {
     const box = union || this._visibleBox();
-    if (!box) return;
+    if (!box) { this._updateGrid(new THREE.Vector3(0, 0, 0), EMPTY_PLATE_MM, 0); return; }
     const s = box.getSize(new THREE.Vector3());
-    this._updateGrid(box.getCenter(new THREE.Vector3()), Math.max(s.x, s.y, s.z) || 1);
+    this._updateGrid(box.getCenter(new THREE.Vector3()), Math.max(s.x, s.y, s.z) || 1,
+      this._restingHeight(box));
   }
 
-  _updateGrid(center, maxDim) {
+  // The plate is ADAPTIVE: its plane normal is UP and it sits at the scene's
+  // resting height (the display-bottom of everything visible), snapped to 0 when
+  // the content already stands on the origin plane. That is what lets ANVIL show
+  // any CAD frame sitting on a bed without ever moving the geometry — there is
+  // no import lift, in any mode. An empty scene puts the plate through the
+  // origin. A part floating above the plate visibly floats; DROP / LAY FLAT put
+  // it down.
+  _updateGrid(center, maxDim, height) {
     const size = Math.max(maxDim * 2.4, 10);
-    // Z-up world: GridHelper is authored in the XZ plane (normal +Y), so rotate
-    // it into XY (normal +Z) or it renders as a vertical wall. The grid IS the
-    // print plate, so it lives at Z = 0 — a hair below, since a grounded part
-    // rests exactly on z=0 and a coplanar grid z-fights its bottom face. A part
-    // floating above the plate visibly floats; DROP / LAY FLAT put it down.
-    const zEps = Math.max(0.05, size * 0.0008);
+    this._plateH = height || 0;
+    // GridHelper's NATIVE plane is XZ (normal +Y); one quaternion swings it onto
+    // whatever UP is. The plate draws a hair BELOW the resting height — a
+    // grounded part rests exactly on it and a coplanar grid z-fights its bottom
+    // face. It follows the content within the plate plane.
+    const eps = Math.max(0.05, size * 0.0008);
+    const pos = center.clone()
+      .addScaledVector(this._up, this._plateH - eps - this._upCoord(center));
+    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), this._up);
     if (this.grid && Math.abs(this._gridMeta.size - size) < size * 0.01) {
-      this.grid.rotation.x = Math.PI / 2;
-      this.grid.position.set(center.x, center.y, -zEps);
+      this.grid.position.copy(pos);
+      this.grid.quaternion.copy(quat);
       return;
     }
     if (this.grid) { this.scene.remove(this.grid); this.grid.geometry.dispose(); this.grid.material.dispose(); }
@@ -1162,8 +1419,8 @@ export class Viewer {
     const grid = new THREE.GridHelper(size, divisions, 0x353535, 0x2a2a2a);
     grid.material.transparent = true;
     grid.material.opacity = 0.5;
-    grid.rotation.x = Math.PI / 2;
-    grid.position.set(center.x, center.y, -zEps);
+    grid.position.copy(pos);
+    grid.quaternion.copy(quat);
     this.scene.add(grid);
     this.grid = grid;
     this._gridMeta.size = size;
@@ -1423,11 +1680,11 @@ export class Viewer {
     if (!p || !p.mesh || !p.mesh.visible) return null;
     return this._layFlatFromNormal(p, new THREE.Vector3().copy(nWorld).normalize());
   }
-  // Spin the given world face normal onto (0,0,−1) ABOUT THE UNIT'S PIVOT (same
-  // math as a gizmo rotate — the part turns in place instead of orbiting the TRS
-  // origin), then drop the unit so its combined bboxMin.z = 0. XY stays put.
+  // Spin the given world face normal onto −UP ABOUT THE UNIT'S PIVOT (same math
+  // as a gizmo rotate — the part turns in place instead of orbiting the TRS
+  // origin), then drop the unit onto the plate. The plate plane stays put.
   _layFlatFromNormal(p, nWorld) {
-    const dq = new THREE.Quaternion().setFromUnitVectors(nWorld, new THREE.Vector3(0, 0, -1));
+    const dq = new THREE.Quaternion().setFromUnitVectors(nWorld, this._up.clone().negate());
     const { translateMM: t0, rotateDeg: r, scale: s } = this._trsOf(p);
     const D = Math.PI / 180, R2D = 180 / Math.PI;
     const q0 = new THREE.Quaternion().setFromEuler(new THREE.Euler(r.x * D, r.y * D, r.z * D, 'ZYX'));
@@ -1445,9 +1702,10 @@ export class Viewer {
 
   // ══ Wave-4 · Freeform plate drag ═════════════════════════════════════
   // Grab the SELECTED part (or one of its linked ghosts) anywhere on its surface
-  // and slide it across the plate. The drag rides the horizontal plane through
-  // the grab point, so Z never changes — lifting off the bed needs the Z arrow.
-  // Arms only on the selected unit, so a click on ANOTHER part still selects it.
+  // and slide it across the plate. The drag rides the plane NORMAL TO UP through
+  // the grab point, so the height along UP never changes — lifting off the bed
+  // needs the gizmo arrow. Arms only on the selected unit, so a click on ANOTHER
+  // part still selects it.
 
   /** Nearest visible part under the pointer, if it belongs to the selected unit. */
   _unitHit(cx, cy) {
@@ -1465,7 +1723,7 @@ export class Viewer {
     const p = this.parts.get(this._selectedId);
     const trs = this._trsOf(p);
     this._plate = {
-      id: p.id, z: hit.point.z, p0: hit.point.clone(),
+      id: p.id, p0: hit.point.clone(),
       t0: trs.translateMM, r0: trs.rotateDeg, s0: trs.scale,
       x0: e.clientX, y0: e.clientY, moved: false, last: null,
     };
@@ -1478,7 +1736,8 @@ export class Viewer {
     const d = this._plate;
     if (!d) return null;
     this._raycaster.setFromCamera(this._ndcFromClient(cx, cy), this.camera);
-    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -d.z);
+    // Plane normal to UP through the grab point.
+    const plane = new THREE.Plane(this._up.clone(), -this._upCoord(d.p0));
     const out = new THREE.Vector3();
     return this._raycaster.ray.intersectPlane(plane, out) ? out : null;   // null = looking down the plane
   }
@@ -1489,8 +1748,12 @@ export class Viewer {
     if (!d.moved) return;
     const q = this._platePoint(e.clientX, e.clientY);
     if (!q) return;
+    // q and p0 both lie in the plane, so q − p0 is perpendicular to UP by
+    // construction: the height along UP is untouched without special-casing it.
     d.last = {
-      translateMM: { x: d.t0.x + (q.x - d.p0.x), y: d.t0.y + (q.y - d.p0.y), z: d.t0.z },   // Z untouched
+      translateMM: {
+        x: d.t0.x + (q.x - d.p0.x), y: d.t0.y + (q.y - d.p0.y), z: d.t0.z + (q.z - d.p0.z),
+      },
       rotateDeg: { ...d.r0 }, scale: { ...d.s0 },
     };
     this.onTransformLive?.(d.id, d.last);
@@ -1514,26 +1777,63 @@ export class Viewer {
     cam.position.set(0, 0, CUBE_CAM_DIST);
     cam.up.set(0, 1, 0);
     cam.lookAt(0, 0, 0);
-    // BoxGeometry material index order: +X, −X, +Y, −Y, +Z, −Z. Z-up world
-    // labels: +Z TOP, −Z BOTTOM, −Y FRONT, +Y BACK, +X RIGHT, −X LEFT.
-    //
-    // Label readability. BoxGeometry's UVs are authored for a Y-UP box, so in a
-    // Z-up world four of the six labels come out rolled. Per face, with (R, U) =
-    // the world directions of texture-right / texture-up, the canvas rotation
-    // that puts the text's up on the target T is a = atan2(R·T, U·T):
-    //   +X  R=−Z U=+Y  T=+Z → −90°     −X  R=+Z U=+Y  T=+Z → +90°
-    //   +Y  R=+X U=−Z  T=+Z → 180°     −Y  R=+X U=+Z  T=+Z →   0°
-    //   +Z  R=+X U=+Y  T=+Y →   0°  (TOP text base faces FRONT, and +Y is
-    //                                screen-up in the TOP snap)
-    //   −Z  R=−X U=+Y  T=−Y → 180°  (BOTTOM snap parks screen-up on −Y)
-    const H = Math.PI / 2;
-    const faces = [
-      ['RIGHT', -H], ['LEFT', H], ['BACK', Math.PI], ['FRONT', 0], ['TOP', 0], ['BOTTOM', Math.PI],
-    ];
-    const mats = faces.map(([t, rot]) => new THREE.MeshBasicMaterial({ map: this._makeCubeFaceTexture(t, rot) }));
+    const mats = CUBE_FACES.map(() => new THREE.MeshBasicMaterial());
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), mats);
     scene.add(mesh);
     this._cube = { scene, camera: cam, mesh };
+    this._relabelCube();
+  }
+
+  // Per-face LABEL and glyph rotation, DERIVED from the UP/FRONT/RIGHT trio so
+  // all four modes are correct by construction instead of by a hand-typed table.
+  //
+  //   label: the face whose outward normal is UP is TOP, −UP BOTTOM, FRONT
+  //          FRONT, −FRONT BACK, RIGHT RIGHT, −RIGHT LEFT.
+  //   rot:   with (R, U) = the world directions of the face's texture-right /
+  //          texture-up (CUBE_FACES) and T = the screen-up its snap parks on,
+  //          the canvas rotation is a = atan2(R·T, U·T) — the spin that levels
+  //          the glyph baseline with that screen-up.
+  //   T:     UP for every side face. TOP and BOTTOM are the pole snaps: a TOP
+  //          view must keep FRONT at the BOTTOM of the screen, so T = −FRONT,
+  //          and BOTTOM mirrors it with T = +FRONT. That is exactly what the
+  //          POLE_EPS tilt in _snapDir produces, so the labels and the camera
+  //          agree without either knowing about the other.
+  //
+  // Worked results (verified against the pre-existing hand table for '+y'):
+  //   '+y'  LEFT 0 · RIGHT 0 · TOP π · BOTTOM π · BACK 0 · FRONT 0
+  //   '-y'  RIGHT π · LEFT π · BOTTOM 0 · TOP 0 · BACK π · FRONT π
+  //   '+z'  RIGHT −π/2 · LEFT π/2 · BACK π · FRONT 0 · TOP 0 · BOTTOM π
+  //   '-z'  LEFT π/2 · RIGHT −π/2 · BACK 0 · FRONT π · BOTTOM π · TOP 0
+  // (listed in CUBE_FACES order: +X, −X, +Y, −Y, +Z, −Z)
+  _cubeFaceSpec() {
+    const U = this._up, F = this._front, R = this._right;
+    const v = (a) => new THREE.Vector3().fromArray(a);
+    return CUBE_FACES.map((f) => {
+      const n = v(f.n);
+      const dU = n.dot(U);
+      let text, T;
+      if (dU > 0.5) { text = 'TOP'; T = F.clone().negate(); }
+      else if (dU < -0.5) { text = 'BOTTOM'; T = F.clone(); }
+      else {
+        T = U.clone();
+        const dF = n.dot(F);
+        if (dF > 0.5) text = 'FRONT';
+        else if (dF < -0.5) text = 'BACK';
+        else text = n.dot(R) > 0.5 ? 'RIGHT' : 'LEFT';
+      }
+      return { text, rot: Math.atan2(v(f.r).dot(T), v(f.u).dot(T)) };
+    });
+  }
+  /** Re-bake the six face textures for the current display frame. */
+  _relabelCube() {
+    const cube = this._cube;
+    if (!cube) return;
+    const spec = this._cubeFaceSpec();
+    cube.mesh.material.forEach((m, i) => {
+      m.map?.dispose();
+      m.map = this._makeCubeFaceTexture(spec[i].text, spec[i].rot);
+      m.needsUpdate = true;
+    });
   }
   // `rot` (radians) spins the LABEL inside the face; the border is drawn in the
   // unrotated frame so every face keeps the same gray edge.
@@ -1569,7 +1869,7 @@ export class Viewer {
     const scene = new THREE.Scene();
     const cam = new THREE.OrthographicCamera(-1.55, 1.55, 1.55, -1.55, 0.1, 100);
     cam.position.set(0, 0, AXES_CAM_DIST);
-    cam.up.set(0, 0, 1);
+    cam.up.set(0, 1, 0);   // re-copied from the main camera every frame
     cam.lookAt(0, 0, 0);
     if (!this._arrowGeo) this._arrowGeo = makeArrowGeometry();
     const Z = new THREE.Vector3(0, 0, 1);
@@ -1677,15 +1977,25 @@ export class Viewer {
     const dist = this.camera.position.distanceTo(target) || 1;
     this._cubeAnim = {
       t0: performance.now(), dur: SNAP_MS, target,
-      fromPos: this.camera.position.clone(), toPos: target.clone().add(dir.clone().multiplyScalar(dist)),
-      fromUp: this.camera.up.clone(), toUp: this._upForDir(dir),
+      fromPos: this.camera.position.clone(),
+      toPos: target.clone().add(this._snapDir(dir).multiplyScalar(dist)),
     };
   }
-  _upForDir(dir) {
-    // Z-up world: TOP/BOTTOM (dir≈±Z) use a Y-based up (avoids a degenerate
-    // up∥view flip); every side view stands Z up.
-    if (Math.abs(dir.z) > 0.5) return new THREE.Vector3(0, dir.z > 0 ? 1 : -1, 0);
-    return new THREE.Vector3(0, 0, 1);
+  /** camera.up is CONSTANT (= UP) in EVERY view, snaps included — nothing in the
+   *  viewer ever rewrites it except setUpAxis. A TOP/BOTTOM snap therefore
+   *  cannot park exactly on the pole (up ∥ view is a degenerate lookAt), so it
+   *  parks a hair off it, tilted toward FRONT.
+   *
+   *  With dir' = normalise(±UP + ε·FRONT) the screen-up left over is the
+   *  component of UP perpendicular to dir', which works out to −FRONT for the
+   *  TOP pole and +FRONT for the BOTTOM one: a top view keeps FRONT at the
+   *  BOTTOM of the screen (the CAD convention, and what the cube labels assume),
+   *  bottom mirrors it, and orbiting away needs no up-vector repair because the
+   *  up vector never moved. */
+  _snapDir(dir) {
+    const d = dir.clone().normalize();
+    if (Math.abs(d.dot(this._up)) > 0.999) d.addScaledVector(this._front, POLE_EPS).normalize();
+    return d;
   }
   _stepCubeAnim() {
     const a = this._cubeAnim;
@@ -1695,14 +2005,10 @@ export class Viewer {
     if (done) k = 1;
     const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;   // easeInOutQuad
     this.camera.position.lerpVectors(a.fromPos, a.toPos, e);
-    this.camera.up.copy(a.fromUp).lerp(a.toUp, e);
-    if (this.camera.up.lengthSq() > 1e-9) this.camera.up.normalize();
     this.camera.lookAt(a.target);
     if (done) {
-      this.camera.up.copy(a.toUp);
-      this.camera.lookAt(a.target);
       this.controls.target.copy(a.target);
-      this.controls.update();   // re-sync OrbitControls spherical + up basis
+      this.controls.update();   // re-sync OrbitControls' spherical from the pose
       this._cubeAnim = null;
     }
   }
@@ -1931,6 +2237,14 @@ function disposeMesh(mesh) {
   mesh.geometry?.dispose();
   if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
   else mesh.material?.dispose();
+}
+
+// Vector3 → a plain {x,y,z} payload, rounded to 1e-6 mm. The rounding matters:
+// a 180° rotation leaves 1.2e-16 sines behind, and a centre of 2.4e-15 in a
+// primitive request reads as noise in the panel and the op JSON.
+function xyzOf(v) {
+  const r = (n) => (Math.abs(n) < 1e-9 ? 0 : Math.round(n * 1e6) / 1e6);
+  return { x: r(v.x), y: r(v.y), z: r(v.z) };
 }
 
 // ══ Wave-3 · SECTION helpers ═══════════════════════════════════════════

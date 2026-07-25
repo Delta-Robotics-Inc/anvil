@@ -212,10 +212,12 @@ namespace Anvil.Worker
             => Math.Clamp((int)Math.Ceiling(Math.PI * maxDiaMM / (4.0 * voxelMM)), 32, 128);
 
         // Round a facet count UP to a multiple of 4 (min 4). This lands ring
-        // vertices exactly on the ±X and ±Y axes, so a curved primitive's bounding
-        // box hits the true diameter on all four cardinal points — its bbox size
-        // equals the requested diameter and its bbox centre equals the requested
-        // centre exactly, rather than drifting inward with an odd, off-axis polygon.
+        // vertices exactly on both cardinal axes of the ring's plane (X/Z for the
+        // cylinder and cone, X/Y for the sphere's longitudes), so a curved
+        // primitive's bounding box hits the true diameter on all four cardinal
+        // points — its bbox size equals the requested diameter and its bbox centre
+        // equals the requested centre exactly, rather than drifting inward with an
+        // odd, off-axis polygon.
         static int SnapToQuad(int s) => Math.Max(4, ((s + 3) / 4) * 4);
 
         /// <summary>
@@ -249,29 +251,36 @@ namespace Anvil.Worker
         }
 
         /// <summary>
-        /// Elliptical cylinder: X/Y are full DIAMETERS, height is along Z centred
-        /// on centerMM. Caps are fan-triangulated from a single centre vertex on
-        /// each end; side quads and both caps share the ring vertices (welded).
+        /// Elliptical cylinder STANDING IN Y: <paramref name="diaX"/> and
+        /// <paramref name="diaZ"/> are the full DIAMETERS spanning X and Z, and the
+        /// height runs along Y centred on centerMM — the up axis of the Y-up
+        /// (Onshape/SolidWorks) display convention, so a fresh cylinder stands on
+        /// the XZ build plate instead of lying across it. Caps are fan-triangulated
+        /// from a single centre vertex on each end; side quads and both caps share
+        /// the ring vertices (welded).
         /// </summary>
-        public static Mesh CreateCylinder(float diaX, float diaY, float heightMM, Vector3 centerMM, int segments)
+        public static Mesh CreateCylinder(float diaX, float diaZ, float heightMM, Vector3 centerMM, int segments)
         {
             int n = SnapToQuad(segments);
-            float fA = diaX * 0.5f, fB = diaY * 0.5f;
-            float zB = centerMM.Z - heightMM * 0.5f;
-            float zT = centerMM.Z + heightMM * 0.5f;
+            float fA = diaX * 0.5f, fB = diaZ * 0.5f;
+            float yB = centerMM.Y - heightMM * 0.5f;
+            float yT = centerMM.Y + heightMM * 0.5f;
 
             Mesh msh = new Mesh();
-            int iBotC = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, zB));
-            int iTopC = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, zT));
+            int iBotC = msh.nAddVertex(new Vector3(centerMM.X, yB, centerMM.Z));
+            int iTopC = msh.nAddVertex(new Vector3(centerMM.X, yT, centerMM.Z));
 
             int[] bot = new int[n], top = new int[n];
             for (int i = 0; i < n; i++)
             {
+                // The ring runs CLOCKWISE seen from +Y (cos on X, −sin on Z). That
+                // handedness is what keeps the triangle orderings below outward-
+                // winding with the axis on Y instead of Z.
                 float a = 2f * MathF.PI * i / n;
                 float x = centerMM.X + MathF.Cos(a) * fA;
-                float y = centerMM.Y + MathF.Sin(a) * fB;
-                bot[i] = msh.nAddVertex(new Vector3(x, y, zB));
-                top[i] = msh.nAddVertex(new Vector3(x, y, zT));
+                float z = centerMM.Z - MathF.Sin(a) * fB;
+                bot[i] = msh.nAddVertex(new Vector3(x, yB, z));
+                top[i] = msh.nAddVertex(new Vector3(x, yT, z));
             }
 
             for (int i = 0; i < n; i++)
@@ -279,43 +288,46 @@ namespace Anvil.Worker
                 int j = (i + 1) % n;
                 msh.nAddTriangle(bot[i], bot[j], top[i]);   // side (outward)
                 msh.nAddTriangle(bot[j], top[j], top[i]);
-                msh.nAddTriangle(iTopC, top[i], top[j]);    // top cap (+Z)
-                msh.nAddTriangle(iBotC, bot[j], bot[i]);    // bottom cap (−Z)
+                msh.nAddTriangle(iTopC, top[i], top[j]);    // top cap (+Y)
+                msh.nAddTriangle(iBotC, bot[j], bot[i]);    // bottom cap (−Y)
             }
 
             return msh;
         }
 
         /// <summary>
-        /// Elliptical cone: X/Y are full base DIAMETERS. Base sits at
-        /// centerZ − h/2, apex at centerZ + h/2. Side triangles fan up to a single
-        /// apex vertex; the base cap fans from a single centre vertex.
+        /// Elliptical cone STANDING IN Y: <paramref name="diaX"/> and
+        /// <paramref name="diaZ"/> are the full base DIAMETERS spanning X and Z.
+        /// The base sits at centerY − h/2 and the apex at centerY + h/2, so a fresh
+        /// cone points up out of the XZ build plate. Side triangles fan up to a
+        /// single apex vertex; the base cap fans from a single centre vertex.
         /// </summary>
-        public static Mesh CreateCone(float diaX, float diaY, float heightMM, Vector3 centerMM, int segments)
+        public static Mesh CreateCone(float diaX, float diaZ, float heightMM, Vector3 centerMM, int segments)
         {
             int n = SnapToQuad(segments);
-            float fA = diaX * 0.5f, fB = diaY * 0.5f;
-            float zB = centerMM.Z - heightMM * 0.5f;
-            float zApex = centerMM.Z + heightMM * 0.5f;
+            float fA = diaX * 0.5f, fB = diaZ * 0.5f;
+            float yB = centerMM.Y - heightMM * 0.5f;
+            float yApex = centerMM.Y + heightMM * 0.5f;
 
             Mesh msh = new Mesh();
-            int iBotC = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, zB));
-            int iApex = msh.nAddVertex(new Vector3(centerMM.X, centerMM.Y, zApex));
+            int iBotC = msh.nAddVertex(new Vector3(centerMM.X, yB, centerMM.Z));
+            int iApex = msh.nAddVertex(new Vector3(centerMM.X, yApex, centerMM.Z));
 
             int[] bot = new int[n];
             for (int i = 0; i < n; i++)
             {
+                // Same clockwise-from-+Y ring as CreateCylinder (cos on X, −sin on Z).
                 float a = 2f * MathF.PI * i / n;
                 bot[i] = msh.nAddVertex(new Vector3(
-                    centerMM.X + MathF.Cos(a) * fA,
-                    centerMM.Y + MathF.Sin(a) * fB, zB));
+                    centerMM.X + MathF.Cos(a) * fA, yB,
+                    centerMM.Z - MathF.Sin(a) * fB));
             }
 
             for (int i = 0; i < n; i++)
             {
                 int j = (i + 1) % n;
                 msh.nAddTriangle(bot[i], bot[j], iApex);   // side (outward)
-                msh.nAddTriangle(iBotC, bot[j], bot[i]);   // base cap (−Z)
+                msh.nAddTriangle(iBotC, bot[j], bot[i]);   // base cap (−Y)
             }
 
             return msh;

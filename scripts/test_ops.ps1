@@ -10,14 +10,14 @@
 
       * primitive box 60x40x20  vol ~= 48000 (+/-1%)
       * primitive sphere d20     vol ~= 4189  (+/-2%)
-      * boolean difference       box - cylinder (+/-2%)
+      * boolean difference       box - cylinder (Y-axis through-hole, +/-2%)
       * shell inside t2          48000 - 56*36*16 (+/-2%)
       * offset -2                ~= 32256 (+/-2%)
       * transform bake +10 x     bbox shifted EXACTLY (mesh-exact)
       * rotate 90 deg Z          bbox X/Y extents swapped
       * mirror                   mesh vol +/-0.5% AND re-voxelize non-empty
                                  (catches the missing winding flip)
-      * zoned generate           box + sphere zone-lattice + through-cylinder
+      * zoned generate           box + sphere zone-lattice + through-cylinder (Y)
                                  zone-void, skin 1.5 / grow 0.5:
                                    - latticeRegionVolume sane
                                    - voidClear passes
@@ -236,9 +236,9 @@ function Test-Ok($r, [string]$name) {
 # --- Common part paths -------------------------------------------------------
 $BoxStl     = Join-Path $WorkDir 'box.stl'         # 60x40x20 @ origin
 $SphereStl  = Join-Path $WorkDir 'sphere.stl'      # d20 @ origin
-$CylStl     = Join-Path $WorkDir 'cyl.stl'         # d20 h30 @ origin (boolean cutter)
+$CylStl     = Join-Path $WorkDir 'cyl.stl'         # d10 h50 @ origin, standing in Y (boolean cutter)
 $SphereZone = Join-Path $WorkDir 'sphere_zone.stl' # d30 @ origin (zone-lattice)
-$CylVoid    = Join-Path $WorkDir 'cyl_void.stl'    # d10 h40 @ origin (zone-void, through Z)
+$CylVoid    = Join-Path $WorkDir 'cyl_void.stl'    # d10 h60 @ origin (zone-void, through Y)
 
 Write-Host "`n== Primitives ==" -ForegroundColor Cyan
 
@@ -266,7 +266,7 @@ if (Test-Ok $r 'primitive sphere volume') {
 # helper cylinders / zone parts (generated, not directly asserted)
 $r = Invoke-Worker ([ordered]@{
     mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$CylStl
-    primitive=@{ kind='cylinder'; sizeMM=@{x=20;y=20;z=30}; centerMM=@{x=0;y=0;z=0}; sides=0 }
+    primitive=@{ kind='cylinder'; sizeMM=@{x=10;y=50;z=10}; centerMM=@{x=0;y=0;z=0}; sides=0 }
 }) 'prim_cyl'
 [void](Test-Ok $r 'primitive cylinder (cutter)')
 
@@ -278,7 +278,7 @@ $r = Invoke-Worker ([ordered]@{
 
 $r = Invoke-Worker ([ordered]@{
     mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$CylVoid
-    primitive=@{ kind='cylinder'; sizeMM=@{x=10;y=10;z=40}; centerMM=@{x=0;y=0;z=0}; sides=0 }
+    primitive=@{ kind='cylinder'; sizeMM=@{x=10;y=60;z=10}; centerMM=@{x=0;y=0;z=0}; sides=0 }
 }) 'prim_cyl_void'
 [void](Test-Ok $r 'primitive cylinder void')
 
@@ -305,17 +305,18 @@ if (Test-Ok $r 'off-origin box') {
     Test-Watertight 'off-origin box watertight' $offBox
 }
 
-# cylinder dia20 h40 off-origin -> X/Y size 20, Z size 40, centre exact,
+# cylinder dia20 h40 off-origin, STANDING IN Y -> X/Z size 20, Y size 40 (the
+# height axis moved Z->Y with the Y-up display convention), centre exact,
 # vol pi*r^2*h = 12566.37 within the -1%/+0.1% inscribed-polygon band
 $offCyl = Join-Path $WorkDir 'off_cyl.stl'
 $expCylVol = [math]::PI * 100.0 * 40.0
 $r = Invoke-Worker ([ordered]@{
     mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$offCyl
-    primitive=@{ kind='cylinder'; sizeMM=@{x=20;y=20;z=40}; centerMM=$OffC; sides=0 }
+    primitive=@{ kind='cylinder'; sizeMM=@{x=20;y=40;z=20}; centerMM=$OffC; sides=0 }
 }) 'off_cyl'
 if (Test-Ok $r 'off-origin cylinder') {
     Assert-Band  'off-origin cylinder volume' ([double]$r.stats.volumeMM3) $expCylVol 0.01 0.001
-    Assert-PrimBbox 'off-origin cylinder' $offCyl @(20.0,20.0,40.0) $OffCtr $BboxTol
+    Assert-PrimBbox 'off-origin cylinder' $offCyl @(20.0,40.0,20.0) $OffCtr $BboxTol
     Test-Watertight 'off-origin cylinder watertight' $offCyl
 }
 
@@ -346,25 +347,27 @@ if (Test-Ok $r 'off-origin sphere') {
     }
 }
 
-# cone dia20 h40 off-origin -> X/Y size 20, Z size 40, centre exact,
-# vol pi*r^2*h/3 = 4188.79 (+/-2%)
+# cone dia20 h40 off-origin, STANDING IN Y -> X/Z size 20, Y size 40 (base on
+# the low-Y end, apex up), centre exact, vol pi*r^2*h/3 = 4188.79 (+/-2%)
 $offCone = Join-Path $WorkDir 'off_cone.stl'
 $expConeVol = [math]::PI * 100.0 * 40.0 / 3.0
 $r = Invoke-Worker ([ordered]@{
     mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$offCone
-    primitive=@{ kind='cone'; sizeMM=@{x=20;y=20;z=40}; centerMM=$OffC; sides=0 }
+    primitive=@{ kind='cone'; sizeMM=@{x=20;y=40;z=20}; centerMM=$OffC; sides=0 }
 }) 'off_cone'
 if (Test-Ok $r 'off-origin cone') {
     Assert-Close 'off-origin cone volume' ([double]$r.stats.volumeMM3) $expConeVol 0.02
-    Assert-PrimBbox 'off-origin cone' $offCone @(20.0,20.0,40.0) $OffCtr $BboxTol
+    Assert-PrimBbox 'off-origin cone' $offCone @(20.0,40.0,20.0) $OffCtr $BboxTol
     Test-Watertight 'off-origin cone watertight' $offCone
 }
 
 Write-Host "`n== Boolean / Shell / Offset ==" -ForegroundColor Cyan
 
-# 3) boolean difference: box - cylinder(d20,h30) -> 48000 - pi*100*20 = 41716.8 (+/-2%)
+# 3) boolean difference: box - cylinder(d10,h50 standing in Y). The cutter runs
+#    the full 40 mm Y extent of the box, so the hole is a clean through-hole:
+#    48000 - pi*25*40 = 44858.4 (+/-2%)
 $diffStl = Join-Path $WorkDir 'diff.stl'
-$expDiff = 48000.0 - [math]::PI * 100.0 * 20.0
+$expDiff = 48000.0 - [math]::PI * 25.0 * 40.0
 $r = Invoke-Worker ([ordered]@{
     mode='op'; opKind='boolean'; booleanKind='difference'; voxelSizeMM=0.3; outputPath=$diffStl
     inputs=@(@{ path=$BoxStl }, @{ path=$CylStl })

@@ -1290,16 +1290,18 @@ async function pollHealth() {
     if (h.ok && h.workerExists) ui.setHealth('ok', 'local · ready');
     else if (h.ok)              ui.setHealth('warn', 'no worker');
     else                        ui.setHealth('err', 'error');
-    // Reveal the FEEDBACK → GitHub issues link once the server reports a repoUrl.
+    // Reveal the FEEDBACK → GitHub-issues and GitHub-repo links once the
+    // server reports a repoUrl (the Discord button is static markup).
     const fb = ui.els.feedbackBtn;
+    const gh = document.getElementById('github-btn');
+    const repoUrl = (h.repoUrl || '').trim().replace(/\/+$/, '');
     if (fb) {
-      const repoUrl = (h.repoUrl || '').trim();
-      if (repoUrl) {
-        fb.href = repoUrl.replace(/\/+$/, '') + '/issues/new';
-        fb.hidden = false;
-      } else {
-        fb.hidden = true;
-      }
+      if (repoUrl) { fb.href = repoUrl + '/issues/new'; fb.hidden = false; }
+      else fb.hidden = true;
+    }
+    if (gh) {
+      if (repoUrl) { gh.href = repoUrl; gh.hidden = false; }
+      else gh.hidden = true;
     }
   } catch {
     ui.setHealth('err', 'offline');

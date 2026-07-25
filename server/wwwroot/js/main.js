@@ -6,6 +6,7 @@ import * as api from './api.js';
 import * as ui from './ui.js';
 import * as tools from './tools.js';
 import * as scriptsPanel from './scripts.js';
+import * as history from './history.js';
 import { Viewer } from './viewer.js';
 import { isBaseRole, isZoneRole } from './roles.js';
 
@@ -125,8 +126,10 @@ async function handleFiles(files) {
       id: part.id, name: part.name, triangles: part.triangles,
       sourceFormat: part.sourceFormat, role: 'part', visible: true,
       volumeMM3: part.volumeMM3, bbox: part.bbox, derived: null, trs: null,
+      stlUrl: part.stlUrl || api.partMeshUrl(part.id),   // undo re-adds from here
     };
     // Swap placeholder → real row the instant conversion returns, then flash.
+    const flagsBefore = flagsSnapshot();   // the auto-role flip rides this command
     removePending(tempId);
     state.parts.push(rec);
     applyAutoRoles();
@@ -134,7 +137,7 @@ async function handleFiles(files) {
     ui.flashPartRow(rec.id);
 
     try {
-      await viewer.addPart(part.id, part.stlUrl, rec.role);
+      await viewer.addPart(part.id, rec.stlUrl, rec.role);
       // Roles may have changed via applyAutoRoles — sync viewer colors.
       syncViewerRoles();
       updateDims();
@@ -142,6 +145,11 @@ async function handleFiles(files) {
     } catch (err) {
       ui.toast(`"${part.name}" loaded, but its 3D preview failed: ${err.message}`, 'warn');
     }
+    // ONE command per file: the row, its mesh, and the auto pos/neg flip it caused.
+    const tx = history.begin(`Import ${rec.name}`);
+    pushCreateCommand(rec.id, `Import ${rec.name}`);
+    pushFlagsCommand(flagsBefore, 'Auto roles');
+    history.end(tx);
   }
 }
 
@@ -153,7 +161,7 @@ function removePending(tempId) {
 // the default "Part", switch them to positive/negative (bumpmesh-simple default).
 // Only BASE-role uploads count — derived and zone parts never trigger the flip.
 function applyAutoRoles() {
-  const base = state.parts.filter((p) => isBaseRole(p.role) && !p.isResult);
+  const base = state.parts.filter((p) => isBaseRole(p.role) && !p.isResult && !p.consumed);
   if (base.length === 2 && base.every((p) => p.role === 'part')) {
     base[0].role = 'positive';
     base[1].role = 'negative';
@@ -200,16 +208,29 @@ function collectTransforms(m) {
 // `duplicate` returns the PartInfo DIRECTLY (200); every other op returns
 // 202 {jobId,partId} — poll GET /jobs/{id} until .part appears. Returns the
 // registered part (or null). onProgress(stageText) feeds the tool inline line.
+// Wave-4 undo: the whole op is ONE command. tools.js runs `afterConfirm` (BOOL's
+// source consume, TRANSFORM's source reset) synchronously right after this
+// promise resolves, so the group is closed a macrotask later — late enough for
+// those mutations to join, early enough that nothing unrelated can slip in.
 async function runOpFlow(body, onProgress) {
-  const resp = await api.runOp(body);
-  if (resp && resp.id && !resp.jobId) {          // synchronous duplicate
-    await addOpPart(resp);
-    return resp;
+  const tx = history.begin(`${(body.op || 'op').toUpperCase()}`);
+  const closeSoon = () => setTimeout(() => history.end(tx), 0);
+  try {
+    const resp = await api.runOp(body);
+    if (resp && resp.id && !resp.jobId) {          // synchronous duplicate
+      await addOpPart(resp);
+      closeSoon();
+      return resp;
+    }
+    if (resp.warning) ui.toast(resp.warning, 'warn', 8000);
+    const part = await pollOpJob(resp.jobId, onProgress);
+    if (part) await addOpPart(part);
+    closeSoon();
+    return part;
+  } catch (err) {
+    history.end(tx);   // nothing was created — record whatever (if anything) landed
+    throw err;
   }
-  if (resp.warning) ui.toast(resp.warning, 'warn', 8000);
-  const part = await pollOpJob(resp.jobId, onProgress);
-  if (part) await addOpPart(part);
-  return part;
 }
 function pollOpJob(jobId, onProgress) {
   // The server flips an op job to `done` and registers the derived part a moment
@@ -239,18 +260,20 @@ async function addOpPart(part) {
     id: part.id, name: part.name, triangles: part.triangles,
     sourceFormat: part.sourceFormat || 'derived', role: 'part', visible: true,
     volumeMM3: part.volumeMM3, bbox: part.bbox, derived: part.derived || null, trs: null,
+    stlUrl: part.stlUrl || api.partMeshUrl(part.id),   // undo re-adds from here
   };
   state.parts.push(rec);
   refreshParts();
   ui.flashPartRow(rec.id);
   try {
-    await viewer.addPart(part.id, part.stlUrl, rec.role);
+    await viewer.addPart(part.id, rec.stlUrl, rec.role);
     syncViewerRoles();
     updateDims();
     updateOrbitPivot();   // new geometry shifts the centre of mass
   } catch (err) {
     ui.toast(`"${part.name}" created, but its 3D preview failed: ${err.message}`, 'warn');
   }
+  pushCreateCommand(rec.id, `Create ${rec.name}`);
 }
 
 // ── Scripting (SCRIPTS panel → /api/scripts/run → poll → new parts) ────
@@ -261,7 +284,10 @@ async function runScriptFlow(scriptId, name, onProgress) {
   const { code } = await api.getScript(scriptId);
   const resp = await api.runScript({ code, name });
   const parts = await pollScriptJob(resp.jobId, onProgress);
-  for (const p of parts) await addOpPart(p);
+  // Every part a script emitted is ONE command — a script run undoes as a unit.
+  const tx = history.begin(`Script ${name}`);
+  try { for (const p of parts) await addOpPart(p); }
+  finally { history.end(tx); }
   return parts;
 }
 function pollScriptJob(jobId, onProgress) {
@@ -286,21 +312,27 @@ const toolCtx = {
   voxelDefault: () => ui.readParams().voxelSizeMM,
   getPartTrs: (id) => state.parts.find((p) => p.id === id)?.trs || null,
   partBbox: (id) => state.parts.find((p) => p.id === id)?.bbox || null,
+  // TRANSFORM panel live edit. Every keystroke lands here, so the command
+  // COALESCES: successive edits to the same part fold into the one entry (its
+  // `prev` stays the TRS the panel opened on) until some other action intervenes.
   setPartTransform: (id, trs) => {
     const p = state.parts.find((x) => x.id === id);
     if (!p) return;
-    p.trs = trs;
-    viewer.setPartTransform(id, trs);
-    updateDims();
-    markSourceMoved(p);
+    const prev = cloneTrs(p.trs);
+    applyPanelTrs(id, trs);
+    pushTrsCommand(id, prev, cloneTrs(trs), {
+      label: 'Transform (panel)', panel: true, coalesceKey: `panel-trs:${id}`,
+    });
   },
   clearPartTransform: (id) => {
     const p = state.parts.find((x) => x.id === id);
-    if (p) p.trs = null;
-    viewer.clearPartTransform(id);
-    updateDims();
+    if (!p) return;
+    const prev = cloneTrs(p.trs);
+    applyPanelTrs(id, null);
+    pushTrsCommand(id, prev, null, { label: 'Reset transform', panel: true });
   },
   runOp: (body, onProgress) => runOpFlow(body, onProgress),
+  consumeSources: (ids, resultId, kind) => consumeSources(ids, resultId, kind),
   onStateChange: () => updateAccents(),
   toast: (msg, kind, ms) => ui.toast(msg, kind, ms),
 };
@@ -317,16 +349,20 @@ function refreshParts() {
     onRoleChange: (id, role) => {
       const p = state.parts.find((x) => x.id === id);
       if (!p) return;
+      const before = flagsSnapshot();   // whole role map — cascades ride along
       p.role = role;
       viewer.setPartRole(id, role);
       refreshParts();
+      pushFlagsCommand(before, `Role → ${role}`);
     },
     onToggleVisible: (id) => {
       const p = state.parts.find((x) => x.id === id);
       if (!p) return;
+      const before = flagsSnapshot();
       p.visible = !p.visible;
       viewer.setPartVisible(id, p.visible);
       refreshParts();
+      pushFlagsCommand(before, p.visible ? 'Show part' : 'Hide part');
     },
     onDelete: (id) => deletePart(id),
   });
@@ -340,20 +376,357 @@ function refreshParts() {
   refreshExport();          // Wave-3 — the EXPORT tile lists the live part set
 }
 
-async function deletePart(id) {
+// ── Wave-4 · consumed sources ─────────────────────────────────────────
+// A BOOL/SMOOTH result REPLACES its two inputs. The sources stay listed (so the
+// op stays reversible) but are hidden, locked, and — the point of the exercise —
+// dropped from computeMode exactly like a lattice `isResult` part is. Two boxes
+// unioned therefore leave ONE active base part, and GENERATE runs on the
+// combined result straight away. Deleting the result restores them.
+function consumeSources(ids, resultId, kind) {
+  const res = partById(resultId);
+  if (!res) return;
+  const before = flagsSnapshot();   // undo of the BOOL hands the sources straight back
+  const taken = [];
+  for (const sid of new Set(ids)) {
+    const src = partById(sid);
+    if (!src || src.id === resultId || src.consumed) continue;
+    src.consumed = true;
+    src.consumedBy = resultId;
+    src.consumedKind = kind || 'BOOL';   // row regmark: USED · BOOL | USED · SMOOTH
+    src.prevVisible = src.visible !== false;
+    src.visible = false;
+    viewer.setPartVisible(src.id, false);
+    taken.push(src.id);
+  }
+  res.consumedIds = taken;
+  res.role = 'part';                     // the combined part IS the new base
+  viewer.setPartRole(res.id, 'part');
+  refreshParts();
+  updateOrbitPivot();                    // the hidden sources leave the COM
+  // Joins the op's open group, so ONE Ctrl+Z removes the result AND restores
+  // the sources (see runOpFlow).
+  pushFlagsCommand(before, `Consume → ${kind || 'BOOL'}`);
+}
+
+// Give a result's sources back (delete-the-result undo).
+function releaseConsumed(rec) {
+  for (const sid of rec.consumedIds || []) {
+    const src = partById(sid);
+    if (!src || src.consumedBy !== rec.id) continue;
+    src.consumed = false;
+    src.consumedBy = null;
+    src.consumedKind = null;
+    src.visible = src.prevVisible !== false;
+    viewer.setPartVisible(src.id, src.visible);
+    src.prevVisible = undefined;
+  }
+  rec.consumedIds = [];
+}
+
+// A consumed source deleted on its own just leaves its result's list.
+function forgetConsumed(rec) {
+  const host = rec.consumedBy ? partById(rec.consumedBy) : null;
+  if (host) host.consumedIds = (host.consumedIds || []).filter((x) => x !== rec.id);
+}
+
+// Local removal — everything deleting a part does EXCEPT the server-side file
+// delete, which is deferred so undo can put the part back from its own mesh.
+function removePartLocal(id) {
   if (id === state.selectedPartId) clearSelection();   // drop selection + gizmo first
   const rec = partById(id);
   // Deleting the lattice un-ghosts its sources; deleting a ghosted source only
   // detaches that one (the viewer drops the link either way in removePart).
   if (rec?.isResult) releaseLattice(rec);
   else if (rec?.ghosted) rec.ghosted = false;
+  // Same contract one level down: deleting a BOOL/SMOOTH result hands its
+  // sources back; deleting a consumed source just forgets it.
+  if (rec?.consumedIds?.length) releaseConsumed(rec);
+  if (rec?.consumed) forgetConsumed(rec);
   state.parts = state.parts.filter((x) => x.id !== id);
   viewer.removePart(id);
   refreshParts();
   updateOrbitPivot();       // one fewer mass in the COM
   tools.onPartsChanged();   // an open picker tool refreshes its part list
-  try { await api.deletePart(id); } catch { /* best effort */ }
 }
+
+function deletePart(id) {
+  const snap = snapshotPart(id);
+  if (!snap) return;
+  removePartLocal(id);
+  pushDeleteCommand(snap);
+}
+
+// ══ Wave-4 · UNDO / REDO ══════════════════════════════════════════════
+// Every user-visible mutation records a {undo, redo} pair on the history stack
+// (js/history.js). Two rules make the hard cases work:
+//
+//  1. The server file OUTLIVES a local delete. `api.deletePart` is no longer
+//     fired when a part is removed — the command holds a deferred delete that
+//     runs only when the command falls off the stack (depth cap / clear / page
+//     unload). Until then undo re-adds the part straight from its own mesh URL.
+//  2. Side effects travel INSIDE the command. Deleting a lattice un-ghosts its
+//     sources, deleting a boolean result un-consumes its inputs, an upload can
+//     flip two parts to positive/negative — so commands snapshot the flag map
+//     (role · visible · ghost · consume) whole and restore it wholesale.
+//
+// Excluded on purpose: lattice ADOPTION (adoptLatticePart). A generate already
+// replaces the previous lattice as part of its own recipe; making "undo the
+// generate" a stack entry would fight regeneration, so the lattice is managed by
+// GENERATE alone. Deleting a lattice by hand IS undoable.
+
+const cloneJson = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
+const cloneTrs = cloneJson;
+
+// Parts whose server file has already been released (never fire twice).
+const flushedDeletes = new Set();
+function flushServerDelete(id) {
+  if (flushedDeletes.has(id)) return;
+  flushedDeletes.add(id);
+  // keepalive so a pagehide flush survives the navigation (DELETE is not
+  // beaconable). Fire-and-forget: a failure just leaves a stale file behind.
+  try { fetch(`/api/parts/${encodeURIComponent(id)}`, { method: 'DELETE', keepalive: true }).catch(() => {}); }
+  catch { /* best effort */ }
+}
+
+// ── flag map (role · visibility · ghost · consume, for every part) ────
+// Used for role changes, visibility toggles and BOOL consume alike: snapshot
+// before, snapshot after, restore wholesale. Cascades and lock states that a
+// single-field diff would miss come along for free.
+function flagsSnapshot() {
+  const parts = {};
+  for (const p of state.parts) {
+    parts[p.id] = {
+      role: p.role,
+      visible: p.visible !== false,
+      ghosted: !!p.ghosted,
+      consumed: !!p.consumed,
+      consumedBy: p.consumedBy || null,
+      consumedKind: p.consumedKind || null,
+      prevVisible: p.prevVisible,
+      consumedIds: (p.consumedIds || []).slice(),
+      sourceIds: (p.sourceIds || []).slice(),
+    };
+  }
+  return { parts, latticePartId: state.latticePartId };
+}
+function applyFlags(snap) {
+  if (!snap) return;
+  for (const p of state.parts) {
+    const f = snap.parts[p.id];
+    if (!f) continue;                       // created after the snapshot — left alone
+    if (p.role !== f.role) { p.role = f.role; viewer.setPartRole(p.id, f.role); }
+    if ((p.visible !== false) !== f.visible) { p.visible = f.visible; viewer.setPartVisible(p.id, f.visible); }
+    p.ghosted = f.ghosted;
+    p.consumed = f.consumed;
+    p.consumedBy = f.consumedBy;
+    p.consumedKind = f.consumedKind;
+    p.prevVisible = f.prevVisible;
+    p.consumedIds = f.consumedIds.slice();
+    if (p.isResult) p.sourceIds = f.sourceIds.slice();
+  }
+  state.latticePartId = snap.latticePartId;
+  // The scene-wide ghost dim follows whether a lattice is on the plate.
+  if (state.latticePartId && partById(state.latticePartId)) viewer.dimUploaded();
+  else viewer.undimUploaded();
+}
+function pushFlagsCommand(before, label) {
+  if (history.isBusy()) return;
+  const after = flagsSnapshot();
+  if (JSON.stringify(before) === JSON.stringify(after)) return;   // no-op
+  history.push({
+    label,
+    undo: () => { applyFlags(before); afterHistory(); },
+    redo: () => { applyFlags(after);  afterHistory(); },
+  });
+}
+
+// ── TRS commands ──────────────────────────────────────────────────────
+// In-canvas commit (gizmo drag, plate drag, lay-flat, DROP, auto-drop-after-
+// rotate): one command per commit — the viewer already grounds a rotation into
+// the SAME trs it hands to onTransformCommit, so a rotate+drop is one entry.
+function applyCommitTrs(id, trs) {
+  const p = partById(id);
+  if (p) p.trs = cloneTrs(trs);
+  viewer.setPartTransform(id, cloneTrs(trs), { fit: false });
+  updateDims();
+  updateOrbitPivot();       // commit only — never inside onTransformLive
+  tools.onPartsChanged();   // re-prefill an open TRANSFORM tool (TRS panel sync)
+}
+// TRANSFORM panel path — keeps the panel's fit-on-commit and its stale-source note.
+function applyPanelTrs(id, trs) {
+  const p = partById(id);
+  if (p) p.trs = cloneTrs(trs);
+  viewer.setPartTransform(id, cloneTrs(trs));
+  updateDims();
+  if (p) markSourceMoved(p);
+}
+function trsEqual(a, b) { return JSON.stringify(nonIdentityTrs(a)) === JSON.stringify(nonIdentityTrs(b)); }
+
+function pushTrsCommand(id, prev, next, opts = {}) {
+  if (history.isBusy() || trsEqual(prev, next)) return;
+  const apply = opts.panel ? applyPanelTrs : applyCommitTrs;
+  const cmd = {
+    label: opts.label || 'Transform',
+    key: opts.coalesceKey || null,
+    prev, next,
+    undo: () => { apply(id, cloneTrs(cmd.prev)); afterHistory(); },
+    redo: () => { apply(id, cloneTrs(cmd.next)); afterHistory(); },
+  };
+  // Panel edits fire per keystroke: fold into the entry this editing session
+  // already owns (its `prev` is the TRS the panel opened on) instead of flooding
+  // the stack. Any other action ends the run — the key no longer matches the top.
+  if (cmd.key) {
+    const top = history.peekUndo();
+    if (top && top.key === cmd.key) { top.next = cmd.next; history.touch(); return; }
+  }
+  history.push(cmd);
+}
+
+// ── part snapshot / restore (delete ⇄ create) ─────────────────────────
+// Everything needed to put a part back exactly as it was: the record, its mesh
+// URL, its slot in the list, and the side-effect state its removal unwound.
+function snapshotPart(id) {
+  const rec = partById(id);
+  if (!rec) return null;
+  const host = rec.consumedBy ? partById(rec.consumedBy) : null;
+  return {
+    id,
+    index: state.parts.findIndex((p) => p.id === id),
+    rec: cloneJson(rec),
+    stlUrl: rec.stlUrl || api.partMeshUrl(id),
+    solid: !!rec.isResult,
+    wasLattice: state.latticePartId === id,
+    // lattice host: which sources it currently holds as ghosts
+    ghostIds: rec.isResult ? (rec.sourceIds || []).filter((sid) => partById(sid)?.ghosted) : [],
+    // boolean/smooth result: the consume state of every source it absorbed
+    consumed: (rec.consumedIds || []).map((sid) => {
+      const s = partById(sid);
+      return s ? {
+        id: sid, consumed: !!s.consumed, consumedBy: s.consumedBy,
+        consumedKind: s.consumedKind, prevVisible: s.prevVisible, visible: s.visible !== false,
+      } : null;
+    }).filter(Boolean),
+    // consumed source: the host's list, so putting it back re-links it
+    hostId: host ? host.id : null,
+    hostConsumedIds: host ? (host.consumedIds || []).slice() : null,
+  };
+}
+
+async function restorePart(snap) {
+  if (!snap || partById(snap.id)) return;
+  const rec = cloneJson(snap.rec);
+  const at = Math.min(Math.max(snap.index, 0), state.parts.length);
+  state.parts.splice(at, 0, rec);                 // same row position as before
+  try {
+    // The server file was never deleted — the mesh streams straight back.
+    await viewer.addPart(snap.id, snap.stlUrl, rec.role, { solid: snap.solid });
+  } catch (err) {
+    ui.toast(`Could not restore "${rec.name}": ${err.message}`, 'error', 9000);
+    state.parts = state.parts.filter((p) => p.id !== snap.id);
+    throw err;
+  }
+  if (rec.trs) viewer.setPartTransform(snap.id, cloneTrs(rec.trs), { fit: false });
+  if (rec.visible === false) viewer.setPartVisible(snap.id, false);
+
+  if (snap.wasLattice) state.latticePartId = snap.id;
+  if (rec.isResult) {                              // lattice: re-ghost + re-link
+    for (const sid of snap.ghostIds) { const s = partById(sid); if (s) s.ghosted = true; }
+    viewer.linkGhosts(snap.id, snap.ghostIds);
+    viewer.dimUploaded();
+  }
+  for (const c of snap.consumed) {                 // boolean result: re-consume
+    const s = partById(c.id);
+    if (!s) continue;
+    s.consumed = c.consumed; s.consumedBy = c.consumedBy; s.consumedKind = c.consumedKind;
+    s.prevVisible = c.prevVisible; s.visible = c.visible;
+    viewer.setPartVisible(c.id, c.visible);
+  }
+  if (snap.hostId) {                               // consumed source: host takes it back
+    const h = partById(snap.hostId);
+    if (h) h.consumedIds = (snap.hostConsumedIds || []).slice();
+  }
+  if (rec.ghosted && !rec.isResult) {              // ghost source: rejoin its lattice
+    const lat = state.parts.find((x) => x.isResult && (x.sourceIds || []).includes(snap.id));
+    if (lat) viewer.linkGhosts(lat.id, (lat.sourceIds || []).filter((sid) => partById(sid)?.ghosted));
+  }
+  syncViewerRoles();
+}
+
+// DELETE — currently removed; undo restores, redo removes again, and the server
+// file is released only once the command can never be reached again.
+function pushDeleteCommand(snap) {
+  if (history.isBusy()) return;
+  const st = { snap, removed: true };
+  history.push({
+    label: `Delete ${snap.rec.name}`,
+    undo: async () => { await restorePart(st.snap); st.removed = false; afterHistory(); },
+    redo: () => { st.snap = snapshotPart(st.snap.id) || st.snap; removePartLocal(st.snap.id); st.removed = true; afterHistory(); },
+    dispose: () => { if (st.removed) flushServerDelete(st.snap.id); },
+  });
+}
+// CREATE — the mirror image: currently present; undo removes (deferring the
+// server delete through the same mechanism), redo re-adds.
+function pushCreateCommand(id, label) {
+  if (history.isBusy()) return;
+  const snap = snapshotPart(id);
+  if (!snap) return;
+  const st = { snap, removed: false };
+  history.push({
+    label: label || `Create ${snap.rec.name}`,
+    undo: () => { st.snap = snapshotPart(id) || st.snap; removePartLocal(id); st.removed = true; afterHistory(); },
+    redo: async () => { await restorePart(st.snap); st.removed = false; afterHistory(); },
+    dispose: () => { if (st.removed) flushServerDelete(id); },
+  });
+}
+
+// Single refresh entry point after any undo/redo: rows, mode note, dims, accent
+// budget, viewport context, export tile, orbit pivot, selection toolbar, and an
+// open tool's part list all re-derive from state here.
+function afterHistory() {
+  syncViewerRoles();
+  refreshParts();
+  updateOrbitPivot();
+  syncSelToolbar();
+  tools.onPartsChanged();
+}
+
+// ── keyboard + header buttons ─────────────────────────────────────────
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = (el.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+}
+/** A HUD dialog is up (MCP, or any future .hud-modal) — it owns the keyboard. */
+function modalOpen() {
+  return !!document.querySelector('.hud-overlay:not([hidden]), .hud-modal:not([hidden])');
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const k = (e.key || '').toLowerCase();
+  const isUndo = k === 'z' && !e.shiftKey;
+  const isRedo = (k === 'z' && e.shiftKey) || k === 'y';
+  if (!isUndo && !isRedo) return;
+  // A text field keeps its NATIVE undo — typing in the filename box is not a
+  // model edit. Same for an open dialog.
+  if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) return;
+  if (modalOpen()) return;
+  e.preventDefault();
+  if (isUndo) history.undo(); else history.redo();
+});
+
+history.setErrorHandler((msg) => ui.toast(msg, 'error', 9000));
+ui.els.undoBtn?.addEventListener('click', () => history.undo());
+ui.els.redoBtn?.addEventListener('click', () => history.redo());
+history.onChange((s) => {
+  const u = ui.els.undoBtn, r = ui.els.redoBtn;
+  if (u) { u.disabled = !s.canUndo; u.title = s.canUndo ? `Undo ${s.undoLabel} (Ctrl+Z)` : 'Nothing to undo (Ctrl+Z)'; }
+  if (r) { r.disabled = !s.canRedo; r.title = s.canRedo ? `Redo ${s.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo (Ctrl+Shift+Z)'; }
+});
+
+// Leaving the page settles the deferred server deletes: every command still on
+// the stack disposes, and the ones holding a removed part release its file.
+window.addEventListener('pagehide', () => history.clear());
 
 // ── Mode logic (roles → single | fuse | disabled) ─────────────────────
 // BASE roles (part/positive/negative) decide the mode exactly as before; ZONE
@@ -364,8 +737,8 @@ async function deletePart(id) {
 // from the ORIGINAL sources (which stay in the list, ghosted), so GENERATE
 // re-runs the same recipe and replaces the lattice part.
 function computeMode() {
-  const base = state.parts.filter((p) => !p.isResult && isBaseRole(p.role));
-  const zones = state.parts.filter((p) => !p.isResult && isZoneRole(p.role));
+  const base = state.parts.filter((p) => !p.isResult && !p.consumed && isBaseRole(p.role));
+  const zones = state.parts.filter((p) => !p.isResult && !p.consumed && isZoneRole(p.role));
   const part = base.filter((p) => p.role === 'part');
   const pos  = base.filter((p) => p.role === 'positive');
   const neg  = base.filter((p) => p.role === 'negative');
@@ -423,7 +796,7 @@ function updateMode() {
   ui.setMode(m.valid, m.note);
   ui.setOverlapEnabled(m.mode === 'fuse');
   // Progressive disclosure: the ZONES tile appears once any zone role exists.
-  ui.setZonesVisible(state.parts.some((p) => isZoneRole(p.role)));
+  ui.setZonesVisible(state.parts.some((p) => !p.consumed && isZoneRole(p.role)));
   return m;
 }
 
@@ -979,8 +1352,9 @@ ui.initPanels();
 ui.els.tbImport?.addEventListener('click', () => ui.els.fileInput.click());
 // Wave-1 tool buttons open/close their contextual panel (js/tools.js).
 ui.els.tbPrim?.addEventListener('click', () => tools.toggle('primitive'));
+// BOOL carries all four combine modes (union/difference/intersect/smooth) — the
+// old MERGE button was the same tool with the fillet exposed, so it is gone.
 ui.els.tbBool?.addEventListener('click', () => tools.toggle('boolean'));
-ui.els.tbMerge?.addEventListener('click', () => tools.toggle('merge'));
 ui.els.tbShell?.addEventListener('click', () => tools.toggle('shell'));
 ui.els.tbOffset?.addEventListener('click', () => tools.toggle('offset'));
 ui.els.tbXform?.addEventListener('click', () => tools.toggle('transform'));
@@ -1010,7 +1384,10 @@ ui.els.panelLeft?.addEventListener('click', (e) => {
   if (e.target.closest?.('.seg-btn, .fchip')) markParamsDirty();
 });
 
-// Floating view strip — FIT · GHOSTS · SECTION.
+// Floating view strip — HOME · FIT · GHOSTS · SECTION.
+// HOME is the documented default camera: iso (1, −0.9, 0.65), up +Z, framed on
+// everything visible. FIT still frames the SELECTION when there is one.
+document.getElementById('vp-home')?.addEventListener('click', () => viewer.homeView());
 ui.els.vpFit?.addEventListener('click', () => viewer.fitView());
 ui.els.vpGhosts?.addEventListener('click', () => {
   const hidden = viewer.toggleGhosts();
@@ -1084,6 +1461,7 @@ const selMove  = document.getElementById('sel-move');
 const selRot   = document.getElementById('sel-rotate');
 const selScale = document.getElementById('sel-scale');
 const selFlat  = document.getElementById('sel-layflat');
+const selDrop  = document.getElementById('sel-drop');
 
 function partById(id) { return state.parts.find((p) => p.id === id) || null; }
 
@@ -1100,10 +1478,33 @@ function syncSelToolbar() {
   selFlat?.classList.toggle('active', state.layFlatArmed);
 }
 
+// ── Ghost + lattice = ONE selectable unit ─────────────────────────────
+// A ghosted source belongs to the lattice that consumed it: the lattice carries
+// its ghosts (viewer linkGhosts), so transforming a ghost alone would tear the
+// pair apart. Every selection path — viewer picks AND row clicks — routes
+// through here, so a ghost click lands on its lattice instead. Deleting the
+// lattice frees the sources again.
+let ghostRouteToasted = false;
+function latticeHosting(p) {
+  if (!p || p.isResult || !p.ghosted) return null;
+  return state.parts.find((x) => x.isResult && (x.sourceIds || []).includes(p.id)) || null;
+}
+function routeSelection(id) {
+  const host = latticeHosting(id ? partById(id) : null);
+  if (!host) return id;
+  if (!ghostRouteToasted) {
+    ghostRouteToasted = true;
+    ui.toast('Ghost is linked to the lattice — they move together.', 'info', 4500);
+  }
+  return host.id;
+}
+
 // Select a part (id) or clear (null). Selection is the single source of truth:
 // rows (`.selected`), the viewer emissive tint, and the gizmo all derive from it.
+// Selecting ALWAYS arms MOVE: a selected part is in transform mode, with the
+// arrows sitting on the part itself (viewer pivots the gizmo on the bbox centre).
 function selectPart(id) {
-  const p = id ? partById(id) : null;
+  const p = id ? partById(routeSelection(id)) : null;
   const nextId = p ? p.id : null;
   if (nextId !== state.selectedPartId) {   // changing/clearing selection resets the gizmo
     state.gizmoMode = null;
@@ -1114,6 +1515,7 @@ function selectPart(id) {
   }
   state.selectedPartId = nextId;
   viewer.setSelected(nextId);
+  if (nextId && !state.gizmoMode) { state.gizmoMode = 'translate'; viewer.setGizmoMode('translate'); }
   updateOrbitPivot();   // pivot follows the selection (camera stays put)
   syncSelToolbar();
   refreshParts();   // re-derive the `.selected` row class from state
@@ -1149,27 +1551,42 @@ selMove?.addEventListener('click', () => setGizmoMode('translate'));
 selRot?.addEventListener('click', () => setGizmoMode('rotate'));
 selScale?.addEventListener('click', () => setGizmoMode('scale'));
 selFlat?.addEventListener('click', () => (state.layFlatArmed ? cancelLayFlat() : armLayFlat()));
+// DROP — Z0 is the print bed: ground the selection (and any ghosts riding it).
+selDrop?.addEventListener('click', () => {
+  if (!state.selectedPartId) return;
+  const trs = viewer.dropToPlate(state.selectedPartId);
+  if (!trs) return;
+  commitTransform(state.selectedPartId, trs);
+  ui.toast('Dropped to Z = 0.', 'success', 2200);
+});
 
-// ── viewer callbacks — the viewer owns pointer routing (cube → gizmo →
-//    selection); main owns app state + the commit path. ──
+// ── viewer callbacks — the viewer owns pointer routing (cube → section →
+//    lay-flat → gizmo → plate-drag → selection); main owns app state + the
+//    commit path. ──
+// Every in-canvas commit is `fit: false`: a direct manipulation must not yank
+// the camera back to the iso framing the user just orbited away from. (The
+// TRANSFORM panel keeps fit-on-commit.)
+// Wave-4: every commit is ONE undo entry. A rotate that auto-drops arrives here
+// as a single grounded TRS, so one Ctrl+Z takes back the rotation AND the drop.
+function commitTransform(id, trs) {
+  const prev = cloneTrs(partById(id)?.trs);
+  const next = cloneTrs(trs);
+  applyCommitTrs(id, next);
+  pushTrsCommand(id, prev, next, { label: 'Move / rotate' });
+}
+
 viewer.onPick = (id) => selectPart(id);                     // id or null (empty click clears)
 viewer.onDragChange = (dragging) => { state.draggingGizmo = dragging; };
 viewer.onTransformLive = (id, trs) => {                     // mid-drag: rebuild only, no fit
   viewer.setPartTransformLive(id, trs);
   updateDims();
 };
-viewer.onTransformCommit = (id, trs) => {                   // drag END: single commit + fit + panel sync
-  const p = partById(id);
-  if (p) p.trs = trs;
-  viewer.setPartTransform(id, trs);
-  updateDims();
-  updateOrbitPivot();       // commit only — never inside onTransformLive
-  tools.onPartsChanged();   // re-prefill an open TRANSFORM tool (TRS panel sync)
-  markSourceMoved(p);
-};
+viewer.onTransformCommit = (id, trs) => commitTransform(id, trs);   // drag END: single commit
 
-// Moving a SOURCE out from under its lattice makes the lattice stale (the lattice
-// itself does not move — only the ghost does), so GENERATE re-takes the fill.
+// Moving a SOURCE out from under its lattice makes the lattice stale, so
+// GENERATE re-takes the fill. Wave-4: the gizmo/plate/lay-flat paths can no
+// longer reach a linked ghost (selection routes to the lattice, and the lattice
+// carries its ghosts), so the only caller left is the TRANSFORM tool.
 function markSourceMoved(p) {
   if (!p || p.isResult || !p.ghosted || !state.resultFresh) return;
   state.resultFresh = false;
@@ -1179,28 +1596,26 @@ viewer.onLayFlat = (id, trs) => {                           // one-shot face pic
   state.layFlatArmed = false;
   document.body.classList.remove('layflat-armed');
   if (trs) {
-    const p = partById(id);
-    if (p) p.trs = trs;
-    viewer.setPartTransform(id, trs);
-    updateDims();
-    updateOrbitPivot();
-    tools.onPartsChanged();
-    markSourceMoved(p);
+    commitTransform(id, trs);
     ui.toast('Laid flat on Z = 0.', 'success', 2500);
   }
   syncSelToolbar();
 };
 
 // Escape clears selection — but only when no contextual tool owns Escape
-// (tools.js closes an open tool first). Arming LAY FLAT cancels before deselect.
+// (tools.js closes an open tool first) and no HUD dialog is up. One keypress =
+// one action: with the MCP modal open, Escape closes the modal and NOTHING else.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || tools.isOpen()) return;
+  if (e.key !== 'Escape' || tools.isOpen() || modalOpen()) return;
   if (state.layFlatArmed) { cancelLayFlat(); return; }
   if (state.selectedPartId) clearSelection();
 });
 
 // Expose for Stage-4 browser verification (selection/gizmo/section checks).
-window.__anvil = { viewer, state, selectPart, setGizmoMode, armLayFlat };
+window.__anvil = {
+  viewer, state, selectPart, setGizmoMode, armLayFlat,
+  history, commitTransform, deletePart, consumeSources, partById, flagsSnapshot,
+};
 
 // ── init ──────────────────────────────────────────────────────────────
 ui.initSteppers();

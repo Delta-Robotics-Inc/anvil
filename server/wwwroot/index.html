@@ -43,7 +43,17 @@
       <span id="conn-dot" class="conn-dot"></span>
       <span id="conn-txt" class="label">connecting</span>
     </div>
+    <!-- Wave-4 UNDO — ↶ / ↷ mirror Ctrl+Z / Ctrl+Shift+Z; disabled when the
+         matching stack is empty (main.js drives them from history.onChange). -->
+    <button type="button" id="undo-btn" class="hdr-link hdr-ico" aria-label="Undo" title="Nothing to undo (Ctrl+Z)" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.1-9.4L3 7"/></svg>
+    </button>
+    <button type="button" id="redo-btn" class="hdr-link hdr-ico" aria-label="Redo" title="Nothing to redo (Ctrl+Shift+Z)" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.1-9.4L21 7"/></svg>
+    </button>
     <a id="scripts-btn" class="hdr-link" href="#" hidden>SCRIPTS</a>
+    <!-- MCP is always visible: the server it documents is the one serving this page. -->
+    <a id="mcp-btn" class="hdr-link" href="#" role="button" aria-haspopup="dialog">MCP</a>
     <a id="feedback-btn" class="hdr-link" href="#" target="_blank" rel="noopener" hidden>FEEDBACK</a>
   </header>
 
@@ -64,13 +74,9 @@
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="combine">
-      <button type="button" class="tb-btn" id="tb-bool" data-tip="Boolean — union, difference or intersection of two parts (MAIN − SECONDARY).">
+      <button type="button" class="tb-btn" id="tb-bool" data-tip="Boolean — combine two parts: UNION (A+B), DIFFERENCE (A−B), INTERSECT (A∩B) or SMOOTH (filleted union that blends the seam). Both sources are consumed by the result.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg>
         <span class="tb-label">BOOL</span>
-      </button>
-      <button type="button" class="tb-btn" id="tb-merge" data-tip="Merge — smooth (filleted) union of two parts.">
-        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="11" height="11" rx="2"/><rect x="9" y="8" width="11" height="11" rx="2"/></svg>
-        <span class="tb-label">MERGE</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
@@ -248,9 +254,9 @@
             <div class="zone-legend">
               <span class="zl-item"><i class="zl-dot" style="--zc:#4da3ff"></i>LATTICE</span>
               <span class="zl-item"><i class="zl-dot" style="--zc:#47c86e"></i>KEEP</span>
-              <span class="zl-item"><i class="zl-dot" style="--zc:#ff4747"></i>VOID</span>
+              <span class="zl-item"><i class="zl-dot" style="--zc:#e8e8e8"></i>VOID</span>
             </div>
-            <p class="zone-promise">Lattice fills <b class="zp-l">blue</b> zones, stays <b>SKIN</b> mm inside the surface, keeps <b class="zp-k">green</b> solid, never enters <b class="zp-v">red</b> (+<b>GROW</b> mm).</p>
+            <p class="zone-promise">Lattice fills <b class="zp-l">blue</b> zones, stays <b>SKIN</b> mm inside the surface, keeps <b class="zp-k">green</b> solid, never enters <b class="zp-v">white</b> (+<b>GROW</b> mm).</p>
             <div class="param-grid grid grid-cols-2 gap-[10px]">
               <label class="param param-wide" for="z-skin">
                 <span class="label has-tip" data-tip="Inward skin off the base part surface the lattice keeps clear (single mode). Blue zones stay this many mm inside the wall.">Skin <em>mm</em></span>
@@ -272,7 +278,7 @@
                 </span>
               </label>
               <label class="param param-wide" for="z-keepout">
-                <span class="label has-tip" data-tip="Outward growth of red VOID zones. The lattice (and body) is carved back this many mm around every void — a safety margin.">Keep-out grow <em>mm</em></span>
+                <span class="label has-tip" data-tip="Outward growth of the white VOID zones. The lattice (and body) is carved back this many mm around every void — a safety margin.">Keep-out grow <em>mm</em></span>
                 <span class="step-group">
                   <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease keep-out grow">−</button>
                   <span class="field"><input id="z-keepout" type="number" value="0.5" min="0" step="0.1" /></span>
@@ -410,7 +416,7 @@
           <div id="progress-wrap" class="progress-wrap hidden">
             <div class="progress-row">
               <span id="progress-stage" class="progress-stage">Starting&hellip;</span>
-              <button id="cancel-btn" class="btn cancel-btn" type="button" style="--c:var(--amber)">Cancel</button>
+              <button id="cancel-btn" class="btn cancel-btn" type="button">Cancel</button>
             </div>
             <div class="bar"><i id="progress-fill" class="progress-fill"></i></div>
           </div>
@@ -442,10 +448,14 @@
         <button type="button" class="sel-btn" id="sel-scale" data-mode="scale" data-tip="Scale the selected part (drag the handles).">SCALE</button>
         <span class="sel-sep" aria-hidden="true"></span>
         <button type="button" class="sel-btn" id="sel-layflat" data-tip="Lay flat — then click a face to rest it on Z = 0.">LAY FLAT</button>
+        <button type="button" class="sel-btn" id="sel-drop" data-tip="Drop to the plate — rest the selection on Z = 0 without rotating it.">DROP</button>
       </div>
 
       <!-- floating right-edge vertical view strip -->
       <div class="view-strip" id="view-strip" role="group" aria-label="View controls">
+        <button type="button" class="vstrip-btn" id="vp-home" data-tip="Home view — the default camera: isometric, Z up, framed on everything visible." aria-label="Home view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10.5 9-7 9 7V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9.5 21v-6h5v6"/></svg>
+        </button>
         <button type="button" class="vstrip-btn" id="vp-fit" data-tip="Fit camera to visible objects." aria-label="Fit view">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg>
         </button>

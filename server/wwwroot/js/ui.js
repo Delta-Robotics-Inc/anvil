@@ -102,14 +102,16 @@ export const els = {
 
   connDot: document.getElementById('conn-dot'),
   connTxt: document.getElementById('conn-txt'),
+  undoBtn:     document.getElementById('undo-btn'),   // Wave-4 UNDO — header ↶
+  redoBtn:     document.getElementById('redo-btn'),   // Wave-4 UNDO — header ↷
   feedbackBtn: document.getElementById('feedback-btn'),
+  mcpBtn:      document.getElementById('mcp-btn'),
   toastStack:  document.getElementById('toast-stack'),
 
   // ── CAD workspace shell (toolbar · panels · viewport chrome) ──────────
   tbImport:   document.getElementById('tb-import'),
   tbPrim:     document.getElementById('tb-prim'),
   tbBool:     document.getElementById('tb-bool'),
-  tbMerge:    document.getElementById('tb-merge'),
   tbShell:    document.getElementById('tb-shell'),
   tbOffset:   document.getElementById('tb-offset'),
   tbXform:    document.getElementById('tb-xform'),
@@ -153,8 +155,9 @@ export const els = {
 };
 
 const ROLE_TIP = 'BASE: Part = gyroidize the whole part; one Positive + one Negative = fuse. '
-               + 'ZONES: Lattice (blue) / Keep-solid (green) / Void (red) regions layered on a base part.';
+               + 'ZONES: Lattice (blue) / Keep-solid (green) / Void (white) regions layered on a base part.';
 const GHOST_TIP = 'source of the current lattice — delete the lattice to edit';
+const CONSUMED_TIP = 'consumed by a boolean — delete the result to restore';
 const ROLE_GROUP_LABEL = { base: 'BASE', zone: 'ZONES' };
 
 // ── Parts list ────────────────────────────────────────────────────────
@@ -180,7 +183,8 @@ export function renderParts(parts, pending, handlers) {
     row.className = 'part-row'
       + (handlers.selectedId === p.id ? ' selected' : '')
       + (p.isResult ? ' is-result' : '')
-      + (p.ghosted ? ' ghosted' : '');
+      + (p.ghosted ? ' ghosted' : '')
+      + (p.consumed ? ' consumed' : '');
     row.dataset.id = p.id;
     row.style.setProperty('--role-color', roleColorHex(p.role));
     // Row click selects the part (state-derived `.selected` class + viewer tint).
@@ -207,7 +211,8 @@ export function renderParts(parts, pending, handlers) {
     // ::before/::after, and a real border would drop on the corner cuts).
     const roleWrap = document.createElement('span');
     roleWrap.className = 'field field-role';
-    roleWrap.setAttribute('data-tip', p.ghosted ? GHOST_TIP : ROLE_TIP);   // HUD hover tooltip
+    // HUD hover tooltip — a locked row explains WHY it is locked.
+    roleWrap.setAttribute('data-tip', p.consumed ? CONSUMED_TIP : p.ghosted ? GHOST_TIP : ROLE_TIP);
     const role = document.createElement('select');
     role.className = 'part-role';
     role.name = `role-${p.id}`;
@@ -230,10 +235,13 @@ export function renderParts(parts, pending, handlers) {
     role.addEventListener('change', () => handlers.onRoleChange(p.id, role.value));
     roleWrap.appendChild(role);
 
-    // Role column, three shapes:
-    //   lattice part  → a static LATTICE tag (its role is not the user's to set)
-    //   ghosted source→ GHOST regmark + a LOCKED role select (it feeds the lattice)
-    //   anything else → the plain role select
+    // Role column, four shapes:
+    //   lattice part   → a static LATTICE tag (its role is not the user's to set)
+    //   consumed source→ USED · BOOL|SMOOTH regmark + a LOCKED role select: it was
+    //                    absorbed by a boolean result and is out of the mode logic
+    //                    until that result is deleted (eye + delete stay live).
+    //   ghosted source → GHOST regmark + a LOCKED role select (it feeds the lattice)
+    //   anything else  → the plain role select
     let roleSlot = roleWrap;
     if (p.isResult) {
       const tag = document.createElement('span');
@@ -241,6 +249,16 @@ export function renderParts(parts, pending, handlers) {
       tag.textContent = 'LATTICE';
       tag.title = p.derived?.label || 'Generated lattice';
       roleSlot = tag;
+    } else if (p.consumed) {
+      role.disabled = true;
+      role.title = CONSUMED_TIP;
+      const cell = document.createElement('div');
+      cell.className = 'role-cell';
+      const mark = document.createElement('span');
+      mark.className = 'regmark ghost-mark used-mark';
+      mark.textContent = `USED · ${p.consumedKind || 'BOOL'}`;
+      cell.append(mark, roleWrap);
+      roleSlot = cell;
     } else if (p.ghosted) {
       role.disabled = true;
       role.title = GHOST_TIP;
@@ -591,7 +609,7 @@ export function showResult(stats) {
   else hideFlow();
 }
 
-// Watertight chip (green ✓ / amber N OPEN EDGES) + optional island-removal note.
+// Watertight chip (green ✓ / --primary N OPEN EDGES) + optional island-removal note.
 function renderWatertight(stats) {
   if (els.wtChip && stats?.watertight != null) {
     const ok = !!stats.watertight;
@@ -689,8 +707,10 @@ function renderFlowWarnings(warnings) {
 }
 
 // Sparkline — HUD TREND style (see apps/hud drawGraph): --primary open-area
-// line with a subtle fill, a --dim envelope reference line, and an AMBER choke
-// marker (dashed tick + dot) at minAtMM. Crisp on devicePixelRatio.
+// line with a subtle fill, a --dim envelope reference line, and a CYAN choke
+// marker (dashed tick + dot) at minAtMM. Cyan is the cool "measurement" hue —
+// it separates cleanly from the warm --primary trace without reading as an
+// alarm (the HUD carries no red/amber at all). Crisp on devicePixelRatio.
 //
 // Hover: pointermove snaps a --line crosshair to the nearest profile bin and
 // paints an on-canvas readout (position · open · gross · % open). The plot
@@ -726,7 +746,7 @@ export function drawFlowSpark() {
   const X = (v) => xL + ((v - pMin) / pSpan) * (xR - xL);
   const Y = (a) => yB - (Math.max(0, Math.min(a, aMax)) / aMax) * (yB - yT);
   const c = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const prim = c('--primary'), dim = c('--dim'), line = c('--line'), amber = c('--amber');
+  const prim = c('--primary'), dim = c('--dim'), line = c('--line'), choke = c('--cyan');
 
   // baseline
   g.strokeStyle = line; g.lineWidth = 1; g.globalAlpha = 0.6;
@@ -751,11 +771,11 @@ export function drawFlowSpark() {
   const cx = flowState.minAtMM;
   if (cx != null && cx >= pMin && cx <= pMax) {
     const mx = X(cx);
-    g.strokeStyle = amber; g.lineWidth = 1; g.setLineDash([3, 3]); g.globalAlpha = 0.85;
+    g.strokeStyle = choke; g.lineWidth = 1; g.setLineDash([3, 3]); g.globalAlpha = 0.85;
     g.beginPath(); g.moveTo(mx, yT); g.lineTo(mx, yB); g.stroke();
     g.setLineDash([]); g.globalAlpha = 1;
     const my = Y(flowState.minOpenAreaMM2 ?? 0);
-    g.fillStyle = amber; g.shadowColor = amber; g.shadowBlur = 6;
+    g.fillStyle = choke; g.shadowColor = choke; g.shadowBlur = 6;
     g.beginPath(); g.arc(mx, my, 3, 0, Math.PI * 2); g.fill(); g.shadowBlur = 0;
   }
 
@@ -1206,9 +1226,10 @@ export function initTooltips() {
 }
 
 // ── Toasts (styled as HUD warnbars: hazard-stripe block + message) ─────
-// No red in the feedback layer — errors and warnings share --amber and are
-// distinguished by the toast copy (and by how long they stick around).
-const HZ_COLOR = { error: 'var(--amber)', warn: 'var(--amber)', success: 'var(--green)', info: 'var(--primary)' };
+// The feedback layer carries NO hazard hue: errors are bright neutral --fg
+// stripes, warnings drop to --dim. Severity is read from the copy and from how
+// long the toast sticks around, not from a colour the user has to decode.
+const HZ_COLOR = { error: 'var(--fg)', warn: 'var(--dim)', success: 'var(--green)', info: 'var(--primary)' };
 
 export function toast(message, kind = 'info', timeout = 6000) {
   const el = document.createElement('div');
@@ -1241,6 +1262,120 @@ export function setHealth(kind, label) {
   els.connDot.className = 'conn-dot' + (kind ? ` ${kind}` : '');
   if (els.connTxt) els.connTxt.textContent = label;
 }
+
+// ── MCP dialog (header MCP button) ────────────────────────────────────
+// Read-only "how do I point an agent at this?" card, built lazily on first
+// open and reused after. Everything it shows is derived from where the page is
+// actually served from, so it can never drift from reality:
+//   endpoint  = location.origin + '/mcp'
+//   setup     = the `claude mcp add` line for that endpoint
+//   docs link = read off the FEEDBACK button, which main.js's health poll
+//               already points at repoUrl (hidden when the server reports none)
+// Self-wiring at module load — ui.js is an ES module, so it runs after parse
+// and els.mcpBtn is already resolved. There is no init call to add to main.js.
+const MCP_BLURB = '20 tools: parts, primitives, booleans, zoned lattice generation, flow metrics, '
+                + 'STEP export, C# scripting. Works with any MCP client that speaks streamable HTTP.';
+const MCP_NOTE  = 'The server must be running (it is — you\'re looking at it). Loopback only.';
+
+function mcpDocsUrl() {
+  const fb = els.feedbackBtn;
+  if (!fb || fb.hidden || !fb.getAttribute('href') || fb.getAttribute('href') === '#') return '';
+  // main.js sets FEEDBACK to `<repoUrl>/issues/new`; the repo root renders the README.
+  return fb.href.replace(/\/issues\/new\/?$/, '');
+}
+
+function initMcpDialog() {
+  const btn = els.mcpBtn;
+  if (!btn) return;
+  let overlay = null, docsLink = null, lastFocus = null;
+
+  const endpoint = `${location.origin}/mcp`;
+  const addCmd = `claude mcp add anvil --transport http --url ${endpoint}`;
+
+  function copyRow(labelHtml, value) {
+    return `
+      <div class="mcp-sec">
+        <span class="label">${labelHtml}</span>
+        <div class="mcp-cmd">
+          <code>${escapeHtml(value)}</code>
+          <button type="button" class="mcp-copy" data-copy="${escapeHtml(value)}" aria-label="Copy">COPY</button>
+        </div>
+      </div>`;
+  }
+
+  function build() {
+    const el = document.createElement('div');
+    el.className = 'hud-overlay';
+    el.hidden = true;
+    el.innerHTML = `
+      <div class="hud-card mcp-card" role="dialog" aria-modal="true" aria-label="MCP agent access">
+        <div class="hud-head">
+          <span class="label">MCP <span class="slash">//</span> AGENT ACCESS</span>
+          <button type="button" class="hud-close" aria-label="Close">✕</button>
+        </div>
+        <div class="hud-body">
+          <p class="mcp-lede">${escapeHtml(MCP_BLURB).replace('20 tools', '<b>20 tools</b>')}</p>
+          ${copyRow('ENDPOINT', endpoint)}
+          ${copyRow('CLAUDE CODE <span class="regmark">SETUP</span>', addCmd)}
+          <p class="mcp-note">${escapeHtml(MCP_NOTE)}</p>
+          <a class="btn mcp-docs" target="_blank" rel="noopener" hidden>FULL DOCS → README</a>
+        </div>
+      </div>`;
+
+    docsLink = el.querySelector('.mcp-docs');
+    el.querySelector('.hud-close').addEventListener('click', close);
+    el.addEventListener('click', (e) => { if (e.target === el) close(); });
+    el.addEventListener('click', (e) => {
+      const c = e.target.closest('.mcp-copy');
+      if (c) copy(c);
+    });
+    // ESC on the document, not just the overlay — a click on dead space inside
+    // the card moves focus to <body> and would otherwise swallow the key.
+    document.addEventListener('keydown', (e) => {
+      if (!el.hidden && e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+    // light focus trap: Tab cycles inside the card.
+    el.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      const f = [...el.querySelectorAll('button, a[href], [tabindex]:not([tabindex="-1"])')]
+        .filter((n) => !n.hidden && n.offsetParent !== null);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+    document.body.appendChild(el);
+    return el;
+  }
+
+  async function copy(b) {
+    const value = b.dataset.copy || '';
+    try { await navigator.clipboard.writeText(value); }
+    catch { /* clipboard blocked (no permission / insecure ctx) — fall through */ }
+    if (b._t) clearTimeout(b._t);
+    b.textContent = 'COPIED';
+    b.classList.add('copied');
+    b._t = setTimeout(() => { b.textContent = 'COPY'; b.classList.remove('copied'); }, 1400);
+  }
+
+  function open() {
+    if (!overlay) overlay = build();
+    const docs = mcpDocsUrl();
+    if (docs) { docsLink.href = docs; docsLink.hidden = false; }
+    else { docsLink.removeAttribute('href'); docsLink.hidden = true; }
+    lastFocus = document.activeElement;
+    overlay.hidden = false;
+    overlay.querySelector('.hud-close')?.focus();
+  }
+  function close() {
+    if (!overlay || overlay.hidden) return;
+    overlay.hidden = true;
+    lastFocus?.focus?.();
+  }
+
+  btn.addEventListener('click', (e) => { e.preventDefault(); open(); });
+}
+initMcpDialog();
 
 // ── Theme ─────────────────────────────────────────────────────────────
 // Dark-only HUD: the light theme + toggle were removed. These are kept as

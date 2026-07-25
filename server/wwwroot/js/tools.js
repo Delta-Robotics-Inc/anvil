@@ -16,6 +16,7 @@
 //     setPartTransform(id, trs)                   (live preview + persist)
 //     clearPartTransform(id)                      (APPLY bake → reset source TRS)
 //     runOp(body, onProgress) -> Promise<part|null>
+//     consumeSources(ids, resultId, kind)         (BOOL/SMOOTH: sources → USED)
 //     onStateChange()                             (→ main.updateAccents)
 //     toast(msg, kind, ms)
 //   }
@@ -73,7 +74,7 @@ function pickerControl(value, onChange) {
 }
 
 function segControl(options, value, onChange) {
-  const seg = el('div', 'seg');
+  const seg = el('div', 'seg' + (options.length >= 4 ? ' seg-4' : ''));
   seg.setAttribute('role', 'group');
   for (const opt of options) {
     const b = el('button', 'seg-btn' + (opt.val === value ? ' active' : ''));
@@ -166,11 +167,12 @@ const TOOLS = {
       let kind = 'box';       // box | cyl | sph | cone
       let shapeRead = null;   // () -> sizeMM { x, y, z }
       let inited = false;     // openTool's body-wide initSteppers wires the FIRST build
+      let zDirty = false;     // the user edited Z himself → stop auto-sitting on the plate
 
       const seg = segControl(
         [{ val: 'box', label: 'BOX' }, { val: 'cyl', label: 'CYL' },
          { val: 'sph', label: 'SPH' }, { val: 'cone', label: 'CONE' }],
-        'box', (val) => { kind = val; rebuild(); onChange(); });
+        'box', (val) => { kind = val; rebuild(); syncZ(); onChange(); });
 
       // Shape-specific fields live in their own flex column so the panel's
       // vertical rhythm is preserved when they are swapped on kind change.
@@ -179,9 +181,15 @@ const TOOLS = {
       shapeHost.style.flexDirection = 'column';
       shapeHost.style.gap = '12px';
 
+      // Everything is printed: Z0 is the plate. X/Y still default to the visible-
+      // union bbox centre, but Z defaults to HALF the primitive's height so the
+      // new part rests ON the bed (bbox min Z = 0) instead of straddling it.
       const cen = tripletStepper('Center', 'mm',
-        { x: round(c.x), y: round(c.y), z: round(c.z) }, 1,
-        'Placement of the primitive centre (defaults to the visible-union bbox centre).');
+        { x: round(c.x), y: round(c.y), z: 0 }, 1,
+        'Placement of the primitive centre. X/Y default to the visible-union bbox centre; '
+        + 'Z defaults to half the height so the part sits ON the plate (Z0 = print bed). '
+        + 'Type your own Z and it stops tracking the size.');
+      cen.inp.z.addEventListener('input', () => { zDirty = true; });
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
 
       host.append(
@@ -229,10 +237,23 @@ const TOOLS = {
           );
           shapeRead = () => { const d = num(dia.inp, 20); return { x: d, y: d, z: num(hgt.inp, 40) }; };
         }
+        // Every size/height/diameter edit re-seats the part on the plate (until
+        // the user takes Z over). The steppers dispatch a bubbling `input`, so
+        // both typing and −/＋ land here.
+        for (const inp of shapeHost.querySelectorAll('input[type="number"]'))
+          inp.addEventListener('input', () => { syncZ(); onChange(); });
         if (inited) ui.initSteppers(shapeHost);
       }
+
+      // Z default = half the primitive's height → bbox min Z lands on 0.
+      function syncZ() {
+        if (zDirty || !shapeRead) return;
+        cen.inp.z.value = String(round(shapeRead().z / 2));   // assignment fires no event
+      }
+
       rebuild();
       inited = true;
+      syncZ();
 
       return () => ({
         kind, size: shapeRead(), center: xyz(cen.inp), voxel: num(vox.inp, 0.3),
@@ -242,7 +263,8 @@ const TOOLS = {
       if (v.size.x <= 0 || v.size.y <= 0 || v.size.z <= 0)
         return { ok: false, note: 'Size must be > 0 on all axes', noteKind: 'err' };
       if (v.voxel <= 0) return { ok: false, note: 'Resolution must be > 0', noteKind: 'err' };
-      return { ok: true, note: `${v.kind.toUpperCase()} · placed at centre` };
+      const onPlate = Math.abs(v.center.z - v.size.z / 2) < 1e-6;
+      return { ok: true, note: `${v.kind.toUpperCase()} · ${onPlate ? 'sits on the plate (Z0)' : `centre Z ${round(v.center.z)} mm`}` };
     },
     build(v) {
       const kindMap = { box: 'box', cyl: 'cylinder', sph: 'sphere', cone: 'cone' };
@@ -253,7 +275,12 @@ const TOOLS = {
     },
   },
 
-  // ── BOOLEAN ──────────────────────────────────────────────────────────
+  // ── BOOLEAN (union · difference · intersect · smooth) ────────────────
+  // ONE combining tool. The first three submit `op:"boolean"`; SMOOTH is the old
+  // MERGE tool folded in — a filleted union, `op:"merge"` + filletMM. Whichever
+  // mode runs, the two sources are CONSUMED by the result (main.consumeSources):
+  // they stay listed for undo but leave the viewport and the mode logic, so the
+  // combined part is immediately a valid single base for GENERATE.
   boolean: {
     title: 'BOOLEAN', jp: '論理', confirm: 'CONFIRM', usesParts: true,
     render(host) {
@@ -263,23 +290,34 @@ const TOOLS = {
       const sec = pickerControl(b, () => onChange());
       const seg = segControl(
         [{ val: 'union', label: 'UNION' }, { val: 'difference', label: 'DIFFERENCE' },
-         { val: 'intersection', label: 'INTERSECTION' }],
+         { val: 'intersection', label: 'INTERSECT' }, { val: 'smooth', label: 'SMOOTH' }],
         'union', () => onChange());
       const hint = el('span', 'regmark tool-hint');
+      const blend = stepper({ value: 1, min: 0, step: 0.1 });
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
       host.append(
-        paramBlock('Main', main.el, { tip: 'Primary part.' }),
-        paramBlock('Secondary', sec.el, { tip: 'Second part.' }),
-        paramBlock('Operation', seg.el, { tip: 'Union (A+B), difference (A−B) or intersection (A∩B).' }),
+        paramBlock('Main', main.el, { tip: 'Primary part — consumed by the result.' }),
+        paramBlock('Secondary', sec.el, { tip: 'Second part — consumed by the result.' }),
+        paramBlock('Operation', seg.el,
+          { tip: 'Union (A+B), difference (A−B), intersect (A∩B), or smooth — a filleted union that blends the seam.' }),
       );
       const segWrap = host.lastChild; segWrap.appendChild(hint);
-      host.append(paramBlock('Resolution <em>voxel mm</em>', vox.el,
-        { tip: 'Voxel size for the boolean.' }));
-      const read = () => ({ main: main.get(), secondary: sec.get(), kind: seg.get(), voxel: num(vox.inp, 0.3) });
+      const blendBlock = paramBlock('Blend radius <em>mm</em>', blend.el,
+        { tip: 'SMOOTH only — fillet radius applied to the union, rounding the seam where the two parts meet.' });
+      host.append(blendBlock, paramBlock('Resolution <em>voxel mm</em>', vox.el,
+        { tip: 'Voxel size for this operation.' }));
+      blend.inp.addEventListener('input', () => onChange());
+      const read = () => ({ main: main.get(), secondary: sec.get(), kind: seg.get(),
+        blend: num(blend.inp, 1), voxel: num(vox.inp, 0.3) });
       function updateHint() {
         const v = read();
-        hint.textContent = v.kind === 'difference' ? 'MAIN − SECONDARY' :
-          v.kind === 'intersection' ? 'MAIN ∩ SECONDARY' : 'MAIN + SECONDARY';
+        // The blend radius belongs to SMOOTH alone — hidden in the other modes.
+        blendBlock.classList.toggle('param-off', v.kind !== 'smooth');
+        hint.textContent =
+          v.kind === 'difference'   ? 'MAIN − SECONDARY' :
+          v.kind === 'intersection' ? 'MAIN ∩ SECONDARY' :
+          v.kind === 'smooth'       ? `filleted union — blends the seam by ${round(v.blend)} mm` :
+                                      'MAIN + SECONDARY';
       }
       updateHint();
       cur._hint = updateHint;
@@ -288,39 +326,18 @@ const TOOLS = {
     validate(v) {
       if (!v.main || !v.secondary) return { ok: false, note: 'Pick two parts', noteKind: 'err' };
       if (v.main === v.secondary) return { ok: false, note: 'Main and Secondary must differ', noteKind: 'err' };
-      return { ok: true, note: '' };
+      if (v.kind === 'smooth' && v.blend < 0)
+        return { ok: false, note: 'Blend radius must be ≥ 0', noteKind: 'err' };
+      return { ok: true, note: 'both sources are consumed — delete the result to restore them' };
     },
     build(v) {
-      return { op: 'boolean', booleanKind: v.kind, voxelSizeMM: v.voxel,
-        inputs: [inputRef(v.main), inputRef(v.secondary)] };
+      const inputs = [inputRef(v.main), inputRef(v.secondary)];
+      return v.kind === 'smooth'
+        ? { op: 'merge',   voxelSizeMM: v.voxel, filletMM: v.blend, inputs }
+        : { op: 'boolean', voxelSizeMM: v.voxel, booleanKind: v.kind, inputs };
     },
-  },
-
-  // ── MERGE (smooth union) ─────────────────────────────────────────────
-  merge: {
-    title: 'MERGE', jp: '融合', confirm: 'CONFIRM', usesParts: true,
-    render(host) {
-      const parts = ctx.listParts();
-      const a = pickerControl(parts[0]?.id, () => onChange());
-      const b = pickerControl(parts[1]?.id ?? parts[0]?.id, () => onChange());
-      const blend = stepper({ value: 1, min: 0, step: 0.1 });
-      const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
-      host.append(
-        paramBlock('Part A', a.el, { tip: 'Primary part.' }),
-        paramBlock('Part B', b.el, { tip: 'Second part — smooth-unioned into Part A.' }),
-        paramBlock('Blend <em>mm</em>', blend.el, { tip: 'Fillet radius smoothing the union seam.' }),
-        paramBlock('Resolution <em>voxel mm</em>', vox.el, { tip: 'Voxel size for this operation.' }),
-      );
-      return () => ({ a: a.get(), b: b.get(), blend: num(blend.inp, 1), voxel: num(vox.inp, 0.3) });
-    },
-    validate(v) {
-      if (!v.a || !v.b) return { ok: false, note: 'Pick two parts', noteKind: 'err' };
-      if (v.a === v.b) return { ok: false, note: 'Parts must differ', noteKind: 'err' };
-      return { ok: true, note: '' };
-    },
-    build(v) {
-      return { op: 'merge', voxelSizeMM: v.voxel, filletMM: v.blend,
-        inputs: [inputRef(v.a), inputRef(v.b)] };
+    afterConfirm(v, part) {
+      ctx.consumeSources([v.main, v.secondary], part.id, v.kind === 'smooth' ? 'SMOOTH' : 'BOOL');
     },
   },
 
@@ -584,7 +601,7 @@ export function onPartsChanged() {
 
 function syncToolbarActive(id) {
   const map = {
-    primitive: 'tbPrim', boolean: 'tbBool', merge: 'tbMerge', shell: 'tbShell',
+    primitive: 'tbPrim', boolean: 'tbBool', shell: 'tbShell',
     offset: 'tbOffset', transform: 'tbXform', mirror: 'tbMirror', duplicate: 'tbDupe',
   };
   for (const [tool, key] of Object.entries(map)) {

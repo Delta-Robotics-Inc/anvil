@@ -19,8 +19,14 @@
   --bg:oklch(0.2178 0 0); --fg:oklch(0.8853 0 0); --card:oklch(0.2435 0 0);
   --primary:oklch(0.6837 0.2120 40.5923); --muted:oklch(0.2850 0 0);
   --dim:oklch(0.5999 0 0); --line:oklch(0.3290 0 0);
-  --green:oklch(0.74 0.17 150); --yellow:oklch(0.82 0.16 92);
-  --amber:oklch(0.72 0.18 55); --red:oklch(0.6627 0.2067 24.78); --cyan:oklch(0.75 0.11 215);
+  --green:oklch(0.74 0.17 150); --cyan:oklch(0.75 0.11 215);
+  /* RETIRED HUES — defined for reference only; NOTHING in the app may consume
+     these. Wave-4 swept every red/amber/yellow out of the UI: running states are
+     --primary, errors/warnings use the neutral gray advisory treatment, the flow
+     choke marker is --cyan, and zone VOID is --fg white. If you find yourself
+     reaching for one of these, reach for a gray instead. */
+  --yellow:oklch(0.82 0.16 92);
+  --amber:oklch(0.72 0.18 55); --red:oklch(0.6627 0.2067 24.78);
   --font-mono:"Kode Mono",ui-monospace,monospace; --jp:"Noto Sans JP","Kode Mono",sans-serif;
 
   /* role colors — single source of truth is js/roles.js; these mirror it so
@@ -28,12 +34,16 @@
      orange, not blue), Positive = --green, Negative = --primary orange. */
   --role-part:var(--primary); --role-pos:var(--green); --role-neg:var(--primary);
 
-  /* aliases kept so inline var(--…) references in the JS keep resolving */
-  /* --danger points at --amber on purpose: the HUD has no red feedback state.
-     --red stays defined only so the zone-VOID role colour (roles.js) has a
-     palette entry; nothing in the UI feedback layer consumes it. */
-  --accent:var(--primary); --warn:var(--amber); --danger:var(--amber); --success:var(--green);
+  /* aliases kept so inline var(--…) references in the JS keep resolving.
+     --warn/--danger are NEUTRAL on purpose: the HUD has no hazard hue at all.
+     A warning is a quiet gray advisory; an error is plain --fg text on that
+     same gray block. Severity is carried by the copy, not by colour. */
+  --accent:var(--primary); --warn:var(--dim); --danger:var(--fg); --success:var(--green);
   --border-strong:var(--line);
+
+  /* the one advisory ink: quieter than --fg, brighter than --dim. Every warning
+     / caution / "heads up" line in the HUD uses it. Errors step up to --fg. */
+  --advisory:color-mix(in oklch,var(--dim) 45%,var(--fg));
 
   --sidebar-w:376px;
 }
@@ -146,23 +156,36 @@ body::after {
 .seg-btn:focus-visible { color:var(--fg); }
 .fchip:focus-visible  { color:var(--fg); }
 .icon-btn:focus-visible { color:var(--fg); background:var(--card); }
-.icon-btn.danger:focus-visible { color:var(--amber); background:color-mix(in oklch,var(--amber) 18%,transparent); }
+.icon-btn.danger:focus-visible { color:var(--fg); background:color-mix(in oklch,var(--fg) 14%,transparent); }
 .vstrip-btn:focus-visible:not(:disabled) { color:var(--primary); }
 .disc-head:focus-visible { color:var(--fg); }
 .panel-chevron:focus-visible { color:var(--primary); }
 
 /* generate: bigger, and pulse while a job runs (stays lit even though disabled).
-   The running fill is AMBER (running / needs-attention semantics, matching the
-   amber CANCEL button + toolbar). It remains the sole solid fill on screen. */
+   The running fill stays --primary — the same hue the armed button already held,
+   so RUNNING reads as "the accent is busy" rather than as a new hazard colour.
+   It remains the sole solid fill on screen; CANCEL sits beside it as an
+   ORANGE OUTLINE (never filled), so the accent budget is untouched. */
 .gen-btn { height:44px; font-size:.8rem; margin-top:2px; }
-.btn.generating { --c:var(--amber); color:var(--bg); opacity:1 !important; animation:cycpulse-run 1.4s ease-in-out infinite; }
-.cancel-btn { letter-spacing:.16em; padding:7px 12px; }
+.btn.generating { --c:var(--primary); color:var(--bg); opacity:1 !important; animation:cycpulse-run 1.4s ease-in-out infinite; }
+/* .generating paints its OWN fill rather than waiting for .solid: the accent
+   state machine can hand .solid to an open tool's CONFIRM instead, and without
+   this the --bg text would sit on a --bg plate (invisible RUNNING button). */
+.btn.generating::after { background:var(--c); }
+/* …and because RUNNING now always claims a fill, whatever else held the single
+   solid slot has to step back for the duration, or two plates burn at once.
+   A running job outranks an open tool's CONFIRM. */
+body:has(.btn.generating) .btn.solid:not(.generating) { color:var(--c); }
+body:has(.btn.generating) .btn.solid:not(.generating)::after { background:var(--bg); }
+.cancel-btn { --c:var(--primary); letter-spacing:.16em; padding:7px 12px; }
 
 /* ── Header conn indicator ────────────────────────────────────────────── */
 .conn-dot { width:9px; height:9px; border-radius:50%; background:var(--dim); transition:background .2s,box-shadow .2s; }
 .conn-dot.ok   { background:var(--green); box-shadow:0 0 9px var(--green); }
-.conn-dot.warn { background:var(--amber); box-shadow:0 0 9px var(--amber); }
-.conn-dot.err  { background:var(--amber); box-shadow:0 0 9px var(--amber); }
+/* degraded/down are GRAY, not hazard-coloured: a dot that stops glowing green
+   already reads as "not ready", and a dead gray dot reads as down. */
+.conn-dot.warn { background:var(--dim); box-shadow:0 0 9px color-mix(in oklch,var(--dim) 55%,transparent); }
+.conn-dot.err  { background:var(--dim); box-shadow:none; opacity:.7; }
 .brand-title .slash { color:var(--primary); }
 .anvil-logo { height:16px; width:auto; color:var(--fg); flex:none; filter:drop-shadow(0 0 3px color-mix(in oklch,var(--fg) 30%,transparent)); }
 header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] utility doesn't compile in this runtime build */
@@ -291,7 +314,7 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
 .part-tools .icon-btn:first-child::after { inset:-5px -1px -5px -8px; } /* eye → role gap */
 .part-tools .icon-btn:last-child::after  { inset:-5px -9px -5px -1px; } /* delete → row padding */
 .icon-btn:hover { background:var(--card); color:var(--fg); }
-.icon-btn.danger:hover { background:color-mix(in oklch,var(--amber) 18%,transparent); color:var(--amber); }
+.icon-btn.danger:hover { background:color-mix(in oklch,var(--fg) 14%,transparent); color:var(--fg); }
 .icon-btn.off { color:color-mix(in oklch,var(--dim) 55%,var(--bg)); }
 
 /* ── Pending upload placeholder rows ──────────────────────────────────── */
@@ -449,7 +472,7 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
   color:var(--dim); text-align:center;
 }
 .mode-note.ok { color:var(--green); }
-.mode-note.warn { color:var(--amber); }
+.mode-note.warn { color:var(--advisory); }
 
 .progress-wrap { margin-top:12px; }
 .progress-wrap.hidden { display:none; }
@@ -485,8 +508,10 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 }
 .step-status.hidden { display:none; }
 .step-status.ok  { color:var(--green); border-left-color:var(--green); }
-.step-status.warn { color:var(--amber); border-left-color:var(--amber); }
-.step-status.err { color:var(--amber); border-left-color:var(--amber); }
+/* warn = advisory ink, err = full --fg — both keep the neutral --line rule so
+   nothing in the results column shouts in a hazard hue. */
+.step-status.warn { color:var(--advisory); border-left-color:var(--line); }
+.step-status.err  { color:var(--fg); border-left-color:var(--line); }
 .step-status a { color:var(--primary); font-weight:700; }
 
 /* ── Spinner ──────────────────────────────────────────────────────────── */
@@ -632,7 +657,9 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 .fl-sw { display:block; width:10px; height:2px; flex:none; }
 .fl-sw-open  { background:var(--primary); box-shadow:0 0 5px color-mix(in oklch,var(--primary) 65%,transparent); }
 .fl-sw-env   { background:var(--dim); }
-.fl-sw-choke { background:linear-gradient(90deg,var(--amber) 0 3px,transparent 3px 5px); background-size:5px 2px; }
+/* the choke marker is --cyan: a cool "measurement" hue that reads as a callout
+   on the warm --primary trace without ever reading as an alarm. */
+.fl-sw-choke { background:linear-gradient(90deg,var(--cyan) 0 3px,transparent 3px 5px); background-size:5px 2px; }
 
 /* metric list — 1px gaps over a line-coloured backing give hairline dividers */
 .flow-metrics {
@@ -653,7 +680,7 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 .fl-warn {
   display:block; width:100%; text-align:left;
   padding:8px 10px; font-size:10px; font-weight:400; line-height:1.6; letter-spacing:.04em;
-  color:color-mix(in oklch,var(--dim) 45%,var(--fg));
+  color:var(--advisory);
   background:color-mix(in oklch,var(--fg) 5%,transparent);
   border-left:2px solid var(--line);
 }
@@ -747,13 +774,14 @@ body.drag-active .viewport::after { opacity:1; }
 .tb-btn.active::before { background:transparent; }
 .tb-btn.active::after  { background:linear-gradient(to top,var(--primary) 0 1px,transparent 1px),var(--card); }
 
-/* GENERATE toolbar mirror (Fix 1): never filled. Armed = text-orange; running =
-   amber pulsing text/icon (keeps the % readout via JS); normal disabled otherwise. */
+/* GENERATE toolbar mirror (Fix 1): never filled. Armed = static text-orange;
+   running = the SAME orange, pulsing (keeps the % readout via JS). The motion
+   carries "running", not a hue change. Normal disabled otherwise. */
 .tb-btn.tb-primary.armed { color:var(--primary); }
-.tb-btn.tb-primary.generating { color:var(--amber); opacity:1 !important; animation:cycpulse-run 1.4s ease-in-out infinite; }
+.tb-btn.tb-primary.generating { color:var(--primary); opacity:1 !important; animation:cycpulse-run 1.4s ease-in-out infinite; }
 @keyframes cycpulse-run {
-  0%,100% { filter:drop-shadow(0 0 2px var(--amber)); }
-  50%     { filter:drop-shadow(0 0 10px var(--amber)); }
+  0%,100% { filter:drop-shadow(0 0 2px var(--primary)); }
+  50%     { filter:drop-shadow(0 0 10px var(--primary)); }
 }
 
 /* ── Regions 3/4 — collapsible panels ────────────────────────────────── */
@@ -946,8 +974,8 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
   color:var(--dim); text-align:center; min-height:14px;
 }
 .tool-note.ok   { color:var(--green); }
-.tool-note.warn { color:var(--amber); }
-.tool-note.err  { color:var(--amber); }
+.tool-note.warn { color:var(--advisory); }
+.tool-note.err  { color:var(--fg); }
 .tool-progress { margin-top:11px; display:flex; align-items:center; gap:9px; color:var(--primary); }
 .tool-progress.hidden { display:none; }
 .tool-prog-stage {
@@ -956,7 +984,7 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 }
 /* per-tool inline sub-notes (e.g. difference "MAIN − SECONDARY", offset warn) */
 .tool-hint { display:block; margin-top:6px; }
-.tool-hint.warn { color:var(--amber); }
+.tool-hint.warn { color:var(--advisory); }
 /* CENTER/APPLY inline action buttons inside the TRANSFORM tool */
 .tool-actions { display:flex; gap:7px; margin-top:2px; }
 .tool-actions .btn { flex:1 1 0; padding:8px 10px; }
@@ -967,18 +995,21 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 .zone-legend { display:flex; gap:14px; margin-bottom:10px; }
 .zone-promise { font-size:9.5px; line-height:1.55; letter-spacing:.02em; color:var(--dim); margin:0 0 12px; }
 .zone-promise b { font-weight:600; color:var(--fg); }
+/* zone swatch inks mirror roles.js ROLE_COLORS exactly. VOID is WHITE — "void =
+   empty = nothing there" — and stays clearly apart from lattice blue + keep green. */
 .zone-promise .zp-l { color:#4da3ff; }
 .zone-promise .zp-k { color:#47c86e; }
-.zone-promise .zp-v { color:#ff4747; }
+.zone-promise .zp-v { color:#e8e8e8; }
 .zl-item { display:inline-flex; align-items:center; gap:6px; font-size:9px; letter-spacing:.12em; color:var(--dim); }
 .zl-dot {
   width:9px; height:9px; flex:none; background:var(--zc,var(--dim));
   box-shadow:0 0 7px color-mix(in oklch,var(--zc,var(--dim)) 62%,transparent);
   clip-path:polygon(0 0,calc(100% - 3px) 0,100% 3px,100% 100%,3px 100%,0 calc(100% - 3px));
 }
+/* "V2" = not-yet-shipped, which is information, not a warning — plain gray. */
 .v2-tag {
-  background:transparent; color:color-mix(in oklch,var(--amber) 88%,var(--fg));
-  border:1px solid color-mix(in oklch,var(--amber) 42%,transparent);
+  background:transparent; color:var(--advisory);
+  border:1px solid var(--line);
   clip-path:none; padding:1px 5px; letter-spacing:.06em; text-transform:none;
 }
 
@@ -1011,7 +1042,8 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
    a muddy cramped pill. This is a HUD status line: near-transparent wash, a
    1px currentColor rim, generous tracking, and a single chamfered corner so it
    sits in the design language without reading as a button.
-   .ok → --green "WATERTIGHT ✓"; .warn → --amber "N OPEN EDGES".
+   .ok → --green "WATERTIGHT ✓"; .warn → --primary "N OPEN EDGES" (the accent
+   flags "look at this", and it is an outline chip so the solid fill is safe).
    Vertical rhythm: 8px clear above (stats grid ships mb-3 = 12px, so -4px
    trims it to 8) and 8px clear below to the cleanup regmark. */
 .result-chips { display:flex; flex-wrap:wrap; gap:6px; margin:-4px 0 8px; }
@@ -1037,51 +1069,126 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 }
 .wt-chip:empty { display:none; }
 .wt-chip.ok   { color:var(--green); }
-.wt-chip.warn { color:var(--amber); }
+.wt-chip.warn { color:var(--primary); }
 .cleanup-note { margin:0 0 10px; color:color-mix(in oklch,var(--dim) 78%,var(--fg)); }
 .cleanup-note.hidden { display:none; }
 
-/* ── SCRIPTS panel (Stage 5 — code-to-geometry) ───────────────────────── */
-.scripts-overlay {
+/* ══════════════════════════════════════════════════════════════════════
+   ── HUD MODAL SHELL ──
+   One dialog component, shared by the SCRIPTS panel and the MCP dialog. Both
+   used to (or would) hand-roll their own overlay; this is the single source.
+
+   The card is a TWO-LAYER chamfer, never a real `border` — a border on a
+   clip-path element loses its hairline on the diagonal corner cuts (see the
+   file header). ::before is the --line rim, ::after is the --card fill inset
+   1px. Head/foot rules are real 1px borders on non-clipped children, which is
+   fine because those children have square corners.
+   ══════════════════════════════════════════════════════════════════════ */
+.hud-overlay, .scripts-overlay {
   position:fixed; inset:0; z-index:100;
   display:flex; align-items:flex-start; justify-content:center; padding:64px 16px;
   background:color-mix(in oklch,var(--bg) 55%,transparent); backdrop-filter:blur(3px);
+  animation:hud-overlay-in .16s ease;
 }
-.scripts-overlay[hidden] { display:none; }
-.scripts-panel {
+.hud-overlay[hidden], .scripts-overlay[hidden] { display:none; }
+@keyframes hud-overlay-in { from { opacity:0; } to { opacity:1; } }
+
+.hud-card, .scripts-panel {
+  position:relative; isolation:isolate;
   width:min(560px,94vw); max-height:76vh; display:flex; flex-direction:column;
-  background:var(--card); border:1px solid var(--line);
+  background:transparent; animation:hud-card-in .18s ease;
+}
+.hud-card::before, .scripts-panel::before {
+  content:""; position:absolute; inset:0; z-index:-2; background:var(--line);
+  clip-path:polygon(0 0,calc(100% - 13px) 0,100% 13px,100% 100%,13px 100%,0 calc(100% - 13px));
+}
+.hud-card::after, .scripts-panel::after {
+  content:""; position:absolute; inset:1px; z-index:-1; background:var(--card);
   clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,12px 100%,0 calc(100% - 12px));
 }
-.scripts-head {
+@keyframes hud-card-in { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+
+.hud-head, .scripts-head {
   display:flex; align-items:center; justify-content:space-between; gap:10px;
   padding:12px 14px; border-bottom:1px solid var(--line);
 }
-.scripts-close {
-  background:none; border:none; color:var(--dim); cursor:pointer; font-size:13px; padding:2px 6px;
+.hud-head .label .slash, .scripts-head .label .slash { color:var(--primary); }
+/* ✕ — same vocabulary as .tool-close: quiet --dim, accent on hover/focus. */
+.hud-close, .scripts-close {
+  background:none; border:0; cursor:pointer; color:var(--dim);
+  font-family:inherit; font-size:13px; line-height:1; padding:3px 6px;
+  transition:color .15s;
 }
-.scripts-close:hover { color:var(--fg); }
+.hud-close:hover, .scripts-close:hover,
+.hud-close:focus-visible, .scripts-close:focus-visible { color:var(--primary); outline:none; }
+.hud-body { overflow:auto; padding:14px; display:flex; flex-direction:column; gap:14px; }
+.hud-foot, .scripts-foot { padding:10px 14px; border-top:1px solid var(--line); opacity:.6; font-size:9px; }
+
+/* ── SCRIPTS panel (Stage 5 — code-to-geometry) ───────────────────────── */
 .scripts-list { overflow:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
 .scripts-row {
   display:flex; align-items:center; gap:10px; padding:8px 10px;
-  border:1px solid var(--line); background:color-mix(in oklch,var(--card) 88%,var(--bg));
+  background:color-mix(in oklch,var(--card) 88%,var(--bg));
+  box-shadow:inset 0 0 0 1px var(--line);
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
 }
-.scripts-name { flex:1; font-size:12px; color:var(--fg); font-weight:600; }
-.scripts-src { opacity:.6; text-transform:uppercase; letter-spacing:.1em; font-size:9px; }
-.scripts-peek, .scripts-run {
-  font-family:inherit; font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
-  padding:5px 10px; cursor:pointer; border:1px solid var(--line); background:var(--bg); color:var(--dim);
-}
-.scripts-peek:hover { color:var(--fg); }
-.scripts-run { border-color:color-mix(in oklch,var(--primary) 50%,var(--line)); color:var(--primary); }
-.scripts-run:hover:not(:disabled) { background:color-mix(in oklch,var(--primary) 16%,var(--card)); }
-.scripts-run:disabled, .scripts-peek:disabled { opacity:.5; cursor:default; }
+.scripts-name { flex:1; min-width:0; font-size:12px; color:var(--fg); font-weight:600;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.scripts-src { flex:none; opacity:.6; text-transform:uppercase; letter-spacing:.1em; font-size:9px; }
+/* Both row actions are .btn (two-layer chamfer, outline). CODE is a --dim ghost;
+   RUN carries --primary because it IS this panel's action — but as an OUTLINE,
+   so the single solid --primary fill in the app is never duplicated here. */
+.scripts-peek, .scripts-run { flex:none; font-size:.6rem; letter-spacing:.14em; padding:6px 11px; }
+.scripts-peek { --c:var(--dim); }
+.scripts-peek:hover:not(:disabled) { --c:var(--fg); }
 .scripts-code {
   margin:0 8px 6px; padding:10px; max-height:220px; overflow:auto;
-  background:var(--bg); border:1px solid var(--line);
+  background:var(--bg); box-shadow:inset 0 0 0 1px var(--line);
   font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; color:var(--fg); white-space:pre;
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
 }
-.scripts-foot { padding:10px 14px; border-top:1px solid var(--line); opacity:.6; font-size:9px; }
+.scripts-msg { padding:12px 10px; opacity:.6; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   ── MCP dialog (agent access) ──
+   Read-only reference card: an endpoint, a setup command, and a one-liner on
+   what the agent gets. Every control is an outline/ghost — the dialog is
+   informational, so it takes NO share of the solid --primary accent budget.
+   ══════════════════════════════════════════════════════════════════════ */
+.mcp-card { width:min(600px,94vw); }
+.mcp-sec { display:flex; flex-direction:column; gap:6px; }
+.mcp-sec > .label { display:flex; align-items:baseline; gap:6px; }
+.mcp-lede {
+  font-size:11px; line-height:1.6; letter-spacing:.02em;
+  color:color-mix(in oklch,var(--dim) 30%,var(--fg));
+}
+.mcp-lede b { color:var(--fg); font-weight:600; }
+
+/* command / endpoint row — a --bg well with the copy button parked at its end */
+.mcp-cmd { display:flex; align-items:stretch; gap:1px; background:var(--line);
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px)); }
+.mcp-cmd code {
+  flex:1; min-width:0; display:block; padding:9px 11px; background:var(--bg);
+  font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; color:var(--fg);
+  white-space:pre; overflow-x:auto; text-shadow:none;
+}
+.mcp-copy {
+  flex:none; background:var(--bg); border:0; cursor:pointer; color:var(--dim);
+  font-family:inherit; font-size:9px; font-weight:700; letter-spacing:.14em; text-transform:uppercase;
+  padding:0 12px; transition:color .15s,background .15s;
+}
+.mcp-copy:hover, .mcp-copy:focus-visible { color:var(--primary); background:var(--muted); outline:none; }
+.mcp-copy.copied { color:var(--green); }
+
+.mcp-note {
+  font-size:10px; line-height:1.6; letter-spacing:.04em;
+  color:var(--advisory);
+  background:color-mix(in oklch,var(--fg) 5%,transparent);
+  border-left:2px solid var(--line); padding:8px 10px;
+}
+.mcp-docs { align-self:flex-start; font-size:.6rem; letter-spacing:.14em; padding:6px 11px; --c:var(--dim); text-decoration:none; }
+.mcp-docs:hover:not(:disabled) { --c:var(--fg); }
+.mcp-docs[hidden] { display:none; }
 
 /* ══════════════════════════════════════════════════════════════════════
    ── Wave-3 · EXPORT ──
@@ -1166,7 +1273,7 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 /* ── STEP options row (reads the STEP 出力 stepper; never duplicates it) ── */
 .ex-step-block { gap:4px; }
 .ex-step-block em { font-style:normal; letter-spacing:.06em; opacity:.75; }
-.ex-warn { color:var(--amber); letter-spacing:.1em; }
+.ex-warn { color:var(--advisory); letter-spacing:.1em; }
 
 /* ── EXPORT button + status line ──────────────────────────────────────── */
 .ex-go { height:38px; }
@@ -1198,3 +1305,48 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 
 /* The wrap is now chips-only; keep it tight under the SECTION button. */
 #vp-section-wrap { gap:0; padding:2px 0; }
+
+/* ── Wave-4 · INTERACTION ────────────────────────────────────────────────
+   Direct manipulation on the plate. The gizmo now sits ON the selected part
+   (pivot = its bbox centre), and the part itself is grabbable: pointer-down
+   anywhere on the selection (or a ghost riding it) slides it across Z = const.
+   These cursors are the only affordance that needs DOM chrome — everything
+   else is in-canvas. Neutral: no new solid --primary fills. */
+body.plate-grab .viewport canvas { cursor:grab; }
+body.plate-dragging .viewport,
+body.plate-dragging .viewport canvas { cursor:grabbing; }
+/* LAY FLAT still owns the cursor while armed (crosshair beats grab). */
+body.layflat-armed .viewport,
+body.layflat-armed .viewport canvas { cursor:crosshair; }
+
+/* ── Wave-4 · BOOL/CONSUME ───────────────────────────────────────────────
+   MERGE folded into BOOL: one combine tool with four modes, so the operation
+   segment now runs four-up and needs to fit "DIFFERENCE" in a quarter of the
+   panel. And a boolean RESULT replaces its inputs — the sources stay listed for
+   undo but are dimmed and locked, marked USED · BOOL / USED · SMOOTH, the same
+   treatment a lattice's GHOST sources get. Neutral: no new solid fills. */
+.seg.seg-4 .seg-btn { padding:6px 2px; font-size:9px; letter-spacing:.02em; }
+
+/* SMOOTH's blend radius is meaningless in the other three modes — hidden, not
+   disabled, so the panel doesn't carry a dead control. */
+.param.param-off { display:none; }
+
+.used-mark { white-space:nowrap; }
+.part-row.consumed .part-name, .part-row.consumed .part-meta { opacity:.55; }
+.part-row.consumed .field-role > select:disabled { opacity:.55; cursor:not-allowed; }
+
+/* ── Wave-4 · UNDO ───────────────────────────────────────────────────────
+   ↶ / ↷ in the header, left of SCRIPTS. Same chamfered .hdr-link chrome as
+   MCP/FEEDBACK — deliberately OUTSIDE the accent machine (no solid --primary
+   fill is created or consumed here). A <button> needs its UA chrome stripped so
+   the ::before/::after rim is the only frame; the disabled state is the resting
+   35 % opacity a slicer's greyed-out undo arrow reads as. */
+button.hdr-link {
+  -webkit-appearance:none; appearance:none;
+  border:0; background:none; cursor:pointer;
+}
+.hdr-link.hdr-ico { padding:4px 8px; }
+.hdr-link.hdr-ico svg { width:14px; height:14px; display:block; }
+.hdr-link:disabled { opacity:.35; cursor:default; }
+.hdr-link:disabled:hover { color:var(--c); }
+.hdr-link:disabled:hover::before { background:var(--line); }

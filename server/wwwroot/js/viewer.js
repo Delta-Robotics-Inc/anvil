@@ -23,6 +23,23 @@ const SNAP_MS = 250;           // view-cube snap animation duration
 // print the hand-chain-vs-proxy matrix proof to the console, then returned to
 // false. The method (`_selfTestEuler`) stays available for on-demand re-runs.
 const EULER_SELFTEST = false;
+// Same idea for the Wave-4 pivot math (`_selfTestPivot`): proves
+// T(P)·R(Δq)·T(−P)·M0 decomposes back into the canonical T·Rz·Ry·Rx·S chain.
+const PIVOT_SELFTEST = false;
+
+// ── Wave-4 · INTERACTION constants ───────────────────────────────────────
+const AXES_PX = 72;            // bottom-left orientation-triad overlay size
+const AXES_MARGIN = 12;        // px inset of the triad from the viewport corner
+const AXES_CAM_DIST = 4;       // orthographic triad camera distance
+// Default ("HOME") camera: Z-up, front-right-top isometric.
+const HOME_DIR = Object.freeze({ x: 1, y: -0.9, z: 0.65 });
+// Axis colours (NO red anywhere in ANVIL): X --primary, Y --green, Z --cyan.
+// Shared by the orientation triad AND the transform gizmo, so a handle and its
+// triad arrow always mean the same axis.
+const AX_X = 0xff5c00, AX_Y = 0x47c86e, AX_Z = 0x5bc8e8;
+const AX_HUB     = 0x9a9a9a;   // triad origin pip / recoloured neutral gizmo parts
+const GIZ_HI_MIX = 0.42;       // hover/drag highlight = axis colour brightened toward white
+const GIZ_YELLOW = 0xffff00;   // the hardcoded TransformControls highlight we intercept
 
 // Ghost meshes take their colour from the shared role map (roles.js) so a part's
 // 3D preview always matches its sidebar row accent: Part = --primary orange,
@@ -149,25 +166,41 @@ export class Viewer {
 
     // Hidden proxy Object3D the gizmo drives: part meshes use matrixAutoUpdate=
     // false hand-built matrices, so TransformControls cannot attach to them.
-    // proxy.matrix == the part's TRS matrix M = T·Rz·Ry·Rx·S at all times.
+    // Wave-4: the proxy no longer mirrors the part's TRS — it sits at the unit's
+    // world bbox CENTRE (the pivot P), carrying the part's rotation + scale. The
+    // gizmo therefore renders ON the part, and a drag is read back as a DELTA
+    // against the pose captured at drag start (`_dragRef`). See _readProxyTrs.
     this._proxy = new THREE.Object3D();
     this._proxy.matrixAutoUpdate = true;
     this._proxy.visible = false;
     scene.add(this._proxy);
+    this._dragRef = null;   // { id, P0, t0, r0, s0, q0, M0, mode } captured at drag start
+    this._plate = null;     // in-flight freeform plate drag
 
     const gizmo = new TransformControls(cam, renderer.domElement);
     gizmo.size = 0.82;
     gizmo.space = 'world';
     this.gizmo = gizmo;
     scene.add(gizmo.getHelper());   // r170: add the helper root, not the control
+    this._recolorGizmo();           // red/green/blue + yellow hover → the ANVIL axis palette
     gizmo.addEventListener('objectChange', () => {
       if (!this._gizmoActive || !this._selectedId) return;
-      this.onTransformLive?.(this._selectedId, this._readProxyTrs());
+      const trs = this._readProxyTrs();
+      if (trs) this.onTransformLive?.(this._selectedId, trs);
     });
     gizmo.addEventListener('dragging-changed', (e) => {
       this.controls.enabled = !e.value;
       this.onDragChange?.(e.value);
-      if (!e.value && this._selectedId) this.onTransformCommit?.(this._selectedId, this._readProxyTrs());
+      if (e.value) { this._captureDragRef(); return; }
+      const ref = this._dragRef;
+      const p = this._selectedId ? this.parts.get(this._selectedId) : null;
+      let trs = (p && ref) ? this._readProxyTrs() : null;
+      // Z0 IS the plate: a rotation lands the unit back on the bed. Translate /
+      // scale are left alone (the user may be hovering a part deliberately).
+      if (trs && ref.mode === 'rotate') trs = this._groundTrs(p, trs);
+      this._dragRef = null;
+      if (trs) this.onTransformCommit?.(p.id, trs);
+      this._syncProxy();
     });
 
     // ── Wave-3 SECTION scene graph ──────────────────────────────────────
@@ -192,9 +225,11 @@ export class Viewer {
     this._secPending = null;    // pointerdown pick awaiting a <4px release
 
     this._initViewCube();
+    this._initAxisTriad();
     this._initPointer();
 
     if (EULER_SELFTEST) { try { this._selfTestEuler(); } catch (err) { console.error('[anvil] euler self-test threw', err); } }
+    if (PIVOT_SELFTEST) { try { this._selfTestPivot(); } catch (err) { console.error('[anvil] pivot self-test threw', err); } }
 
     this._running = true;
     this._tick = this._tick.bind(this);
@@ -232,6 +267,9 @@ export class Viewer {
         if (this._ghostsHidden && !solid) mesh.visible = false;
         this.scene.add(mesh);
         this.parts.set(id, { id, mesh, role, visible: true, solid });
+        // Selected before its mesh finished loading (row appears first): the
+        // gizmo had nothing to sit on, so seat it now.
+        if (id === this._selectedId) this.startGizmo(this.gizmo.mode || 'translate');
         this._sectionDirty();
         this.fitView();
         resolve();
@@ -298,14 +336,21 @@ export class Viewer {
   // Building via premultiply from makeScale yields M = T·Rz·Ry·Rx·S, i.e.
   //   M·v = T(Rz(Ry(Rx(S·v)))) — scale first, translate last. matrixAutoUpdate
   // is disabled so the hand-built matrix is used verbatim (no recentering).
-  setPartTransform(id, trs) {
+  // opts.fit === false → commit WITHOUT a camera refit. Every in-canvas commit
+  // (gizmo drag, plate drag, lay-flat, DROP) uses it: refitting after each drag
+  // would yank the camera back to the iso framing the user just orbited away
+  // from. The TRANSFORM tool (a panel action, not a direct manipulation) keeps
+  // the old fit-on-commit behaviour.
+  setPartTransform(id, trs, opts = {}) {
     const p = this.parts.get(id);
     if (!p) return;
     p.trs = trs || null;
     this._applyPartMatrix(p);
     this._secQuadsFrozen = false;   // commit → re-detect faces at the new pose
     this._syncFaceQuads();
-    this.fitView();
+    this._syncProxy();              // gizmo re-seats on the moved part's new pivot
+    if (opts.fit === false) this._refreshGrid();
+    else this.fitView();
   }
   // Live gizmo path: rebuild the hand matrix ONLY — no fitView (no camera jump
   // mid-drag), no state commit. main.js commits once on drag end via
@@ -325,21 +370,88 @@ export class Viewer {
     p.trs = null;
     this._applyPartMatrix(p);   // identity own-matrix (still composed under a host)
     this._syncFaceQuads();
+    this._syncProxy();
     this.fitView();
   }
-  /** The part's OWN TRS matrix — M = T·Rz·Ry·Rx·S, no link composition. */
-  _ownMatrix(p) {
-    const trs = p.trs || {};
-    const t = trs.translateMM || { x: 0, y: 0, z: 0 };
-    const r = trs.rotateDeg   || { x: 0, y: 0, z: 0 };
-    const s = trs.scale       || { x: 1, y: 1, z: 1 };
+  /** A TRS filled in with defaults — the one shape every helper below expects. */
+  _trsOf(p) {
+    const trs = (p && p.trs) || {};
+    const t = trs.translateMM || {}, r = trs.rotateDeg || {}, s = trs.scale || {};
+    return {
+      translateMM: { x: t.x || 0, y: t.y || 0, z: t.z || 0 },
+      rotateDeg:   { x: r.x || 0, y: r.y || 0, z: r.z || 0 },
+      scale:       { x: s.x || 1, y: s.y || 1, z: s.z || 1 },
+    };
+  }
+  /** The hand chain M = T·Rz·Ry·Rx·S for a raw TRS (worker/server canonical). */
+  _matrixFromTrs(trs) {
+    const { translateMM: t, rotateDeg: r, scale: s } = this._trsOf({ trs });
     const D = Math.PI / 180;
-    const m = new THREE.Matrix4().makeScale(s.x || 1, s.y || 1, s.z || 1);
-    m.premultiply(new THREE.Matrix4().makeRotationX((r.x || 0) * D));
-    m.premultiply(new THREE.Matrix4().makeRotationY((r.y || 0) * D));
-    m.premultiply(new THREE.Matrix4().makeRotationZ((r.z || 0) * D));
-    m.premultiply(new THREE.Matrix4().makeTranslation(t.x || 0, t.y || 0, t.z || 0));
+    const m = new THREE.Matrix4().makeScale(s.x, s.y, s.z);
+    m.premultiply(new THREE.Matrix4().makeRotationX(r.x * D));
+    m.premultiply(new THREE.Matrix4().makeRotationY(r.y * D));
+    m.premultiply(new THREE.Matrix4().makeRotationZ(r.z * D));
+    m.premultiply(new THREE.Matrix4().makeTranslation(t.x, t.y, t.z));
     return m;
+  }
+  /** The part's OWN TRS matrix — M = T·Rz·Ry·Rx·S, no link composition. */
+  _ownMatrix(p) { return this._matrixFromTrs(p.trs); }
+
+  // ── The transform UNIT: a part + every ghost linked to it ────────────
+  // A lattice and its linked ghosts move as one body, so pivot / grounding /
+  // scale-compensation all measure the UNION box. Linked ghosts count even when
+  // hidden — a GHOSTS toggle must not silently move the plate contact.
+  _unitMeshes(p) {
+    const out = [{ mesh: p.mesh, base: null }];
+    if (p.links) for (const [gid, base] of p.links) {
+      const g = this.parts.get(gid);
+      if (g && g.mesh) out.push({ mesh: g.mesh, base });
+    }
+    return out;
+  }
+  /** World AABB of the unit if the HOST's matrix were `M` (default: as drawn).
+   *  Matches Box3.setFromObject (transformed geometry-bbox corners), so the
+   *  "before" of a drag and the "after" of a candidate TRS are measured alike. */
+  _unitBox(p, M) {
+    const host = M || p.mesh.matrix;
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3(), mm = new THREE.Matrix4();
+    for (const { mesh, base } of this._unitMeshes(p)) {
+      const g = mesh.geometry;
+      if (!g) continue;
+      if (!g.boundingBox) g.computeBoundingBox();
+      const bb = g.boundingBox;
+      if (!bb) continue;
+      const m = base ? mm.multiplyMatrices(host, base) : host;
+      for (let i = 0; i < 8; i++) {
+        v.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z)
+          .applyMatrix4(m);
+        box.expandByPoint(v);
+      }
+    }
+    return box.isEmpty() ? null : box;
+  }
+  /** Pivot P: the unit's world bbox centre. Falls back to translateMM. */
+  _unitPivot(p, M) {
+    const b = this._unitBox(p, M);
+    if (b) return b.getCenter(new THREE.Vector3());
+    const t = this._trsOf(p).translateMM;
+    return new THREE.Vector3(t.x, t.y, t.z);
+  }
+  /** Same TRS, dropped so the unit's world bboxMin.z lands exactly on 0. */
+  _groundTrs(p, trs) {
+    const out = {
+      translateMM: { ...trs.translateMM }, rotateDeg: { ...trs.rotateDeg }, scale: { ...trs.scale },
+    };
+    const box = this._unitBox(p, this._matrixFromTrs(out));
+    if (box) out.translateMM.z -= box.min.z;
+    return out;
+  }
+  /** DROP: ground the given part's unit on Z = 0. Returns a TRS (or null). */
+  dropToPlate(id) {
+    const p = id ? this.parts.get(id) : null;
+    if (!p) return null;
+    return this._groundTrs(p, this._trsOf(p));
   }
   _applyPartMatrix(p) {
     const own = this._ownMatrix(p);
@@ -980,11 +1092,11 @@ export class Viewer {
   // SELECTED box drives distance + pivot. With nothing selected it frames the
   // union as before, but parks the pivot on the centre of mass. The grid always
   // follows the UNION box — the floor must not shrink to a single part.
-  fitView() {
+  fitView(opts = {}) {
     const union = this._visibleBox();
     if (!union) return;
 
-    const sel = this._selectedId ? this.parts.get(this._selectedId) : null;
+    const sel = (!opts.union && this._selectedId) ? this.parts.get(this._selectedId) : null;
     let selBox = (sel && sel.mesh.visible) ? new THREE.Box3().setFromObject(sel.mesh) : null;
     if (selBox && selBox.isEmpty()) selBox = null;
     const box = selBox || union;
@@ -998,7 +1110,7 @@ export class Viewer {
     dist *= 1.7;
 
     // Z-up isometric-ish direction: front-right-top (+X right, −Y front, +Z up).
-    const dir = new THREE.Vector3(1, -0.9, 0.65).normalize();
+    const dir = new THREE.Vector3(HOME_DIR.x, HOME_DIR.y, HOME_DIR.z).normalize();
     const pivot = selBox ? center : (this.computeCenterOfMass(this._volumeHint) || center);
     // A TOP/BOTTOM cube snap parks camera.up on ±Y (a top-down view has no Z-up
     // basis); an oblique fit must stand it back up or the whole world renders
@@ -1012,21 +1124,36 @@ export class Viewer {
     this.controls.target.copy(pivot);
     this.controls.update();
 
-    const uSize = union.getSize(new THREE.Vector3());
-    this._updateGrid(union, union.getCenter(new THREE.Vector3()),
-      Math.max(uSize.x, uSize.y, uSize.z) || 1);
+    this._refreshGrid(union);
   }
 
-  _updateGrid(box, center, maxDim) {
+  /** HOME — the documented default camera: iso (1,−0.9,0.65), up +Z, fit to
+   *  EVERYTHING visible (never just the selection). */
+  homeView() {
+    this._cubeAnim = null;
+    this.camera.up.set(0, 0, 1);
+    this.fitView({ union: true });
+  }
+
+  /** Re-place the plate grid without touching the camera (no-fit commits). */
+  _refreshGrid(union) {
+    const box = union || this._visibleBox();
+    if (!box) return;
+    const s = box.getSize(new THREE.Vector3());
+    this._updateGrid(box.getCenter(new THREE.Vector3()), Math.max(s.x, s.y, s.z) || 1);
+  }
+
+  _updateGrid(center, maxDim) {
     const size = Math.max(maxDim * 2.4, 10);
     // Z-up world: GridHelper is authored in the XZ plane (normal +Y), so rotate
-    // it into XY (normal +Z) or it renders as a vertical wall. Sit it a hair
-    // BELOW box.min.z — lay-flat parts rest exactly on z=0 and a coplanar grid
-    // z-fights with the part's bottom face.
+    // it into XY (normal +Z) or it renders as a vertical wall. The grid IS the
+    // print plate, so it lives at Z = 0 — a hair below, since a grounded part
+    // rests exactly on z=0 and a coplanar grid z-fights its bottom face. A part
+    // floating above the plate visibly floats; DROP / LAY FLAT put it down.
     const zEps = Math.max(0.05, size * 0.0008);
     if (this.grid && Math.abs(this._gridMeta.size - size) < size * 0.01) {
       this.grid.rotation.x = Math.PI / 2;
-      this.grid.position.set(center.x, center.y, box.min.z - zEps);
+      this.grid.position.set(center.x, center.y, -zEps);
       return;
     }
     if (this.grid) { this.scene.remove(this.grid); this.grid.geometry.dispose(); this.grid.material.dispose(); }
@@ -1036,7 +1163,7 @@ export class Viewer {
     grid.material.transparent = true;
     grid.material.opacity = 0.5;
     grid.rotation.x = Math.PI / 2;
-    grid.position.set(center.x, center.y, box.min.z - zEps);
+    grid.position.set(center.x, center.y, -zEps);
     this.scene.add(grid);
     this.grid = grid;
     this._gridMeta.size = size;
@@ -1096,53 +1223,173 @@ export class Viewer {
     return hits.length ? hits[0].object.userData._pid : null;
   }
 
-  // ══ Wave-2 · Transform gizmo (proxy-bridged) ═════════════════════════
-  // proxy.matrix == compose(T, quat[ZYX], S) == the hand chain T·Rz·Ry·Rx·S
-  // (see _selfTestEuler). Reading it back → the same TRS the worker consumes.
+  // ══ Wave-4 · Transform gizmo — PIVOT ON THE PART ═════════════════════
+  // The proxy is parked at the unit's world bbox centre P (so the handles draw
+  // ON the part, never at the world origin) and carries the part's rotation +
+  // scale. A drag is therefore a DELTA against the pose snapshotted at drag
+  // start, mapped back onto the canonical chain M = T·Rz·Ry·Rx·S:
+  //
+  //   TRANSLATE (world)  Δ = proxy.position − P0        → t = t0 + Δ
+  //   ROTATE    (world)  Δq = proxy.q · q0⁻¹
+  //                      M_new = T(P0)·R(Δq)·T(−P0)·M0
+  //                            ⇒ R = Δq·R0 (= proxy.q), S = S0,
+  //                              t = Δq·(t0 − P0) + P0        ← still T·R·S
+  //   SCALE     (local)  S = proxy.scale (local-axis only: world-axis scaling of
+  //                      a rotated body is a shear and has no T·R·S form), then
+  //                      t += P0 − centre(M_new) so the pivot stays put.
+  //
+  // _selfTestPivot proves the rotate case numerically (max element err < 1e-6).
   _readProxyTrs() {
-    const t = this._proxy.position, s = this._proxy.scale;
-    const e = new THREE.Euler().setFromQuaternion(this._proxy.quaternion, 'ZYX');
+    const p = this._selectedId ? this.parts.get(this._selectedId) : null;
+    if (!p) return null;
+    const ref = this._dragRef;
+    if (!ref || ref.id !== p.id) return this._trsOf(p);   // no live drag → current pose
     const R2D = 180 / Math.PI;
+
+    if (ref.mode === 'rotate') {
+      const dq = this._proxy.quaternion.clone().multiply(ref.q0.clone().invert());
+      const e = new THREE.Euler().setFromQuaternion(this._proxy.quaternion, 'ZYX');   // Δq·R0
+      const t = ref.t0.clone().sub(ref.P0).applyQuaternion(dq).add(ref.P0);
+      return {
+        translateMM: { x: t.x, y: t.y, z: t.z },
+        rotateDeg:   { x: e.x * R2D, y: e.y * R2D, z: e.z * R2D },
+        scale:       { x: ref.s0.x, y: ref.s0.y, z: ref.s0.z },
+      };
+    }
+
+    if (ref.mode === 'scale') {
+      const s = this._proxy.scale;
+      const trs = {
+        translateMM: { x: ref.t0.x, y: ref.t0.y, z: ref.t0.z },
+        rotateDeg:   { ...ref.r0 },
+        scale:       { x: s.x, y: s.y, z: s.z },
+      };
+      const c = this._unitPivot(p, this._matrixFromTrs(trs));   // where the centre landed
+      trs.translateMM.x += ref.P0.x - c.x;
+      trs.translateMM.y += ref.P0.y - c.y;
+      trs.translateMM.z += ref.P0.z - c.z;
+      return trs;
+    }
+
+    const d = this._proxy.position.clone().sub(ref.P0);
     return {
-      translateMM: { x: t.x, y: t.y, z: t.z },
-      rotateDeg:   { x: e.x * R2D, y: e.y * R2D, z: e.z * R2D },
-      scale:       { x: s.x, y: s.y, z: s.z },
+      translateMM: { x: ref.t0.x + d.x, y: ref.t0.y + d.y, z: ref.t0.z + d.z },
+      rotateDeg:   { ...ref.r0 },
+      scale:       { x: ref.s0.x, y: ref.s0.y, z: ref.s0.z },
     };
   }
-  _writeProxyFromTrs(trs) {
-    const t = (trs && trs.translateMM) || { x: 0, y: 0, z: 0 };
-    const r = (trs && trs.rotateDeg)   || { x: 0, y: 0, z: 0 };
-    const s = (trs && trs.scale)       || { x: 1, y: 1, z: 1 };
+  /** Park the proxy on the part: position = pivot P, rotation/scale = the TRS. */
+  _writeProxyFromPart(p) {
+    const { rotateDeg: r, scale: s } = this._trsOf(p);
     const D = Math.PI / 180;
-    this._proxy.position.set(t.x || 0, t.y || 0, t.z || 0);
-    this._proxy.quaternion.setFromEuler(new THREE.Euler((r.x || 0) * D, (r.y || 0) * D, (r.z || 0) * D, 'ZYX'));
-    this._proxy.scale.set(s.x || 1, s.y || 1, s.z || 1);
+    const P = this._unitPivot(p);
+    this._proxy.position.copy(P);
+    this._proxy.quaternion.setFromEuler(new THREE.Euler(r.x * D, r.y * D, r.z * D, 'ZYX'));
+    this._proxy.scale.set(s.x, s.y, s.z);
     this._proxy.updateMatrixWorld(true);
+  }
+  /** Re-seat the proxy on the selected part (skipped mid-drag: the gizmo owns it). */
+  _syncProxy() {
+    if (!this._gizmoActive || !this._selectedId || this._dragRef) return;
+    const p = this.parts.get(this._selectedId);
+    if (p) this._writeProxyFromPart(p);
+  }
+  /** Snapshot the pose + pivot the whole drag is measured against. */
+  _captureDragRef() {
+    const p = this._selectedId ? this.parts.get(this._selectedId) : null;
+    if (!p) { this._dragRef = null; return; }
+    const { translateMM: t, rotateDeg: r, scale: s } = this._trsOf(p);
+    const D = Math.PI / 180;
+    this._dragRef = {
+      id: p.id,
+      mode: this.gizmo.mode,
+      P0: this._unitPivot(p),
+      t0: new THREE.Vector3(t.x, t.y, t.z),
+      r0: { ...r },
+      s0: new THREE.Vector3(s.x, s.y, s.z),
+      q0: new THREE.Quaternion().setFromEuler(new THREE.Euler(r.x * D, r.y * D, r.z * D, 'ZYX')),
+      M0: this._ownMatrix(p),
+    };
   }
   startGizmo(mode) {
     if (!this._selectedId) return;
     const p = this.parts.get(this._selectedId);
     if (!p) return;
     this._layFlatArmed = false;
-    this._writeProxyFromTrs(p.trs);
+    this._writeProxyFromPart(p);
     this.gizmo.mode = mode || 'translate';
+    this.gizmo.space = this.gizmo.mode === 'scale' ? 'local' : 'world';
     this.gizmo.attach(this._proxy);
     this._gizmoActive = true;
   }
   setGizmoMode(mode) {
     if (!this._selectedId) return;
     if (!this._gizmoActive) { this.startGizmo(mode); return; }
-    // Already active: re-sync the proxy from the part's committed TRS before
-    // switching modes. Between drags the proxy always equals the committed TRS,
-    // so this is a no-op in the common case but corrects a proxy left stale by
-    // an external TRS change (transform panel / lay-flat) on the selected part.
+    // Already active: re-seat the proxy on the part's committed pose before
+    // switching modes (corrects a proxy left stale by an external TRS change —
+    // transform panel / lay-flat — on the selected part).
     const p = this.parts.get(this._selectedId);
-    if (p) this._writeProxyFromTrs(p.trs);
+    if (p) this._writeProxyFromPart(p);
+    // SCALE is local-axis ONLY: scaling a rotated body along world axes is a
+    // shear, which the canonical T·Rz·Ry·Rx·S chain cannot represent.
+    this.gizmo.space = mode === 'scale' ? 'local' : 'world';
     this.gizmo.mode = mode;
   }
   stopGizmo() {
     if (this.gizmo) this.gizmo.detach();
     this._gizmoActive = false;
+    this._dragRef = null;
+  }
+
+  // ── Gizmo palette (no red, no yellow — ANVIL house rule) ─────────────
+  // TransformControls ships red/green/blue axes and stamps a hardcoded YELLOW
+  // onto the hovered/dragged handle every frame, from inside
+  // TransformControlsGizmo.updateMatrixWorld. Two passes make the remap stick:
+  //
+  //   1. Rewrite every base material colour AND the `_color` snapshot the
+  //      control restores from each frame (r170 caches it lazily on first
+  //      update, so pre-seeding it means the old hue can never come back).
+  //      The rotate E ring is the ONE base-yellow material — it goes neutral,
+  //      which leaves 0xffff00 meaning "highlight" and nothing else.
+  //   2. Wrap that same updateMatrixWorld and translate the highlight into a
+  //      whitened tint of the handle's own axis colour, so hovering brightens
+  //      the handle without throwing away which axis it is.
+  //
+  // Handles share materials (matRed drives the X arrow AND the YZ quad), so the
+  // sweep is keyed on the material, not the mesh.
+  _recolorGizmo() {
+    const root = this.gizmo && this.gizmo.getHelper();
+    if (!root) return;
+    const REMAP = new Map([
+      [0xff0000, AX_X], [0x00ff00, AX_Y], [0x0000ff, AX_Z], [GIZ_YELLOW, AX_HUB],
+    ]);
+    const seen = new Set();
+    root.traverse((o) => {
+      const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+      for (const m of mats) {
+        if (!m || !m.color || seen.has(m)) continue;
+        seen.add(m);
+        const to = REMAP.get(m.color.getHex());
+        if (to != null) m.color.setHex(to);
+        if (m._color) m._color.copy(m.color); else m._color = m.color.clone();   // restore snapshot
+        m.userData.axHi = whiten(m.color, GIZ_HI_MIX);
+      }
+    });
+
+    const gz = root.children.find((c) => c.isTransformControlsGizmo);
+    if (!gz || gz.userData._axPatched) return;
+    gz.userData._axPatched = true;
+    const inner = gz.updateMatrixWorld.bind(gz);
+    gz.updateMatrixWorld = (force) => {
+      inner(force);
+      // Only an active axis gets highlighted, so this is a no-op the rest of
+      // the time (and pickers are invisible — recolouring them costs nothing).
+      if (!this.gizmo.enabled || !this.gizmo.axis) return;
+      gz.traverse((o) => {
+        const m = o.material;
+        if (m && m.color && m.userData.axHi && m.color.getHex() === GIZ_YELLOW) m.color.copy(m.userData.axHi);
+      });
+    };
   }
   isGizmoActive() { return this._gizmoActive; }
   gizmoMode() { return this._gizmoActive ? this.gizmo.mode : null; }
@@ -1156,16 +1403,18 @@ export class Viewer {
   }
   cancelLayFlat() { this._layFlatArmed = false; this._syncFaceQuads(); }
   isLayFlatArmed() { return this._layFlatArmed; }
-  // Raycast ONLY the selected mesh, then hand its world face normal to the
-  // shared lay-flat solver. Returns a TRS (or null if the click missed).
+  // Raycast the selected mesh AND its linked ghosts (they are ONE body — a face
+  // picked on a ghost lays the whole unit down), then hand the hit's world face
+  // normal to the shared solver. Returns a TRS for the HOST (or null on a miss).
   computeLayFlat(id, cx, cy) {
     const p = id ? this.parts.get(id) : null;
     if (!p || !p.mesh || !p.mesh.visible) return null;
+    const meshes = this._unitMeshes(p).map((u) => u.mesh).filter((m) => m.visible);
     this._raycaster.setFromCamera(this._ndcFromClient(cx, cy), this.camera);
-    const hits = this._raycaster.intersectObject(p.mesh, false);
+    const hits = this._raycaster.intersectObjects(meshes, false);
     if (!hits.length || !hits[0].face) return null;
     const nWorld = hits[0].face.normal.clone()
-      .applyMatrix3(new THREE.Matrix3().getNormalMatrix(p.mesh.matrixWorld)).normalize();
+      .applyMatrix3(new THREE.Matrix3().getNormalMatrix(hits[0].object.matrixWorld)).normalize();
     return this._layFlatFromNormal(p, nWorld);
   }
   /** Same solver, fed a detected planar-cluster normal instead of a ray hit. */
@@ -1174,40 +1423,88 @@ export class Viewer {
     if (!p || !p.mesh || !p.mesh.visible) return null;
     return this._layFlatFromNormal(p, new THREE.Vector3().copy(nWorld).normalize());
   }
-  // Rotate the given world face normal onto (0,0,−1), compose with the current
-  // rotation, then translate so the rotated bbox min.z = 0 while preserving the
-  // current bbox XY centre.
+  // Spin the given world face normal onto (0,0,−1) ABOUT THE UNIT'S PIVOT (same
+  // math as a gizmo rotate — the part turns in place instead of orbiting the TRS
+  // origin), then drop the unit so its combined bboxMin.z = 0. XY stays put.
   _layFlatFromNormal(p, nWorld) {
-    const q = new THREE.Quaternion().setFromUnitVectors(nWorld, new THREE.Vector3(0, 0, -1));
-
-    const cur = p.trs || {};
-    const r = cur.rotateDeg || { x: 0, y: 0, z: 0 };
-    const s = cur.scale || { x: 1, y: 1, z: 1 };
+    const dq = new THREE.Quaternion().setFromUnitVectors(nWorld, new THREE.Vector3(0, 0, -1));
+    const { translateMM: t0, rotateDeg: r, scale: s } = this._trsOf(p);
     const D = Math.PI / 180, R2D = 180 / Math.PI;
-    const qCur = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler((r.x || 0) * D, (r.y || 0) * D, (r.z || 0) * D, 'ZYX'));
-    const qNew = q.multiply(qCur);   // world-space: apply the lay-flat spin AFTER the current rotation
+    const q0 = new THREE.Quaternion().setFromEuler(new THREE.Euler(r.x * D, r.y * D, r.z * D, 'ZYX'));
+    const qNew = dq.clone().multiply(q0);   // world-space: lay-flat spin AFTER the current rotation
     const eNew = new THREE.Euler().setFromQuaternion(qNew, 'ZYX');
-    const rotateDeg = { x: eNew.x * R2D, y: eNew.y * R2D, z: eNew.z * R2D };
 
-    // Current world bbox XY centre (preserved) and the rotated+scaled AABB.
-    const curCenter = new THREE.Box3().setFromObject(p.mesh).getCenter(new THREE.Vector3());
-    if (!p.mesh.geometry.boundingBox) p.mesh.geometry.computeBoundingBox();
-    const gb = p.mesh.geometry.boundingBox;
-    const RS = new THREE.Matrix4().makeRotationFromQuaternion(qNew)
-      .scale(new THREE.Vector3(s.x || 1, s.y || 1, s.z || 1));   // R·S (no translate)
-    const rbox = new THREE.Box3();
-    const c = new THREE.Vector3();
-    for (let xi = 0; xi < 2; xi++) for (let yi = 0; yi < 2; yi++) for (let zi = 0; zi < 2; zi++) {
-      c.set(xi ? gb.max.x : gb.min.x, yi ? gb.max.y : gb.min.y, zi ? gb.max.z : gb.min.z).applyMatrix4(RS);
-      rbox.expandByPoint(c);
-    }
-    const rc = rbox.getCenter(new THREE.Vector3());
-    return {
-      translateMM: { x: curCenter.x - rc.x, y: curCenter.y - rc.y, z: -rbox.min.z },
-      rotateDeg,
-      scale: { x: s.x || 1, y: s.y || 1, z: s.z || 1 },
+    const P0 = this._unitPivot(p);
+    const t = new THREE.Vector3(t0.x, t0.y, t0.z).sub(P0).applyQuaternion(dq).add(P0);
+    return this._groundTrs(p, {
+      translateMM: { x: t.x, y: t.y, z: t.z },
+      rotateDeg:   { x: eNew.x * R2D, y: eNew.y * R2D, z: eNew.z * R2D },
+      scale:       { x: s.x, y: s.y, z: s.z },
+    });
+  }
+
+  // ══ Wave-4 · Freeform plate drag ═════════════════════════════════════
+  // Grab the SELECTED part (or one of its linked ghosts) anywhere on its surface
+  // and slide it across the plate. The drag rides the horizontal plane through
+  // the grab point, so Z never changes — lifting off the bed needs the Z arrow.
+  // Arms only on the selected unit, so a click on ANOTHER part still selects it.
+
+  /** Nearest visible part under the pointer, if it belongs to the selected unit. */
+  _unitHit(cx, cy) {
+    const p = this._selectedId ? this.parts.get(this._selectedId) : null;
+    if (!p || !p.mesh.visible) return null;
+    const ids = new Set(this._unitMeshes(p).map((u) => u.mesh.id));
+    this._raycaster.setFromCamera(this._ndcFromClient(cx, cy), this.camera);
+    const meshes = [];
+    for (const q of this.parts.values()) if (q.mesh.visible) meshes.push(q.mesh);
+    const hits = this._raycaster.intersectObjects(meshes, false);
+    if (!hits.length) return null;
+    return ids.has(hits[0].object.id) ? hits[0] : null;   // something else is in front
+  }
+  _beginPlateDrag(e, hit) {
+    const p = this.parts.get(this._selectedId);
+    const trs = this._trsOf(p);
+    this._plate = {
+      id: p.id, z: hit.point.z, p0: hit.point.clone(),
+      t0: trs.translateMM, r0: trs.rotateDeg, s0: trs.scale,
+      x0: e.clientX, y0: e.clientY, moved: false, last: null,
     };
+    this.controls.enabled = false;
+    this.onDragChange?.(true);
+    document.body.classList.add('plate-dragging');
+    try { this.renderer.domElement.setPointerCapture(e.pointerId); } catch { /* container listeners still fire */ }
+  }
+  _platePoint(cx, cy) {
+    const d = this._plate;
+    if (!d) return null;
+    this._raycaster.setFromCamera(this._ndcFromClient(cx, cy), this.camera);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -d.z);
+    const out = new THREE.Vector3();
+    return this._raycaster.ray.intersectPlane(plane, out) ? out : null;   // null = looking down the plane
+  }
+  _updatePlateDrag(e) {
+    const d = this._plate;
+    if (!d) return;
+    if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) > SELECT_DRAG_PX) d.moved = true;
+    if (!d.moved) return;
+    const q = this._platePoint(e.clientX, e.clientY);
+    if (!q) return;
+    d.last = {
+      translateMM: { x: d.t0.x + (q.x - d.p0.x), y: d.t0.y + (q.y - d.p0.y), z: d.t0.z },   // Z untouched
+      rotateDeg: { ...d.r0 }, scale: { ...d.s0 },
+    };
+    this.onTransformLive?.(d.id, d.last);
+  }
+  _endPlateDrag(e) {
+    const d = this._plate;
+    this._plate = null;
+    this.controls.enabled = true;
+    this.onDragChange?.(false);
+    document.body.classList.remove('plate-dragging');
+    try { this.renderer.domElement.releasePointerCapture(e.pointerId); } catch { /* nothing captured */ }
+    if (!d) return;
+    if (d.moved && d.last) { this.onTransformCommit?.(d.id, d.last); this._syncProxy(); }
+    else this.onPick?.(d.id);   // a click, not a drag — keep/confirm the selection
   }
 
   // ══ Wave-2 · View cube (2nd scene + ortho, drawn inside _tick) ════════
@@ -1219,13 +1516,28 @@ export class Viewer {
     cam.lookAt(0, 0, 0);
     // BoxGeometry material index order: +X, −X, +Y, −Y, +Z, −Z. Z-up world
     // labels: +Z TOP, −Z BOTTOM, −Y FRONT, +Y BACK, +X RIGHT, −X LEFT.
-    const labels = ['RIGHT', 'LEFT', 'BACK', 'FRONT', 'TOP', 'BOTTOM'];
-    const mats = labels.map((t) => new THREE.MeshBasicMaterial({ map: this._makeCubeFaceTexture(t) }));
+    //
+    // Label readability. BoxGeometry's UVs are authored for a Y-UP box, so in a
+    // Z-up world four of the six labels come out rolled. Per face, with (R, U) =
+    // the world directions of texture-right / texture-up, the canvas rotation
+    // that puts the text's up on the target T is a = atan2(R·T, U·T):
+    //   +X  R=−Z U=+Y  T=+Z → −90°     −X  R=+Z U=+Y  T=+Z → +90°
+    //   +Y  R=+X U=−Z  T=+Z → 180°     −Y  R=+X U=+Z  T=+Z →   0°
+    //   +Z  R=+X U=+Y  T=+Y →   0°  (TOP text base faces FRONT, and +Y is
+    //                                screen-up in the TOP snap)
+    //   −Z  R=−X U=+Y  T=−Y → 180°  (BOTTOM snap parks screen-up on −Y)
+    const H = Math.PI / 2;
+    const faces = [
+      ['RIGHT', -H], ['LEFT', H], ['BACK', Math.PI], ['FRONT', 0], ['TOP', 0], ['BOTTOM', Math.PI],
+    ];
+    const mats = faces.map(([t, rot]) => new THREE.MeshBasicMaterial({ map: this._makeCubeFaceTexture(t, rot) }));
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), mats);
     scene.add(mesh);
     this._cube = { scene, camera: cam, mesh };
   }
-  _makeCubeFaceTexture(text) {
+  // `rot` (radians) spins the LABEL inside the face; the border is drawn in the
+  // unrotated frame so every face keeps the same gray edge.
+  _makeCubeFaceTexture(text, rot = 0) {
     const s = 128;
     const cv = document.createElement('canvas');
     cv.width = s; cv.height = s;
@@ -1237,11 +1549,79 @@ export class Viewer {
     g.fillStyle = '#d9d9d9';                 // --fg label
     g.font = '700 21px "Kode Mono", ui-monospace, monospace';
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(text, s / 2, s / 2 + 1);
+    g.save();
+    g.translate(s / 2, s / 2);
+    if (rot) g.rotate(rot);
+    g.fillText(text, 0, 1);
+    g.restore();
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 4;
     return tex;
+  }
+
+  // ══ Wave-4 · Orientation triad (bottom-left, mirrors the main camera) ══
+  // Slicer-style XYZ reference: a third scene + ortho camera drawn in the SAME
+  // rAF through setViewport/setScissor, exactly like the view cube. Arrows are
+  // the section-manipulator geometry (authored along +Z, unit length); the
+  // letters are sprites, so they never roll with the camera.
+  _initAxisTriad() {
+    const scene = new THREE.Scene();
+    const cam = new THREE.OrthographicCamera(-1.55, 1.55, 1.55, -1.55, 0.1, 100);
+    cam.position.set(0, 0, AXES_CAM_DIST);
+    cam.up.set(0, 0, 1);
+    cam.lookAt(0, 0, 0);
+    if (!this._arrowGeo) this._arrowGeo = makeArrowGeometry();
+    const Z = new THREE.Vector3(0, 0, 1);
+    const axes = [
+      { dir: new THREE.Vector3(1, 0, 0), col: AX_X, ch: 'X' },
+      { dir: new THREE.Vector3(0, 1, 0), col: AX_Y, ch: 'Y' },
+      { dir: new THREE.Vector3(0, 0, 1), col: AX_Z, ch: 'Z' },
+    ];
+    for (const a of axes) {
+      const mat = new THREE.MeshBasicMaterial({ color: a.col, depthTest: false, depthWrite: false });
+      const q = new THREE.Quaternion().setFromUnitVectors(Z, a.dir);
+      for (const geo of [this._arrowGeo.shaft, this._arrowGeo.head]) {
+        const m = new THREE.Mesh(geo, mat);
+        m.quaternion.copy(q);
+        m.frustumCulled = false;
+        m.renderOrder = 1;
+        scene.add(m);
+      }
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: makeGlyphTexture(a.ch, a.col), depthTest: false, depthWrite: false, transparent: true,
+      }));
+      sp.position.copy(a.dir).multiplyScalar(1.24);
+      sp.scale.setScalar(0.62);
+      sp.renderOrder = 2;
+      scene.add(sp);
+    }
+    // Origin pip — reads as the shared corner the three arrows leave from.
+    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 10),
+      new THREE.MeshBasicMaterial({ color: AX_HUB, depthTest: false, depthWrite: false }));
+    hub.renderOrder = 1;
+    scene.add(hub);
+    this._axes = { scene, camera: cam };
+  }
+  _renderAxisTriad(w, h) {
+    const t = this._axes;
+    if (!t) return;
+    const r = this.renderer;
+    const dir = this.camera.position.clone().sub(this.controls.target);
+    if (dir.lengthSq() < 1e-9) dir.set(0, 0, 1);
+    t.camera.position.copy(dir.normalize()).multiplyScalar(AXES_CAM_DIST);
+    t.camera.up.copy(this.camera.up);
+    t.camera.lookAt(0, 0, 0);
+    t.camera.updateMatrixWorld();
+    r.autoClear = false;
+    r.clearDepth();
+    r.setScissorTest(true);
+    r.setScissor(AXES_MARGIN, AXES_MARGIN, AXES_PX, AXES_PX);   // GL origin = bottom-left
+    r.setViewport(AXES_MARGIN, AXES_MARGIN, AXES_PX, AXES_PX);
+    r.render(t.scene, t.camera);
+    r.setScissorTest(false);
+    r.setViewport(0, 0, w, h);
+    r.autoClear = true;
   }
   _renderViewCube(w, h) {
     const cube = this._cube;
@@ -1356,15 +1736,21 @@ export class Viewer {
         return;
       }
       if (this._layFlatArmed) { st.mode = 'layflat'; return; }
-      st.mode = (this.gizmo && this.gizmo.axis) ? 'gizmo' : 'select';
+      if (this.gizmo && this.gizmo.axis) { st.mode = 'gizmo'; return; }   // a handle is hovered
+      // Grab on the selected unit → freeform plate drag (never on another part).
+      const hit = this._unitHit(e.clientX, e.clientY);
+      if (hit) { st.mode = 'plate'; e.stopPropagation(); this._beginPlateDrag(e, hit); return; }
+      st.mode = 'select';
     }, { capture: true });
 
     c.addEventListener('pointermove', (e) => {
       if (st.mode === 'secdrag') { e.stopPropagation(); this._updateArrowDrag(e); return; }
+      if (st.mode === 'plate') { e.stopPropagation(); this._updatePlateDrag(e); return; }
       if (st.mode === 'none' && onCanvas(e)) {
         // Hover glow on whatever section overlay is under the cursor.
         const h = this._secPick(e.clientX, e.clientY);
         this._setSecHover(h && h.obj ? h.obj : null);
+        this._syncGrabCursor(e.clientX, e.clientY);
       }
       if (st.mode === 'none') return;
       if (!st.moved && Math.hypot(e.clientX - st.downX, e.clientY - st.downY) > SELECT_DRAG_PX) st.moved = true;
@@ -1374,6 +1760,7 @@ export class Viewer {
       const mode = st.mode;
       st.mode = 'none';
       if (mode === 'secdrag') { e.stopPropagation(); this._endArrowDrag(e); return; }
+      if (mode === 'plate') { e.stopPropagation(); this._endPlateDrag(e); return; }
       if (mode === 'secpick') {
         e.stopPropagation();
         const pending = this._secPending;
@@ -1421,6 +1808,14 @@ export class Viewer {
     }, { passive: false });
   }
 
+  // "You can grab this" affordance over the selected unit. LAY FLAT owns the
+  // cursor while armed (crosshair), and a hovered gizmo handle owns it too.
+  _syncGrabCursor(cx, cy) {
+    const want = !!this._selectedId && !this._layFlatArmed
+      && !(this.gizmo && this.gizmo.axis) && !!this._unitHit(cx, cy);
+    document.body.classList.toggle('plate-grab', want);
+  }
+
   // ══ Wave-2 · EULER round-trip self-test ══════════════════════════════
   // Proves the hand chain M = T·Rz·Ry·Rx·S equals compose(T, Euler'ZYX', S) and
   // that decompose→Euler'ZYX'→deg round-trips a nontrivial TRS, BEFORE the gizmo
@@ -1447,6 +1842,44 @@ export class Viewer {
     console.log('[anvil]   hand  M =', Array.from(hand.elements, (n) => +n.toFixed(6)));
     console.log('[anvil]   proxy M =', Array.from(proxy.elements, (n) => +n.toFixed(6)));
     return { pass, maxErr, rtErr };
+  }
+
+  // ══ Wave-4 · PIVOT round-trip self-test ══════════════════════════════
+  // Proves the rotate-about-P decomposition: the TRS this viewer emits, when
+  // re-composed through the canonical hand chain, equals T(P)·R(Δq)·T(−P)·M0
+  // element-for-element. Run before trusting the gizmo with a rotation.
+  _selfTestPivot() {
+    const D = Math.PI / 180, R2D = 180 / Math.PI;
+    const t0 = { x: 13, y: -27, z: 41 }, r0 = { x: 31, y: -52, z: 74 }, s0 = { x: 1.3, y: 0.7, z: 1.9 };
+    const P0 = new THREE.Vector3(-8.5, 22.25, 6.75);
+    const M0 = this._matrixFromTrs({ translateMM: t0, rotateDeg: r0, scale: s0 });
+    const q0 = new THREE.Quaternion().setFromEuler(new THREE.Euler(r0.x * D, r0.y * D, r0.z * D, 'ZYX'));
+    // An arbitrary world-space delta rotation, exactly as a gizmo drag produces.
+    const dq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0.37, -0.66, 0.65).normalize(), 0.7431);
+
+    // Reference: rotate M0 about the world point P0.
+    const ref = new THREE.Matrix4().makeTranslation(P0.x, P0.y, P0.z)
+      .multiply(new THREE.Matrix4().makeRotationFromQuaternion(dq))
+      .multiply(new THREE.Matrix4().makeTranslation(-P0.x, -P0.y, -P0.z))
+      .multiply(M0);
+
+    // What _readProxyTrs emits for that drag (proxy.quaternion = Δq·q0).
+    const qn = dq.clone().multiply(q0);
+    const e = new THREE.Euler().setFromQuaternion(qn, 'ZYX');
+    const t = new THREE.Vector3(t0.x, t0.y, t0.z).sub(P0).applyQuaternion(dq).add(P0);
+    const trs = {
+      translateMM: { x: t.x, y: t.y, z: t.z },
+      rotateDeg:   { x: e.x * R2D, y: e.y * R2D, z: e.z * R2D },
+      scale:       { x: s0.x, y: s0.y, z: s0.z },
+    };
+    const got = this._matrixFromTrs(trs);   // the worker's chain, from the emitted TRS
+
+    let maxErr = 0;
+    for (let i = 0; i < 16; i++) maxErr = Math.max(maxErr, Math.abs(ref.elements[i] - got.elements[i]));
+    const pass = maxErr < 1e-6;
+    console.log(`[anvil] PIVOT rotate-about-P self-test: ${pass ? 'PASS' : 'FAIL'} · maxElementErr=${maxErr.toExponential(3)}`);
+    console.log('[anvil]   emitted TRS =', JSON.stringify(trs));
+    return { pass, maxErr, trs };
   }
 
   // ── internals ───────────────────────────────────────────────────────
@@ -1486,8 +1919,9 @@ export class Viewer {
     r.autoClear = true;
     r.render(this.scene, this.camera);
 
-    // View-cube overlay — same rAF, corner viewport/scissor (no 2nd rAF loop).
+    // Corner overlays — same rAF, viewport/scissor slices (never a 2nd rAF loop).
     this._renderViewCube(w, h);
+    this._renderAxisTriad(w, h);
 
     requestAnimationFrame(this._tick);
   }
@@ -1551,6 +1985,35 @@ uniform float uHatchPeriod;`)
   // Distinct cache key — otherwise three.js hands us a plain MeshBasic program.
   mat.customProgramCacheKey = () => 'anvil-hatch';
   return mat;
+}
+
+// Mix a colour toward white IN sRGB. three.js Color.lerp interpolates in the
+// linear working space, which desaturates hard — #ff5c00 goes salmon-pink, i.e.
+// straight into the red ANVIL bans. Blending the sRGB bytes keeps the hue and
+// just brightens it: orange → bright orange, green → bright green.
+function whiten(color, k) {
+  const hex = color.getHex();   // sRGB
+  const up = (c) => Math.round(c + (255 - c) * k);
+  return new THREE.Color().setHex(
+    (up((hex >> 16) & 255) << 16) | (up((hex >> 8) & 255) << 8) | up(hex & 255));
+}
+
+// Single-glyph sprite texture (orientation-triad X/Y/Z letters). Transparent
+// background, axis-coloured, drawn upright — sprites always face the camera, so
+// the letters stay readable at every orbit angle.
+function makeGlyphTexture(ch, colorHex) {
+  const s = 64;
+  const cv = document.createElement('canvas');
+  cv.width = s; cv.height = s;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#' + colorHex.toString(16).padStart(6, '0');
+  g.font = '700 40px "Kode Mono", ui-monospace, monospace';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(ch, s / 2, s / 2 + 2);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
 }
 
 // Arrow parts authored along +Z (so one quaternion aligns both the arrow and

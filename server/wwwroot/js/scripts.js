@@ -20,9 +20,9 @@ export function initScripts({ runScript, toast }) {
     el.className = 'scripts-overlay';
     el.hidden = true;
     el.innerHTML = `
-      <div class="scripts-panel" role="dialog" aria-label="Scripts">
+      <div class="scripts-panel" role="dialog" aria-modal="true" aria-label="Scripts">
         <div class="scripts-head">
-          <span class="label">SCRIPTS <span style="color:var(--primary)">//</span> CODE-TO-GEOMETRY</span>
+          <span class="label">SCRIPTS <span class="slash">//</span> CODE-TO-GEOMETRY</span>
           <button type="button" class="scripts-close" aria-label="Close">✕</button>
         </div>
         <div class="scripts-list"></div>
@@ -37,11 +37,11 @@ export function initScripts({ runScript, toast }) {
 
   async function load() {
     const list = overlay.querySelector('.scripts-list');
-    list.innerHTML = '<div class="label" style="opacity:.6;padding:10px">loading…</div>';
+    list.innerHTML = '<div class="label scripts-msg">loading…</div>';
     let scripts;
     try { scripts = await api.listScripts(); }
-    catch (e) { list.innerHTML = `<div class="label" style="padding:10px">failed: ${escapeHtml(e.message)}</div>`; return; }
-    if (!scripts.length) { list.innerHTML = '<div class="label" style="opacity:.6;padding:10px">no scripts found</div>'; return; }
+    catch (e) { list.innerHTML = `<div class="label scripts-msg">failed: ${escapeHtml(e.message)}</div>`; return; }
+    if (!scripts.length) { list.innerHTML = '<div class="label scripts-msg">no scripts found</div>'; return; }
     list.innerHTML = '';
     for (const s of scripts) {
       const row = document.createElement('div');
@@ -49,8 +49,8 @@ export function initScripts({ runScript, toast }) {
       row.innerHTML = `
         <span class="scripts-name">${escapeHtml(s.name)}</span>
         <span class="scripts-src label">${escapeHtml(s.source)}</span>
-        <button type="button" class="scripts-peek" title="View source">CODE</button>
-        <button type="button" class="scripts-run">RUN</button>`;
+        <button type="button" class="btn scripts-peek" title="View source">CODE</button>
+        <button type="button" class="btn scripts-run">RUN</button>`;
       const runBtn = row.querySelector('.scripts-run');
       const peekBtn = row.querySelector('.scripts-peek');
       runBtn.addEventListener('click', async () => {
@@ -58,10 +58,12 @@ export function initScripts({ runScript, toast }) {
         runBtn.disabled = true; peekBtn.disabled = true; runBtn.textContent = '…';
         try {
           const parts = await runScript(s.id, s.name, (stage) => { runBtn.textContent = (stage || '…').slice(0, 10); });
-          toast?.(`${s.name}: ${parts.length} part(s) created`, 'ok');
+          // canonical toast vocabulary (ui.HZ_COLOR): success | error | warn | info.
+          // 'ok'/'err' silently fell through to the info accent before.
+          toast?.(`${s.name}: ${parts.length} part(s) created`, 'success');
           close();
         } catch (e) {
-          toast?.(`${s.name} failed: ${e.message}`, 'err', 9000);
+          toast?.(`${s.name} failed: ${e.message}`, 'error', 9000);
         } finally {
           runBtn.disabled = false; peekBtn.disabled = false; runBtn.textContent = prev;
         }

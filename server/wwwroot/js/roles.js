@@ -11,7 +11,8 @@
 //     negative  = --primary orange  (fuse: cavity to lattice)
 //
 //   ZONE roles are Autodesk-GD-style region markers layered on a base part
-//   (Wave-1 zoned lattice): blue = lattice-only, green = keep-solid, red = void.
+//   (Wave-1 zoned lattice): blue = lattice-only, green = keep-solid,
+//   white = void. (No red/amber anywhere in ANVIL — see style.css :root.)
 //
 export const ROLE_COLORS = {
   part:           '#ff5c00',  // --primary  oklch(0.6837 0.2120 40.5923)
@@ -19,7 +20,7 @@ export const ROLE_COLORS = {
   negative:       '#ff5c00',  // --primary
   'zone-lattice': '#4da3ff',  // blue  — lattice-only region
   'zone-keep':    '#47c86e',  // green — stay-solid region
-  'zone-void':    '#ff4747',  // red   — never-enter region
+  'zone-void':    '#e8e8e8',  // white — never-enter region (void = empty)
 };
 
 // Short labels for the per-row role select (grouped BASE / ZONES).

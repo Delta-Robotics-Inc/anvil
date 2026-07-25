@@ -1,0 +1,22 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Delta-Robotics-Inc/anvil/security/policy
+    about: >
+      Do not open a public issue for a vulnerability. Use private vulnerability
+      reporting or email mark@deltaroboticsinc.com. Please read the security
+      policy first - the scripting endpoint runs arbitrary code by design.
+  - name: Question, idea or show-and-tell
+    url: https://github.com/Delta-Robotics-Inc/anvil/discussions
+    about: >
+      Usage questions, parameter tuning, MCP and agent workflows, and parts you
+      have made. Please ask here rather than on the issue tracker.
+  - name: Delta Robotics Discord
+    url: https://discord.gg/W69MdWMrhH
+    about: >
+      Real-time chat with the maintainers and other users.
+  - name: Getting started and troubleshooting
+    url: https://github.com/Delta-Robotics-Inc/anvil#troubleshooting
+    about: >
+      Build errors, a missing PicoGK sibling checkout, Python sidecar problems
+      and resolution-guard rejections are covered in the README.

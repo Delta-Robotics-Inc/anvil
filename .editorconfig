@@ -1,0 +1,56 @@
+# EditorConfig - https://editorconfig.org
+# Honored natively by Visual Studio, VS Code, JetBrains Rider, GitHub and GitLab.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# PowerShell is launched by Windows tooling that expects CRLF.
+[*.{ps1,psm1,psd1,bat,cmd}]
+end_of_line = crlf
+indent_size = 4
+
+[*.sln]
+end_of_line = crlf
+indent_style = tab
+
+# Browser front end and config files.
+[*.{js,mjs,css,html,json,jsonc,yml,yaml,svg}]
+indent_size = 2
+
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+[*.md]
+indent_size = 2
+# Two trailing spaces are a hard line break in Markdown.
+trim_trailing_whitespace = false
+
+[*.{csproj,props,targets}]
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# C# style. Matches the existing code in server/ and worker/.
+# ---------------------------------------------------------------------------
+[*.{cs,csx}]
+indent_size = 4
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true
+csharp_prefer_braces = true:suggestion
+csharp_style_namespace_declarations = file_scoped:suggestion
+csharp_using_directive_placement = outside_namespace:suggestion
+dotnet_sort_system_directives_first = true
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:suggestion
+dotnet_style_predefined_type_for_locals_parameters_members = true:suggestion
+dotnet_style_object_initializer = true:suggestion
+dotnet_style_collection_initializer = true:suggestion

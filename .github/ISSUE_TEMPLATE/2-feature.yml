@@ -1,0 +1,62 @@
+name: Feature request
+description: Suggest a new capability, pattern, metric, tool or API.
+title: '[feat] '
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. The most useful requests describe the *printing or
+        CAD problem* you are stuck on, not just the feature you imagined.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: The real workflow that is blocked or painful today.
+      placeholder: >
+        I need a graded lattice that gets denser near the mounting bosses, and
+        today I have to write a script for it every time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like ANVIL to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      multiple: true
+      options:
+        - TPMS patterns and lattice fields
+        - Zoned lattice (lattice / keep / void)
+        - Tool palette (primitive, boolean, shell, offset, transform, mirror, duplicate)
+        - Viewport (section, gizmo, view cube, selection)
+        - Flow metrics
+        - Export (STL, faceted STEP, multi-part)
+        - MCP server and agent workflows
+        - C# scripting
+        - HTTP API
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Other tools, a script that half-works, a manual CAD workaround.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Would you like to implement this?
+      options:
+        - label: I would be willing to open a pull request for this.

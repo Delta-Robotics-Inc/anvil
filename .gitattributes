@@ -1,0 +1,61 @@
+# Normalize line endings: store LF in the repo, check out native.
+* text=auto
+
+# Scripts whose interpreter cares about the ending.
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.sh    text eol=lf
+
+# Source and config: always LF so C#, JS and Python diff cleanly across OSes.
+*.cs    text eol=lf
+*.csx   text eol=lf
+*.csproj text eol=lf
+*.sln   text eol=crlf
+*.py    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.jsonc text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.svg   text eol=lf
+
+# Binary assets: never diffed, never line-ending converted.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.mp4   binary
+*.zip   binary
+*.exe   binary
+*.dll   binary
+*.pdb   binary
+*.nupkg binary
+
+# 3D geometry. STL and STEP are technically text in their ASCII forms, but
+# samples/*.stl is binary STL and STEP files are huge, so treat all of them as
+# opaque blobs rather than letting git rewrite bytes or attempt a diff.
+*.stl   binary
+*.step  binary
+*.stp   binary
+*.3mf   binary
+*.vdb   binary
+
+# Excluded from `git archive` tarballs (source releases stay lean).
+/.github        export-ignore
+/.gitattributes export-ignore
+/.editorconfig  export-ignore
+/docs/assets    export-ignore
+
+# GitHub language stats: this is a C# project with a browser front end. Do not
+# let the vendored-free JS + the sample geometry skew the language bar.
+*.stl  linguist-vendored
+*.step linguist-vendored
+docs/* linguist-documentation

@@ -1,0 +1,141 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: this workflow only ever reads the repository.
+# Because a permissions block is present, every unlisted scope becomes `none`.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Static checks that need no native toolchain. These are the checks the CI
+  # badge actually promises, and they run on every PR including forks.
+  # ---------------------------------------------------------------------------
+  checks:
+    name: static checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Validate workflow, issue-form and Dependabot YAML
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 - <<'PY'
+          import pathlib, sys, yaml
+          roots = [pathlib.Path(".github")]
+          bad = 0
+          files = sorted(p for r in roots for p in r.rglob("*.y*ml"))
+          if not files:
+              sys.exit("no YAML found under .github/")
+          for p in files:
+              try:
+                  yaml.safe_load(p.read_text(encoding="utf-8"))
+                  print(f"ok   {p}")
+              except Exception as exc:
+                  bad += 1
+                  print(f"FAIL {p}: {exc}")
+          sys.exit(bad)
+          PY
+
+      - name: Byte-compile the Python sidecar
+        run: python3 -m compileall -q sidecar samples
+
+      - name: Parse the PowerShell scripts
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem -Path scripts -Filter *.ps1 -Recurse | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors -and $errors.Count -gt 0) {
+              $bad++
+              Write-Host "FAIL $($_.Name)"
+              $errors | ForEach-Object { Write-Host "     $($_.Message)" }
+            } else {
+              Write-Host "ok   $($_.Name)"
+            }
+          }
+          if ($bad -gt 0) { exit 1 }
+
+  # ---------------------------------------------------------------------------
+  # Full .NET 9 build on Windows.
+  #
+  # ANVIL's worker consumes PicoGK by ProjectReference, not NuGet:
+  #     worker/Anvil.Worker.csproj -> ..\..\PicoGK\src\PicoGK.csproj
+  # so PicoGK must sit as a SIBLING of the repo checkout. The two checkout steps
+  # below produce exactly that layout inside the workspace:
+  #     ${{ github.workspace }}/anvil/    <- this repo
+  #     ${{ github.workspace }}/PicoGK/   <- the PicoGK fork ANVIL builds against
+  #
+  # KNOWN LIMITATION (why continue-on-error is set):
+  # The PicoGK build dependency currently lives in a PRIVATE repository, so this
+  # job cannot check it out with the default GITHUB_TOKEN and will be skipped
+  # with a notice. Two ways to make it green:
+  #   1. Publish the PicoGK fork (preferred - it also unblocks contributors,
+  #      who otherwise cannot build ANVIL at all), then delete the
+  #      `continue-on-error` line and the `token:` line below; or
+  #   2. Add a repo secret PICOGK_TOKEN (a fine-grained PAT with read access to
+  #      the fork) and delete only the `continue-on-error` line.
+  # Upstream leap71/PicoGK is NOT a drop-in substitute: it keeps its sources at
+  # the repository root rather than under src/, and ships no prebuilt win-x64
+  # native DLLs, so the ProjectReference path above does not resolve against it.
+  #
+  # No test execution in CI v1: scripts/test_*.ps1 need a live ASP.NET server,
+  # the PicoGK native runtime and a Python 3.14 + build123d/cadquery-ocp sidecar.
+  # Those suites are run locally before release (see .github/CONTRIBUTING.md).
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (windows, .NET 9)
+    runs-on: windows-latest
+    continue-on-error: true # remove once the PicoGK dependency is reachable (see above)
+    steps:
+      - name: Checkout ANVIL
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          path: anvil
+
+      - name: Checkout PicoGK as a sibling directory
+        id: picogk
+        continue-on-error: true
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: Kevofehr/PicoGK
+          # Pinned to the exact commit the ANVIL worker is developed against.
+          ref: 3725be3
+          path: PicoGK
+          token: ${{ secrets.PICOGK_TOKEN || github.token }}
+
+      - name: Report a missing PicoGK checkout
+        if: steps.picogk.outcome != 'success'
+        run: |
+          echo "::notice title=PicoGK unavailable::The PicoGK build dependency could not be checked out (the repository is private). Publish the fork or set the PICOGK_TOKEN secret. Skipping the build."
+          exit 1
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Verify the sibling layout
+        shell: pwsh
+        run: |
+          $proj = Join-Path $env:GITHUB_WORKSPACE 'PicoGK\src\PicoGK.csproj'
+          if (-not (Test-Path $proj)) {
+            throw "expected PicoGK at $proj - the sibling layout is wrong"
+          }
+          Write-Host "ok  $proj"
+
+      - name: Build
+        run: dotnet build anvil/Anvil.sln -c Release --nologo

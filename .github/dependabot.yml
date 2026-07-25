@@ -1,0 +1,58 @@
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # NuGet. The server and the worker have deliberately disjoint dependency sets
+  # (the server never references Roslyn or PicoGK), so they are watched
+  # separately and their PRs stay independently reviewable.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: nuget
+    directory: /server
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - dotnet
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      server-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: nuget
+    directory: /worker
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - dotnet
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      worker-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions. Every action in .github/workflows/ is pinned to a full
+  # commit SHA; Dependabot updates the SHA and rewrites the trailing version
+  # comment, so pinning costs nothing in maintenance.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: 'chore(ci)'

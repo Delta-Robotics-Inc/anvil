@@ -1,0 +1,5 @@
+# Code owners are requested for review automatically on every pull request.
+# The LAST matching pattern wins, so keep the catch-all first.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+*       @Kevofehr

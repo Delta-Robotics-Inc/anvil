@@ -1,672 +1,338 @@
-# Anvil — Gyroid Cavity Forge
+# ANVIL
 
-**Anvil** is a local web app that converts a **solid part** or an **enclosed
-cavity** into a self-supporting **gyroid TPMS lattice** and exports it so it
-drops straight back into your CAD assembly, in place. The volumetric-geometry
-forge in the Delta Robotics toolchain — where raw parts are beaten into
-printable form.
+**Turn solid parts and sealed cavities into printable gyroid/TPMS lattices, and get them back in CAD coordinates.** No slicer can lattice a specific cavity, and nothing else exports a result that boolean-merges straight back into your assembly, in place. ANVIL does both, on your own machine.
 
-## What it is
+[![ci](https://github.com/Delta-Robotics-Inc/anvil/actions/workflows/ci.yml/badge.svg)](https://github.com/Delta-Robotics-Inc/anvil/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Platform: Windows x64](https://img.shields.io/badge/platform-Windows%20x64-0078D6.svg)](#platform-note)
+[![.NET 9](https://img.shields.io/badge/.NET-9.0-512BD4.svg)](https://dotnet.microsoft.com/)
+[![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/W69MdWMrhH)
 
-3D-printed parts with large internal voids are a problem for both major additive
-processes:
+![The ANVIL workspace: a 20 by 20 by 40 mm cylinder converted to a skeletal gyroid lattice, standing on the build plate. The left panel holds the TPMS pattern, cell size and resolution parameters; the right panel shows flow metrics (50 percent porosity, choke area, hydraulic diameter) with the open-area graph and its legend, plus the export panel with an editable filename.](docs/assets/hero.png)
 
-- **FDM** must fill an enclosed void with *support material* that you can never
-  remove — it is sealed inside.
-- **SLS / MJF** traps loose *powder* in the void with no escape hole, adding
-  weight and wasting material.
+## Quickstart
 
-The fix is to fill the void with a **triply-periodic minimal surface (TPMS)**
-lattice — a gyroid (or Schwarz P/D, Lidinoid, Neovius). A TPMS sheet is
-**self-supporting** (no support material needed) and **open-celled** (powder and
-air flow straight through), so it braces the walls while staying light and
-printable. No slicer can do this per-cavity, and nothing else exports the result
-in a **CAD-mergeable** frame. Anvil does both:
+ANVIL builds against a patched fork of [PicoGK](https://github.com/leap71/PicoGK), consumed by project reference. It must be cloned as a **sibling directory**, not inside this repo.
 
-- **Workflow A — single part:** import a part → gyroidize the whole solid →
-  export it alone, coordinates preserved.
-- **Workflow B — positive + negative:** import the positive part *and* a solid
-  that occupies its cavity (the "negative") → lattice the cavity → voxel-boolean
-  fuse it into the positive → export one watertight, FDM- and SLS-ready part.
+```powershell
+cd C:\Users\you\Repos
+git clone https://github.com/Delta-Robotics-Inc/anvil.git
+git clone <picogk-remote> PicoGK        # see Requirements: a sibling checkout is mandatory
 
-The voxel engine is [PicoGK](https://github.com/leap71/PicoGK); STEP↔STL and
-faceted-STEP writing are handled by a Python OCP sidecar. The browser UI is a
-bumpmesh-style drag-drop → parameters → preview → export loop.
+C:\Python314\python.exe -m pip install build123d cadquery-ocp
+
+cd anvil
+scripts\run.ps1
+```
+
+`run.ps1` builds the solution, verifies the worker exe, Python and sidecar are present, starts the server on `http://127.0.0.1:5238`, waits for `/api/health`, and opens your browser. Add `-NoBrowser` to stay headless.
+
+Then: drag `samples\hollow_bracket.step` onto the drop zone, leave the role as **Part**, and click **GENERATE**. You get a watertight gyroid-filled solid in about a second, ready to export as STL or STEP.
+
+> [!WARNING]
+> ANVIL runs **arbitrary C# with your user privileges, by design**, and binds an **unauthenticated** port. Read [Security](#security) before you connect an agent or run a script you did not write.
+
+## Contents
+
+- [Why](#why)
+- [The two workflows](#the-two-workflows)
+- [Requirements](#requirements)
+- [Parameters](#parameters)
+- [Sheet vs skeletal](#sheet-vs-skeletal)
+- [Zoned lattice](#zoned-lattice)
+- [The tool palette](#the-tool-palette)
+- [Working in the viewport](#working-in-the-viewport)
+- [Export](#export)
+- [Flow metrics](#flow-metrics)
+- [Coordinate preservation guarantee](#coordinate-preservation-guarantee)
+- [Drive it from an agent (MCP)](#drive-it-from-an-agent-mcp)
+- [Scripting](#scripting)
+- [Security](#security)
+- [Architecture](#architecture)
+- [HTTP API](#http-api)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Platform note](#platform-note)
+- [Contributing](#contributing)
+- [Credits](#credits)
+- [License](#license)
+
+## Why
+
+Parts with large internal voids are a problem for both major additive processes:
+
+- **FDM** fills an enclosed void with support material you can never remove. It is sealed inside.
+- **SLS / MJF** traps loose powder in the void with no escape path, adding weight and wasting material.
+
+The fix is to fill the void with a **triply periodic minimal surface (TPMS)** lattice. A TPMS sheet is **self-supporting** (no support material) and **open-celled** (air and powder flow straight through), so it braces the walls while staying light and printable.
+
+Slicers can only apply infill to a whole model, and mesh tools that can build a lattice hand you geometry in their own frame. ANVIL targets a specific cavity and never moves your coordinates, so the exported result drops back into Onshape or Fusion and merges with the original part without manual alignment.
+
+## The two workflows
+
+The role you assign each part decides the mode.
+
+| Roles in the parts list | Mode | What happens |
+| --- | --- | --- |
+| exactly one **Part** | **single** | The whole solid is latticed. |
+| one **Positive** + one **Negative** | **fuse** | The Negative's volume is latticed and voxel-boolean fused into the Positive, producing one watertight part. |
+
+For fuse mode, model the positive and the cavity negative in one shared coordinate system (as `samples\make_test_parts.py` does) and the result inherits that frame.
+
+Only base roles decide the mode. Zone roles layer on top without changing it, and you can also build parts from scratch with [the tool palette](#the-tool-palette).
 
 ## Requirements
 
 | | |
-|---|---|
-| **OS** | Windows x64 (Windows 10/11). See the [macOS note](#platform-note) below. |
-| **.NET** | .NET 9 SDK (`dotnet --version` ≥ 9.0). |
-| **PicoGK fork** | A **sibling clone** of the patched PicoGK fork at `..\PicoGK` (i.e. `C:\Users\...\Repos\PicoGK` next to this repo). The worker consumes it via a `ProjectReference` to `..\..\PicoGK\src\PicoGK.csproj` — no NuGet package. |
-| **PicoGK native runtime** | The worker csproj auto-copies the native DLLs (`picogk.1.7.dll`, `blosc.dll`, `lz4.dll`, `tbb12.dll`, `zlib1.dll`, `zstd.dll`) from `PicoGK\runtime\native\win-x64` next to `AnvilWorker.exe` on build. **A System32 PicoGK install is NOT required.** |
-| **Python** | Python 3.14 with `build123d` + `cadquery-ocp` (OCCT 7.9). Default interpreter path `C:\Python314\python.exe`; change it via `PythonPath` in `appsettings.json`. |
+| --- | --- |
+| **OS** | Windows x64 (10 or 11). See the [platform note](#platform-note). |
+| **.NET** | .NET 9 SDK (`dotnet --version` reports `9.0.x`). |
+| **PicoGK** | A **sibling checkout** at `..\PicoGK`. The worker references `..\..\PicoGK\src\PicoGK.csproj` directly, so the layout is mandatory. ANVIL tracks a patched fork pinned at `3725be3`; upstream `leap71/PicoGK` is not a drop-in substitute because it keeps sources at the repo root and ships no prebuilt native DLLs. See [CONTRIBUTING](.github/CONTRIBUTING.md#development-setup). |
+| **PicoGK native runtime** | Copied automatically. The worker csproj copies `picogk.1.7.dll`, `blosc.dll`, `lz4.dll`, `tbb12.dll`, `zlib1.dll` and `zstd.dll` next to `AnvilWorker.exe` on build. **No System32 PicoGK install is required.** |
+| **Python** | Python 3.14 with `build123d` and `cadquery-ocp` (OpenCascade 7.9). Default path `C:\Python314\python.exe`, overridable via `PythonPath` in `appsettings.json`. |
+| **Internet, first load only** | The viewer pulls three.js from a CDN. |
 
-`appsettings.json` (repo root) holds the tunables:
+`appsettings.json` in the repo root holds the tunables: `PythonPath`, `DataDir`, `MaxConcurrentJobs` and `WorkerPath`.
 
-```json
-{
-  "PythonPath": "C:\\Python314\\python.exe",
-  "DataDir": "data",
-  "MaxConcurrentJobs": 1,
-  "WorkerPath": "worker\\bin\\Debug\\net9.0\\AnvilWorker.exe"
-}
-```
-
-## Quick start
-
-```powershell
-# Build, verify prerequisites, launch the server, open the browser:
-scripts\run.ps1
-
-# Headless (no browser — e.g. for scripting/CI):
-scripts\run.ps1 -NoBrowser
-```
-
-`run.ps1` works from any directory. It builds `Anvil.sln` (Debug), checks the
-worker exe / Python / sidecar are present with clear errors, starts the server on
-**http://127.0.0.1:5238**, waits for `/api/health`, then opens your browser.
-
-Or run the server directly (build first with `dotnet build`):
-
-```powershell
-dotnet run --project server\Anvil.Server.csproj
-```
-
-## Usage
-
-Drop one or more **STL** or **STEP** files onto the drop zone, assign each part a
-**role**, set parameters, and click **Generate**. The role you pick decides the
-workflow:
-
-| Roles in the parts list | Mode | What happens |
-|---|---|---|
-| exactly one **Part** | **single** | The whole solid is gyroidized (Workflow A). |
-| one **Positive** + one **Negative** | **fuse** | The Negative's volume is latticed and merged into the Positive (Workflow B). |
-
-Only **base** roles (Part / Positive / Negative) decide the mode. **Zone** roles
-(Zone · Lattice / Keep / Void) and derived parts layer on top without changing it
-— see [Zoned lattice](#zoned-lattice). Beyond importing, you can also **build and
-edit parts in-app** with [the tool palette](#the-tool-palette).
-
-Uploaded parts render translucent; the generated result renders solid. Nothing is
-ever recentered — the preview sits exactly where CAD will place it.
-
-### Parameters
+## Parameters
 
 | Parameter | Meaning | Guidance |
-|---|---|---|
-| **Pattern** | TPMS family: Gyroid, Schwarz P, Schwarz D, Lidinoid, Neovius. | Gyroid is the robust default (smooth, isotropic, printable in any orientation). |
-| **Cell size (mm)** | Unit-cell period of the lattice. | Larger = coarser, lighter, faster. Smaller = denser, heavier, more triangles. Typical 6–12 mm. Default 8. |
-| **Wall thickness (mm)** | Thickness of the TPMS sheet. | Keep ≥ your printer's minimum wall (≈ nozzle/line width, e.g. ≥ 0.8–1.2 mm for FDM). Default 1.2. |
-| **Resolution (voxel mm)** | Voxel edge length — the sampling grid. | **Smaller = finer detail but O(n³) memory & time.** 0.2–0.4 mm is a good range. See the guard below. Default 0.3. |
-| **Overlap (mm)** *(fuse only)* | How far the lattice grows past the cavity wall into the positive, for a watertight joint. | 0.2–0.5 mm. Too small can leave a hairline seam; too large wastes material. Default 0.3. |
-| **Smoothing (mm)** | Optional `TripleOffset` that rounds sharp lattice edges. | 0 = off (fastest). A small value (0.1–0.3) softens facet ridges. Default 0. |
-| **STEP target (triangles)** | Triangle budget for the faceted-STEP export. | See [STEP export reality check](#step-export-reality-check). Default 60 000. |
+| --- | --- | --- |
+| **Pattern** | Gyroid, Schwarz P, Schwarz D, Lidinoid, Neovius. | Gyroid is the robust default: smooth, near-isotropic, printable in any orientation. |
+| **Cell size (mm)** | Unit-cell period. | Larger is coarser, lighter and faster. Typical 6 to 12 mm. Default 8. |
+| **Wall thickness (mm)** | Thickness of the TPMS sheet. | Keep at or above your printer's minimum wall (roughly line width, so 0.8 to 1.2 mm for FDM). Default 1.2. |
+| **Resolution (voxel mm)** | Voxel edge length, the sampling grid. | **Smaller is finer but costs O(n^3) memory and time.** 0.2 to 0.4 mm is a good range. Default 0.3. |
+| **Overlap (mm)** *(fuse only)* | How far the lattice grows past the cavity wall for a watertight joint. | 0.2 to 0.5 mm. Too small leaves a hairline seam. Default 0.3. |
+| **Smoothing (mm)** | Optional triple-offset that rounds sharp lattice edges. | 0 is off and fastest. 0.1 to 0.3 softens facet ridges. |
+| **Bias (mm)** *(skeletal only)* | Shifts the field iso-level, thickening or thinning the struts. Range -5 to +5. | Negative gives thinner struts and a more open channel. Replaces wall thickness in skeletal mode. |
+| **Flow axis** | The direction the flow profile and permeability are measured along. | Pick the axis fluid or powder actually travels. Default Z. |
+| **Rotation / phase / per-axis cell** | Re-orient or stretch the field before sampling. | Under the advanced **LATTICE** disclosure. See below. |
 
-> **Resolution guard.** The server rejects a job when the largest part dimension
-> divided by the voxel size exceeds **~2000 voxels per axis** (e.g. a 200 mm part
-> at 0.05 mm voxels = 4000 across → rejected: raise the voxel size). It also
-> **warns** when the effective grid exceeds **~2×10⁹ voxels** — the job will run
-> but may be slow and memory-heavy. When in doubt, start coarse (0.4 mm) and
-> refine.
+> [!IMPORTANT]
+> **Resolution guard.** The server rejects a job when the largest part dimension divided by the voxel size exceeds roughly **2000 voxels per axis**, and warns above roughly **2e9** total voxels. Start coarse (0.4 mm) and refine.
 
-### Lattice & flow parameters
+**Orientation matters for some patterns.** Gyroid is near-isotropic, so rotation mostly changes how walls meet the part surface. **Schwarz P is strongly anisotropic** with straight axis-aligned channels: aligning the flow axis with a channel gives far more open area than sampling off-axis, and a 45 degree rotation deliberately chokes it. For FDM, prefer rotations that keep sheet walls near-vertical along print Z; for powder-bed processes, orientation is unconstrained.
 
-These control the lattice topology and the flow-metrics analysis. The advanced
-group (rotation, phase, per-axis cell, reference flow) lives under the collapsible
-**LATTICE // 格子** disclosure and is optional — sensible defaults apply.
+## Sheet vs skeletal
 
-| Parameter | Meaning | Guidance |
-|---|---|---|
-| **Lattice type** | **Sheet** or **skeletal** — see [below](#sheet-vs-skeletal). | Sheet is the default (a thin TPMS wall separating two independent air networks). Skeletal is a solid strut network around one continuous channel. |
-| **Bias (mm)** *(skeletal only)* | Shifts the iso-level of the TPMS field, thickening/thinning the solid struts. Replaces **Wall thickness** when skeletal is selected. Range **−5…+5**, default 0. | Negative bias → thinner struts, more open channel. Positive → beefier struts, less open volume. 0 is the balanced minimal surface. |
-| **Flow axis** | The through-flow direction (**X / Y / Z**) the profile and permeability are measured along. | Pick the axis fluid/powder actually travels. Default **Z**. Drives the open-area profile, choke, hydraulic diameter, and ΔP. |
-| **Rotation (deg)** | Rotates the lattice field about X/Y/Z before sampling. Step 15°, range −180…180, default 0. | Re-orients cells relative to the part and the build plate — see [orientation guidance](#orientation-guidance). |
-| **Phase offset (0–1)** | Shifts the TPMS field's phase per axis (fraction of one cell period). Default 0. | Nudges where cell walls land relative to the part surface; useful to avoid a wall coinciding with a thin feature. Server clamps to 0–1. |
-| **Cell size (xyz)** | **Uniform** (one period, the default) or **per-axis** (independent X/Y/Z periods). | Per-axis stretches cells along one direction — e.g. a longer period along the flow axis for lower resistance. Prefilled from the uniform value when you switch. |
-| **Ref flow (L/min)** | Reference volumetric flow rate the Darcy ΔP estimate is reported at. Step 5, range 1–1000, default 10. | Only affects the reported **ΔP** number (linear in flow); it does not change the geometry. |
+A TPMS field `f(x,y,z) = 0` is one minimal surface dividing space into two interpenetrating volumes. The two modes keep different parts of it solid:
 
-### Sheet vs skeletal
+- **Sheet** thickens the *surface itself* into a wall. The solid is a thin membrane and **both** labyrinths either side stay open, giving two independent air networks that never connect. Best stiffness-to-weight, and the safe default for cavity venting.
+- **Skeletal** keeps *one* of the two volumes solid and leaves the other as a **single** continuous channel. One connected pore means lower, more predictable flow resistance, at some cost in isotropic stiffness.
 
-A TPMS field `f(x,y,z) = 0` is a single minimal surface that cleanly divides space
-into **two interpenetrating volumes** (`f > 0` and `f < 0`). The two modes keep
-different parts of that geometry as solid:
-
-- **Sheet** thickens the *surface itself* into a wall of the given thickness. The
-  solid is the thin membrane; the **two** labyrinths on either side are both open.
-  This is the classic self-supporting, open-celled infill: two independent air/powder
-  networks that never connect, braced by the wall between them. Best stiffness-to-weight
-  and the safe default for cavity venting.
-- **Skeletal** keeps *one* of the two volumes solid (biased by **Bias mm**) and leaves
-  the other as a **single** continuous channel. The result is a strut/gyroid-node
-  network. One connected pore means lower, more predictable flow resistance along the
-  channel — at some cost in isotropic stiffness.
-
-Rule of thumb: **sheet** when you want light bracing and powder escape on both sides;
-**skeletal** when a single clear flow path (cooling, filtration, fluidics) matters more
-than symmetric stiffness.
-
-### Orientation guidance
-
-The lattice family and its orientation interact with both flow and printability:
-
-- **Gyroid is nearly isotropic** — its properties barely change with direction, so
-  rotation mostly matters for how walls meet the part surface, not for flow. It prints
-  self-supporting in essentially any orientation. This is why it is the default.
-- **Schwarz P is strongly anisotropic** — it has straight, axis-aligned channels.
-  Aligning the **flow axis** with a Schwarz P channel gives a much larger open area (and
-  lower ΔP) than sampling it off-axis; a 45° rotation deliberately chokes it. If you pick
-  Schwarz P, set the flow axis and rotation on purpose — the choke number will move a lot.
-- **Rotation affects FDM overhangs.** Rotating the field changes the local wall angle
-  relative to the build plate. Steep, self-supporting angles print clean; rotating walls
-  toward horizontal introduces overhangs that may need support or sag. For FDM, prefer
-  rotations that keep sheet walls near-vertical along the print Z; for SLS/MJF (powder
-  support) orientation is unconstrained.
-
-## The tool palette
-
-Wave 1 turns Anvil into a HyDesign-style **object workspace**. The pipeline
-toolbar's middle groups — **PRIM · BOOL · MERGE · SHELL · OFFSET · XFORM ·
-MIRROR · DUPE** — each open a contextual panel at the top of the left column
-(part pickers + parameters + **CONFIRM**, with inline progress; **Esc** or the
-✕ closes it).
-
-Every tool is **non-destructive**: it runs a short worker job that produces a
-**new derived part** (its mesh at `data/parts/{id}/mesh.stl`, registered in the
-PartStore) and leaves its sources untouched. The derived part shows a
-**provenance line** in the OBJECTS tree — e.g. `└ BOOLEAN · A − B`,
-`└ SHELL · INSIDE 2mm` — and carries a replayable snapshot of the op request.
-There is no live modifier stack: **undo = delete the derived part.**
-
-| Tool | What it does | Key params |
-|---|---|---|
-| **Primitive** | Adds a box / cylinder / sphere / cone as a new part. | `kind`, `sizeMM` (full X/Y/Z), `centerMM` (defaults to the visible-union bbox centre), resolution (voxel mm) |
-| **Boolean** | Union, difference or intersection of two parts (`MAIN − SECONDARY`). | main, secondary, operation (`union` \| `difference` \| `intersection`), voxel |
-| **Merge** | Smooth (filleted) union of two parts. | A, B, blend (fillet mm), voxel |
-| **Shell** | Hollows a part into a wall — inward, outward or centred on the surface. | part, direction (`inside` \| `outside` \| `centered`), thickness mm, voxel |
-| **Offset** | Grows (+) or shrinks (−) a part by a signed distance. | part, distance (signed mm), voxel |
-| **Transform** | Non-destructive translate / rotate with live preview; **APPLY** bakes a new part. See [Transforms](#transforms). | part, translate mm, rotate deg, **CENTER** preset, **APPLY** |
-| **Mirror** | Reflects a part across the XY / YZ / XZ plane (winding-corrected). | part, plane, plane offset mm |
-| **Duplicate** | An instant, independent copy. | part |
-
-- **Mesh-exact vs voxelized.** **Primitive**, **Transform (APPLY)** and
-  **Mirror** are **mesh-only** — they never touch the voxel kernel, so they are
-  geometrically exact (no half-voxel loss). **Boolean**, **Merge**, **Shell**
-  and **Offset** run through PicoGK and are accurate to **± half a voxel**. Each
-  voxel op carries its own **Resolution (voxel mm)** field (prefilled from the
-  current TPMS voxel size); smaller = finer but heavier. Feature sizes must
-  clear the grid: shell thickness and `|offset|` must exceed **1.5 × voxel**, and
-  the server rejects an op whose union bounding box would blow the same
-  [resolution guard](#parameters) the generate path uses.
-- **Duplicate is synchronous** (a file copy, returned `200`); every other op is
-  an async worker job (`202`, then it finishes like a generate job).
-- **In-memory registry.** The PartStore is in memory only. Uploaded and derived
-  parts (and their `data/parts/{id}/` folders) are **not restored after a server
-  restart** — a fresh server starts with an empty parts list.
-
-## Transforms
-
-Each part carries an optional **non-destructive TRS** — translate (mm) + rotate
-(degrees); scale is reserved (= 1). It lives on the part record, **not** baked
-into geometry:
-
-- **Live preview.** The **TRANSFORM** tool edits translate/rotate with the
-  viewer applying the identical matrix instantly. The one canonical composition,
-  shared by worker and viewer, is **scale → rotX → rotY → rotZ → translate**.
-- **It travels with the part.** The TRS is folded into the mesh load
-  server-side (before voxelization) for **any** op or **Generate** that consumes
-  the part, so voxel and mesh ops both see the transformed part.
-- **APPLY bakes** the TRS mesh-to-mesh into a new part (exact, zero resolution
-  loss) beside the source, then resets the source's TRS to identity.
-- **CENTER** is a preset that writes an explicit `translate` moving the part's
-  bbox centre to the origin. Like every transform it is **visible, editable and
-  clearable — never a silent recentre.**
-
-This preserves Anvil's [coordinate guarantee](#coordinate-preservation-guarantee):
-ops never recenter, primitives are placed at an explicit `centerMM`, and the TRS
-is explicit and previewed 1:1.
+Rule of thumb: **sheet** for light bracing and powder escape on both sides, **skeletal** when one clear flow path (cooling, filtration, fluidics) matters more than symmetric stiffness.
 
 ## Zoned lattice
 
-Instead of latticing a whole body, you can **section off regions** with
-Autodesk-generative-design-style keep/avoid roles, layered on a base part. Assign
-these roles in the parts list exactly like base roles; the **ZONES** tile appears
-as soon as one exists:
+Instead of latticing a whole body, section off regions with generative-design-style roles layered on a base part:
 
-- **Zone · Lattice** (blue) — the lattice fills here.
-- **Zone · Keep** (green) — stays solid.
-- **Zone · Void** (red) — never latticed.
+- **Zone / Lattice** (blue): the lattice fills here.
+- **Zone / Keep** (green): stays solid.
+- **Zone / Void** (red): never latticed.
 
-> **The promise:** *the lattice fills the blue zones, stays **SKIN** mm inside
-> the surface, keeps green solid, and never enters red (+**GROW** mm).*
+> The promise: the lattice fills the blue zones, stays **SKIN** mm inside the surface, keeps green solid, and never enters red (plus **GROW** mm).
 
-The **ZONES** tile exposes three offsets:
+Three offsets control it: **Skin** (inward clearance off the part surface), **Transition** (reserved for a smooth solid-to-lattice blend, accepted and stored but not yet applied) and **Keep-out grow** (outward safety margin around every void).
 
-| Offset | Meaning |
-|---|---|
-| **Skin (mm)** | Inward skin off the base part surface the lattice keeps clear (single mode). Blue zones stay this many mm inside the wall. |
-| **Transition (mm)** | **V2 — hard edge for now.** Reserved for a smooth solid↔lattice blend. The value is accepted and stored but **not yet applied** in Wave 1. |
-| **Keep-out grow (mm)** | Outward growth of the red void zones. The lattice (and the body) is carved back this many mm around every void — a safety margin. |
+Zone algebra runs in a fixed order: lattice region = blue zones intersected with the body, pulled `SKIN` mm inside the surface, minus green keeps. The clipped TPMS fills that region and merges back into the body. Then, **last, so void always wins**, the grown red voids are subtracted, and a self-check confirms they are clear. In fuse mode skin is ignored (zeroed with a warning), keeps inside the cavity are re-added solid, and voids may cut into the positive by design.
 
-Zone algebra (single mode), in order: the lattice region = the blue zones ∩ the
-body (or the whole body if no blue zone), pulled **SKIN** mm inside the surface,
-minus the green keep zones; the clipped TPMS fills that region and is merged back
-into the body; then — **last, so void always wins** — the grown red voids are
-subtracted. A self-check confirms the voids are clear.
+With zones active, porosity and infill are measured against the **lattice region** rather than the whole bounding volume.
 
-- **Fuse mode.** Zones also apply to Workflow B: **skin is ignored** (the server
-  zeroes it and warns), **keep** zones inside the cavity are re-added solid, and
-  **voids carve last** (they may cut into the positive — intended).
-- **Zone-scoped flow metrics.** With zones, the flow envelope becomes the
-  **lattice region** (not the whole part). A new stat
-  **`latticeRegionVolumeMM3`** reports that region's volume, and porosity / infill
-  are measured against it rather than the full bounding volume.
+## The tool palette
 
-## Volume analysis
+ANVIL is an object workspace, not just a converter. Seven tools, each opening a contextual panel with part pickers, parameters and a confirm button.
 
-Every part — uploaded, converted-from-STEP, or derived from an op — carries
-**mass properties** computed by one divergence-theorem pass over its mesh:
+| Tool | What it does | Notes |
+| --- | --- | --- |
+| **PRIM** | Adds a box, cylinder, sphere or cone. | Mesh-exact. Placed at an explicit center and rests on the plate. |
+| **BOOL** | `UNION`, `DIFFERENCE`, `INTERSECT`, or `SMOOTH` (filleted union with a blend radius). | **Consumes both sources**: they stay listed but hidden and locked, so the result is the single active base part. |
+| **SHELL** | Hollows a part into a wall, inward, outward or centered. | Thickness must exceed 1.5x voxel. |
+| **OFFSET** | Grows or shrinks by a signed distance. | Magnitude must exceed 1.5x voxel. |
+| **XFORM** | Non-destructive translate, rotate and scale with live preview. `APPLY` bakes a new part. | Baking is mesh-exact, zero resolution loss. |
+| **MIRROR** | Reflects across a plane, winding-corrected. | Mesh-exact. |
+| **DUPE** | Instant independent copy. | Synchronous file copy. |
 
-- **Volume** (`volumeMM3`), **surface area** (`surfaceAreaMM2`), and **centre of
-  gravity** (`cogMM`).
+Every tool is **non-destructive**: it runs a worker job producing a **new derived part** with a provenance line in the objects tree (for example `TPMS / GYROID`, `PRIM / BOX 60x40x20`) and a replayable snapshot of its request.
 
-They are surfaced per part in the sidebar and returned by `POST /api/parts`,
-`GET /api/parts`, and — for a derived part — in `JobStatus.part` when its op
-completes.
+**Mesh-exact vs voxelized.** PRIM, XFORM bake and MIRROR never touch the voxel kernel, so they are geometrically exact. BOOL, SHELL and OFFSET run through PicoGK and are accurate to **plus or minus half a voxel**. Each voxel op carries its own resolution field.
+
+The part store is **in memory**: uploaded and derived parts do not survive a server restart, even though their `data/parts/{id}/` folders remain on disk.
+
+## Working in the viewport
+
+- **Z-up scene** with the build plate at Z0, a view cube (`TOP` / `BOTTOM` / `FRONT` / `BACK` / `LEFT` / `RIGHT`) and an orientation triad.
+- **Section view, Onshape style.** Pick an arbitrary plane from the triad, the X/Y/Z chips, or by clicking a flat face. Caps are drawn with **diagonal hatching**, so a cut reads as material and never as a hole. Drag the arrow to move the plane, or nudge it with `Alt`+wheel (`Alt`+`Shift`+wheel for fine steps). The swap chip inverts which half survives.
+- **Part-anchored gizmo** with `MOVE`, `ROTATE` and `SCALE`, plus `LAY FLAT` and `DROP`. Grab a selected part anywhere on its surface to slide it across the plate. Rotating auto-drops the part back onto the bed as part of the same action.
+- **Undo and redo**, 50 deep: `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y`. Imports, tool ops, deletes, moves, role changes and transform edits are all reversible.
+- **Linked ghosts.** A finished lattice registers as a **first-class part**, and the sources it was built from stay visible as translucent ghosts linked to it. Move the lattice and its ghosts follow as one unit; delete it and they are released.
+
+## Export
+
+One pipeline handles everything: select any number of parts, pick a format, export.
+
+- **STL** is lossless: it *is* the result mesh.
+- **STEP** is **best-effort and faceted**. The sidecar sews the triangle mesh into a faceted-BRep solid where every triangle becomes one planar face. A true analytic B-rep of a gyroid is impossible in any CAD tool, so files are large and the triangle count is budgeted: the worker coarse-remeshes above the target (default 60,000), warns above 150,000, and refuses above 500,000. Roughly 60,000 triangles produces a 135 MB STEP file in about 20 seconds. Prefer STL for slicing; use STEP only when you must boolean-merge in CAD.
+- **Multiple parts** export either as a **zip** of one file each, or **combined** into a single merged file.
+- Per-part transforms are baked at export time, once, and **nothing is ever recentered**.
 
 ## Flow metrics
 
-When a job finishes, the **FLOW // 流量** tile reports a set of **geometric** flow
-descriptors computed directly from the voxel field and the meshed result — sampled in
-≤128 bins along the chosen **flow axis**. These are **fast geometric estimates, not a
-CFD solution**: no Navier–Stokes, no turbulence, no real fluid. Use them to *compare*
-lattices and spot a choke, not to predict an absolute pressure drop.
+When a job finishes, the **FLOW** tile reports **geometric** flow descriptors computed from the voxel field and result mesh, sampled in up to 128 bins along the chosen flow axis. These are **fast geometric estimates, not a CFD solution**: no Navier-Stokes, no turbulence, no real fluid. Use them to *compare* lattices and spot a choke, not to predict an absolute pressure drop.
 
-Let `ε` = porosity (open fraction), `Sᵥ` = specific surface area (solid–void interface
-area per unit envelope volume), `A(s)` = open cross-sectional area at position `s` along
-the flow axis, and `A_env(s)` = the part's cross-section (envelope) at `s`.
+| Metric | Definition | Notes |
+| --- | --- | --- |
+| **Porosity** | Open (air) fraction of the envelope volume. | Free volume reported in cm3. |
+| **Open-area profile** | Open cross-section area per bin vs the part's envelope area. | Plotted as a sparkline. |
+| **Choke** | The minimum open cross-section, and where it occurs. | The flow-limiting constriction. Choke ratio compares it to the widest slice. |
+| **Specific surface** | Surface area per unit envelope volume. | High values mean good heat and mass transfer, and more drag. |
+| **Hydraulic diameter** | `4 * porosity / specific surface`. | The standard porous-media characteristic pore size. |
+| **Permeability** | Kozeny-Carman, in m2. | Geometric permeability of the pore network along the flow axis. |
+| **Pressure drop** | Darcy, at the reference flow rate. | Labelled EST. Linear in flow, derived from the geometric permeability. |
 
-| Metric | Formula / definition | Notes |
-|---|---|---|
-| **Porosity** `ε` | `airVolumeMM3 / envelopeVolumeMM3` (as %) | Fraction of the bounding volume that is open (air). Free volume = `airVolumeMM3 / 1000` cm³. |
-| **Open-area profile** `A(s)` | Open (void) area of each cross-section vs `A_env(s)`, per bin | Plotted as the **primary line**; the envelope is the dim reference. Leading/trailing zero bins are the empty space before/after the solid. |
-| **Choke** | `min_s A(s)` = `minOpenAreaMM2` at `minAtMM` | The tightest open cross-section — the flow-limiting constriction. **Choke ratio** = `minOpenAreaMM2 / grossAreaMM2` (how pinched the narrowest slice is vs the widest). Marked in red on the sparkline. |
-| **Specific surface** `Sᵥ` | `surfaceAreaMM2 / envelopeVolumeMM3` (mm⁻¹) | Wetted interface per unit volume. High `Sᵥ` = lots of surface (good for heat/mass transfer, higher drag). |
-| **Hydraulic diameter** `D_h` | `D_h = 4ε / Sᵥ` | The standard porous-media characteristic pore size. Larger `D_h` → freer flow. |
-| **Permeability** `k` | **Kozeny–Carman:** `k = ε³ / (c · Sᵥ² · (1−ε)²)` (m², `c ≈ 5`) | Geometric permeability of the pore network along the flow axis. Reported in scientific notation. |
-| **Pressure drop** `ΔP` | **Darcy:** `ΔP = (μ · L · Q) / (k · A)` at **Ref flow** `Q` | `μ` = fluid viscosity, `L` = `flowLengthMM`, `A` = mean open area. Labelled **EST** — linear in flow, derived from the geometric `k` above, **not** a solved flow field. |
-
-The tile also surfaces the worker's `warnings[]` as amber chips (red when the message
-contains "severe") — e.g. a sheet lattice's *two independent networks* note, or a
-near-total choke.
+The tile also surfaces worker warnings, for example a sheet lattice's "two independent air networks" note or a near-total choke.
 
 ## Coordinate preservation guarantee
 
-Every stage — worker, sidecar, and the three.js viewer — operates in the **source
-world frame**. STLs are loaded force-MM and saved MM, TPMS fields are
-world-anchored, no boolean recenters, and the viewer fits the camera with a
-`Box3` union instead of moving the mesh. Consequently **the exported part lands
-exactly where the original did** (± half a voxel): import `result.step` into
-Onshape/Fusion and it slots into place and boolean-merges with the source part —
-no manual mesh alignment. For Workflow B, model the positive and the negative in
-one shared coordinate system (as `samples\make_test_parts.py` does) and the fused
-result inherits that frame.
+Every stage (worker, sidecar and viewer) operates in the **source world frame**. STLs load force-MM and save MM, TPMS fields are world-anchored, no boolean recenters, and the viewer fits the camera with a bounding-box union instead of moving the mesh.
 
-## STEP export reality check
+Consequently **the exported part lands exactly where the original did**, to within half a voxel. Import the STEP into Onshape or Fusion and it slots into place and boolean-merges with the source part, with no manual mesh alignment. Even `CENTER` in the transform panel is an explicit, visible, clearable translate, never a silent recenter.
 
-STL is always exported losslessly (it *is* the result mesh). STEP is
-**best-effort and faceted**: the sidecar sews the triangle mesh into a
-faceted-BRep solid where **every triangle becomes one planar face**. A true
-analytic B-rep of a gyroid is **impossible** — there is no closed-form
-NURBS/analytic surface for a TPMS clipped to an arbitrary volume, in any CAD tool.
-So STEP files are large, and the triangle count is budgeted:
+## Drive it from an agent (MCP)
 
-| Budget | Behavior |
-|---|---|
-| **default target 60 000 tris** | If the result exceeds the target, the worker coarse-remeshes (dispose → re-init PicoGK at a larger voxel) before conversion. |
-| **warn at 150 000 tris** | Conversion proceeds but returns a warning (slow, very large file). |
-| **refuse above 500 000 tris** | The sidecar refuses with an actionable message; decimate / raise the voxel size and retry. |
-
-Observed cost: **~60 000 triangles ≈ a 135 MB STEP file, ~20 s** to write. Prefer
-STL for slicing; use STEP only when you must boolean-merge in CAD.
-
-## Architecture
-
-Three cooperating processes keep PicoGK's native constraints (one `Library` per
-process, process-global voxel size, native crashes kill the host) isolated from
-the web host:
-
-```
-  Browser  (three.js via jsDelivr CDN, no build step)
-     │  HTTP  /api   →  http://127.0.0.1:5238
-     ▼
-  AnvilServer   (ASP.NET minimal API)         ← references NO PicoGK
-     ├─ per job ─▶  AnvilWorker.exe           headless PicoGK, one Library/job,
-     │                                         crash-isolated, real cancel (Kill)
-     └─ STEP↔STL ─▶ cadconvert.py (Python)     OCP / OCCT 7.9 faceted-BRep + mesh
-```
-
-The server only shells out — it queues jobs (max `MaxConcurrentJobs`), spawns one
-`AnvilWorker.exe` per generation with a `job.json`, parses the worker's
-JSON-lines progress on stdout, and calls the Python sidecar for STEP/STL. All
-voxel math lives in the worker. (The viewer loads three.js from a CDN, so the 3D
-preview needs internet access on first load.)
-
-## API reference
-
-Base path `/api`, JSON is camelCase. The server binds `http://127.0.0.1:5238`.
-
-| Method | Route | Purpose |
-|---|---|---|
-| `GET` | `/api/health` | `{ ok, workerExists, workerPath, python }` |
-| `POST` | `/api/parts` | multipart upload `.stl` / `.step` / `.stp` (STEP is converted to STL via the sidecar first) → `{ id, name, sourceFormat, stlUrl, triangles, bbox }` |
-| `GET` | `/api/parts/{id}/mesh.stl` | binary STL for the preview |
-| `DELETE` | `/api/parts/{id}` | remove a part |
-| `GET` | `/api/parts` | list every registered part (uploads + derived) → `[PartInfo]` |
-| `POST` | `/api/ops` | run a tool op → a new derived part. `duplicate` returns `200 { …PartInfo }` (synchronous file copy); every other op returns `202 { jobId, partId }` and finishes as an op job (watch `part` in JobStatus). See [Objects & Ops](#objects--ops-post-apiops). |
-| `POST` | `/api/jobs` | JobRequest (below) → `202 { jobId, warning }` |
-| `GET` | `/api/jobs/{id}` | JobStatus (below); the frontend polls @ 500 ms |
-| `POST` | `/api/jobs/{id}/cancel` | kill the worker for a running job |
-| `GET` | `/api/jobs/{id}/preview.stl` | result binary STL — this **is** the STL export (`?download=1` to attach) |
-| `POST` | `/api/jobs/{id}/step` | optional `{ targetTriangles }` → kick off faceted-STEP conversion (async; watch `step` in JobStatus) |
-| `GET` | `/api/jobs/{id}/result.step` | faceted-BRep STEP (`?download=1`) |
-
-**JobRequest** (`POST /api/jobs`):
-
-```jsonc
-{
-  "mode": "single",              // "single" | "fuse"
-  "partId": "p_…",               // single mode
-  "positiveId": "p_…",           // fuse mode
-  "negativeId": "p_…",           // fuse mode
-  "pattern": "gyroid",           // gyroid | schwarzP | schwarzD | lidinoid | neovius
-  "latticeType": "sheet",        // "sheet" (default) | "skeletal"
-  "cellSizeMM": 8.0,
-  "cellSizeXYZ": { "x": 8, "y": 8, "z": 16 },  // optional; omit for uniform cellSizeMM
-  "wallThicknessMM": 1.2,        // sheet mode: TPMS wall thickness
-  "biasMM": 0.0,                 // skeletal mode only: field iso-level bias (−5…+5)
-  "voxelSizeMM": 0.3,
-  "overlapMM": 0.3,              // fuse mode
-  "smoothOffsetMM": 0,
-  "rotationDeg": { "x": 0, "y": 0, "z": 0 },   // lattice field rotation, degrees
-  "phaseOffset": { "x": 0, "y": 0, "z": 0 },   // 0–1 per axis (server clamps)
-  "flowAxis": "z",               // "x" | "y" | "z" (default z) — flow-metrics axis
-  "refFlowLpm": 10,              // 1–1000; reference flow for the ΔP estimate
-  "stepExport": { "enabled": false, "targetTriangles": 60000 }
-}
-```
-
-**JobStatus** (`GET /api/jobs/{id}`):
-
-```jsonc
-{
-  "id": "j_…",
-  "state": "running",            // queued | running | done | failed | cancelled
-  "stage": "boolean",
-  "progress": 0.6,
-  "stats": {
-    "volumeMM3": 0, "envelopeVolumeMM3": 0, "infillPct": 0, "triangles": 0,
-    "latticeRegionVolumeMM3": 0,   // zoned generate: volume of the lattice region (envelope for flow)
-    // ── flow metrics (present when the analysis ran) ──
-    "airVolumeMM3": 0, "porosityPct": 0,
-    "minOpenAreaMM2": 0, "minAtMM": 0, "chokeRatio": 0, "grossAreaMM2": 0,
-    "flowLengthMM": 0, "surfaceAreaMM2": 0, "specificSurfaceInvMM": 0,
-    "hydraulicDiameterMM": 0, "permeabilityM2": 0, "deltaPKPa": 0,
-    "flowAxis": "z", "refFlowLpm": 10,
-    "warnings": [],              // string[]; UI renders as amber/red chips
-    "profile": {                 // ≤128 bins; leading/trailing zero bins exist
-      "axis": "z",
-      "positionsMM":   [/* … */],
-      "openAreaMM2":   [/* … */],
-      "envelopeAreaMM2":[/* … */]
-    }
-  },
-  "step":  { "state": "none",    // none | running | done | failed
-             "triangles": null, "warning": null, "error": null },
-  "warning": null,
-  "error": null,                 // set to the worker's message when state == "failed"
-  "part": null                   // op jobs only — the derived PartInfo once state == "done"
-}
-```
-
-> **Error surfacing.** A worker crash mid-job sets `state: "failed"` with the
-> worker's stderr message in `error`. A failed STEP conversion (e.g. the >500 000
-> triangle refusal) sets `step.state: "failed"` with the sidecar's actionable
-> `{detail}` in `step.error`. The UI surfaces both as toasts.
-
-### Objects & Ops (`POST /api/ops`)
-
-One endpoint drives the whole [tool palette](#the-tool-palette). The `op` field
-selects the tool; the rest of the body is op-specific. `duplicate` returns `200`
-with the finished `PartInfo`; every other op returns `202 { jobId, partId }` and
-completes as an op job.
-
-```jsonc
-{
-  "op": "boolean",               // boolean|merge|shell|offset|transform|mirror|primitive|duplicate
-  "inputs": [                     // source parts (0 for primitive, 1 or 2 otherwise)
-    { "partId": "p_…",
-      "transform": {              // OPTIONAL per-input TRS, folded into the mesh load
-        "translateMM": { "x": 0, "y": 0, "z": 0 },   // NOTE the field name: translateMM (mm), not "translate"/"position"
-        "rotateDeg":   { "x": 0, "y": 0, "z": 0 }    // degrees; scale is reserved
-      } }
-  ],
-  "name": "optional display name",
-  "voxelSizeMM": 0.3,             // voxel ops only (boolean/merge/shell/offset)
-  "booleanKind": "difference",    // boolean: union|difference|intersection
-  "filletMM": 1.0,                // merge: blend radius
-  "shellDirection": "inside",     // shell: inside|outside|centered
-  "shellThicknessMM": 2.0,        // shell (> 1.5 × voxel)
-  "offsetDistMM": -2.0,           // offset: signed (|d| > 1.5 × voxel)
-  "bake": true,                   // transform: bake the input TRS mesh-to-mesh (APPLY)
-  "mirror":    { "planePoint": {"x":0,"y":0,"z":0}, "planeNormal": {"x":1,"y":0,"z":0} },
-  "primitive": { "kind": "box", "sizeMM": {"x":60,"y":40,"z":20}, "centerMM": {"x":0,"y":0,"z":0}, "sides": 0 }
-}
-```
-
-Validation is strict (`400` on failure): unknown `op`/`booleanKind`/`shellDirection`,
-non-distinct or missing input parts, feature sizes ≤ 1.5 × voxel, and the union
-bbox blowing the [resolution guard](#parameters).
-
-### Zones & transforms on `POST /api/jobs`
-
-`JobRequest` gains two optional fields; omit both and the generate path is
-byte-identical to the legacy behaviour.
-
-```jsonc
-{
-  // …all existing JobRequest fields…
-  "zones": {
-    "latticeIds": ["p_…"],        // blue  — lattice-only regions
-    "keepIds":    ["p_…"],        // green — stay-solid regions
-    "voidIds":    ["p_…"],        // red   — never-enter regions
-    "skinThicknessMM": 1.5,       // inward skin off the surface (single mode; zeroed + warned in fuse)
-    "transitionMM": 0,            // V2 — accepted & stored, NOT applied in Wave 1 (hard edge)
-    "keepOutGrowMM": 0.5          // outward growth of the void zones
-  },
-  "transforms": {                 // per-part non-destructive TRS, keyed by part id (base AND zone parts)
-    "p_…": { "translateMM": { "x": 10, "y": 0, "z": 0 }, "rotateDeg": { "x": 0, "y": 0, "z": 0 } }
-  }
-}
-```
-
-> **`translateMM`, not `translate`.** The TRS translation field is **`translateMM`**
-> (millimetres) everywhere — the op `inputs[].transform`, the job `transforms`
-> map, and the internal `TransformDto`. Sending `translate` or `position` is
-> silently ignored.
-
-> **In-memory PartStore.** Both endpoints register parts in an in-memory store
-> that starts empty on every launch — parts (uploads and derived alike) **do not
-> survive a server restart**, even though their `data/parts/{id}/` folders remain
-> on disk.
-
-## MCP server (drive Anvil from an AI agent)
-
-Anvil hosts an in-process **Model Context Protocol** server at `/mcp` (streamable
-HTTP, stateless) using the official C# SDK. Any MCP client — Claude Code,
-Claude Desktop, your own agent — can list parts, run every tool op, generate
-lattice, run scripts, and export results. Add it once:
+ANVIL hosts an in-process [Model Context Protocol](https://modelcontextprotocol.io) server at `/mcp` (streamable HTTP, stateless) exposing **20 tools**. Any MCP client can list parts, run every tool op, generate lattices, run scripts and export results.
 
 ```bash
 claude mcp add anvil --transport http --url http://127.0.0.1:5238/mcp
 ```
 
-The server binds **`127.0.0.1` only** and has **no authentication** — read the
-[Security](#security) section before connecting anything.
+Tools that spawn jobs poll to completion internally (250 ms, 10 minute cap) and return the terminal job as JSON, so an agent sees synchronous results. Structured worker errors, including a script's compile diagnostics, pass straight through.
 
-Job-spawning tools **poll to completion internally** (250 ms, ~10 min cap) and
-return the terminal job as JSON, so an agent sees synchronous results. Structured
-worker errors — including a script's `scriptError[]` compile diagnostics — pass
-straight through.
+Covered surfaces: `list_parts`, `add_part_from_file`, `delete_part`, `duplicate_part`, `create_primitive`, `boolean_op`, `merge_parts`, `shell_part`, `offset_part`, `transform_part`, `mirror_part`, `generate_infill`, `get_job`, `cancel_job`, `export_step`, `get_result_stl`, `run_script`, `list_scripts`, `get_script`, `save_script`.
 
-| Tool | What it does |
-|---|---|
-| `list_parts` | List every registered part (uploads + derived + script outputs). |
-| `add_part_from_file` | Register a part from an **absolute** local `.stl` / `.step` / `.stp` path. |
-| `delete_part` | Delete a part by id. |
-| `duplicate_part` | Independent copy of a part (synchronous). |
-| `create_primitive` | `box`\|`cube`\|`cylinder`\|`sphere`\|`cone` — `sizeMM` `[x,y,z]`, optional `centerMM`. |
-| `boolean_op` | `union`\|`difference`\|`intersection` of two parts. |
-| `merge_parts` | Union two parts with a smoothing `filletMM` (default 1). |
-| `shell_part` | Hollow into a shell — `inside`\|`outside`\|`centered`, `thicknessMM`. |
-| `offset_part` | Grow / shrink by a signed `distMM`. |
-| `transform_part` | Bake `translateMM`/`rotateDeg`/`scale` into a new part. |
-| `mirror_part` | Mirror across a plane (`planeNormal`, optional `planePoint`). |
-| `generate_infill` | Full TPMS generate — `single`/`fuse`, patterns, sheet/skeletal, the zoned schema + transforms. |
-| `get_job` / `cancel_job` | Inspect / cancel a job. |
-| `export_step` | Faceted-STEP export (optional remesh budget, optional `outPath`). |
-| `get_result_stl` | Copy a job's result STL to an absolute `outPath`. |
-| `run_script` | Compile + run C# geometry code (see below). |
-| `list_scripts` / `get_script` / `save_script` | Browse and save the script library. |
+**Connecting an agent to `/mcp` means that agent can run code on this machine.** See [Security](#security).
 
-## Scripting (LEAP71-style code-to-geometry)
+## Scripting
 
-Anvil compiles and runs user **C# scripts** (`.csx`) against the PicoGK +
-`Anvil.Worker` APIs in a per-job worker process. A script is the escape hatch for
-computational parts that the fixed tool palette can't express — parametric heat
-exchangers, functionally-graded lattices, anything you can write with signed
-distance fields. Run one from the **SCRIPTS** panel in the app, `POST
-/api/scripts/run`, or the `run_script` MCP tool.
+ANVIL compiles and runs user **C# scripts** (`.csx`) against the PicoGK and `Anvil.Worker` APIs in a per-job worker process. This is the escape hatch for computational parts the fixed palette cannot express: parametric heat exchangers, functionally graded lattices, anything expressible with signed distance fields. Run one from the **SCRIPTS** panel, `POST /api/scripts/run`, or the `run_script` MCP tool.
 
-**Globals** (the script's `this` — call them unqualified):
+Globals available unqualified: `Params` and the typed readers `ParamF` / `ParamS` / `ParamB`, `VoxelSizeMM`, `SavePart(name, Voxels)` (meshes the field, removes floating islands, watertight-checks and registers it), `SavePart(name, Mesh)`, and `Log(msg)`. Imported automatically: `PicoGK` (`Voxels`, `Mesh`, `IImplicit`, `BBox3`, booleans and offsets), `Anvil.Worker` (`MeshUtil`, `TPMSWall`), plus `System`, `System.Numerics` and a static `Math`.
 
-| Member | Purpose |
-|---|---|
-| `Params` | `IReadOnlyDictionary<string,object?>` of the run's parameters. |
-| `ParamF(key, fallback)` / `ParamS` / `ParamB` | Typed parameter reads with defaults. |
-| `VoxelSizeMM` | The voxel size this job runs at. |
-| `SavePart(name, Voxels)` | Mesh the field, remove floating islands, watertight-check, register it. |
-| `SavePart(name, Mesh)` | Register a mesh you built directly (watertight **check** only). |
-| `Log(msg)` | Structured progress note (collected into the job's `log[]`). |
-
-**Available APIs** (imported automatically): `PicoGK` (`Voxels`, `Mesh`,
-`IImplicit`, `BBox3`, booleans/offsets) and `Anvil.Worker` (`MeshUtil` hand-rolled
-primitives, `TPMSWall`), plus `System`, `System.Numerics`, and a static `Math`.
-
-Run parameters are a JSON object; e.g. `POST /api/scripts/run`:
-
-```jsonc
-{
-  "code": "…C# source…",
-  "name": "my_part",
-  "params": { "sizeMM": 40, "cellMM": 6 },
-  "voxelSizeMM": 0.3
-}
-```
-
-Two versioned seeds live in `scripts-library/` (both are library scripts in the
-SCRIPTS panel and are covered by the Stage-5 gate):
+Two annotated seeds live in [`scripts-library/`](scripts-library):
 
 | Seed | What it makes |
-|---|---|
-| `heat_exchanger_core.csx` | A parametric gyroid HX core (box envelope ∩ sheet-gyroid field). The annotated template for LEAP71-style work. |
-| `graded_lattice_puck.csx` | A Ø40×15 puck filled with a **radially graded** skeletal gyroid via a custom inline `IImplicit`. |
+| --- | --- |
+| `heat_exchanger_core.csx` | A parametric gyroid heat-exchanger core. The template for this style of work. |
+| `graded_lattice_puck.csx` | A 40 by 15 mm puck filled with a radially graded skeletal gyroid via a custom inline `IImplicit`. |
 
-User scripts saved through `POST /api/scripts` (or `save_script`) land in
-`data/scripts/` (gitignored, slugified filenames, path-traversal rejected). Part
-provenance stores the script **name + params + SHA-256** — never the source.
+Scripts you save land in `data/scripts/` (gitignored, slugified, path traversal rejected). Part provenance stores the script name, params and SHA-256, never the source.
+
+> [!CAUTION]
+> **Scripts execute arbitrary C# with your full user privileges. There is no sandbox.** Treat a `.csx` exactly like an executable someone handed you: read it before you run it.
 
 ## Security
 
-**Read this before exposing the port or connecting an agent.**
+**Read this before exposing the port or connecting an agent.** The full policy, including what is and is not a reportable vulnerability, is in [SECURITY.md](.github/SECURITY.md).
 
-- **Scripts and tools execute with your user privileges. There is no sandbox.** A
-  script runs **arbitrary C#** in a worker process; it can read, write, and delete
-  files and do anything your account can. MCP tools run geometry ops and
-  `add_part_from_file` reads arbitrary absolute paths.
-- **The server binds `127.0.0.1` only and has no authentication.** Anyone who can
-  reach the port can drive every tool and run arbitrary code. **Do not** bind it to
-  a public interface, port-forward it, or put it behind a tunnel.
-- **Connecting an agent to `/mcp` means the agent can run code on this machine.**
-  Only connect agents you trust, and **do not run untrusted scripts** — treat a
-  `.csx` exactly like an executable you were handed.
-- Per-job worker processes give crash isolation and cleanup, **not** a security
-  boundary.
+- **No sandbox.** Scripts run arbitrary C# and can read, write and delete anything your account can. MCP tools run geometry ops, and `add_part_from_file` reads arbitrary absolute paths.
+- **The server binds `127.0.0.1` only and has no authentication.** Anyone who can reach the port can drive every tool and run arbitrary code. Do not bind it to a public interface, port-forward it, or put it behind a tunnel.
+- **Connecting an agent to `/mcp` grants that agent code execution on this machine.** Only connect agents you trust.
+- Per-job worker processes give crash isolation and cleanup, **not** a security boundary.
 
-## Samples
+To report a vulnerability, use [private vulnerability reporting](https://github.com/Delta-Robotics-Inc/anvil/security/advisories/new) or email mark@deltaroboticsinc.com. Never open a public issue for one.
 
-`samples/` contains ready-to-use test parts and the generator that made them:
+## Architecture
 
-| File | Use |
-|---|---|
-| `Cylinder.stl` | A simple binary STL (from PicoGK) for a quick Workflow A test. |
-| `positive.step` | 60×40×20 box with a fully-enclosed 50×30×12 cavity — Workflow B **positive**. |
-| `negative.step` | The 50×30×12 cavity solid alone, in the **same world frame** it occupies inside `positive.step` — Workflow B **negative**. |
-| `hollow_bracket.step` | A single-solid L-bracket (~50 mm) for Workflow A. |
-| `make_test_parts.py` | Regenerates the three STEP parts: `C:\Python314\python.exe samples\make_test_parts.py`. |
+Three cooperating processes keep PicoGK's native constraints (one `Library` per process, process-global voxel size, native crashes kill the host) isolated from the web host.
+
+```mermaid
+flowchart TD
+    B["Browser<br/>three.js via CDN, no build step"]
+    S["AnvilServer<br/>ASP.NET minimal API<br/>references NO PicoGK"]
+    W["AnvilWorker.exe<br/>headless PicoGK, one Library per job<br/>crash-isolated, real cancel"]
+    P["cadconvert.py<br/>Python OCP / OpenCascade 7.9<br/>faceted B-rep and meshing"]
+
+    B -->|"HTTP /api and /mcp to 127.0.0.1:5238"| S
+    S -->|"one process per job, job.json in, JSON-lines progress out"| W
+    S -->|"STEP to STL and STL to STEP"| P
+```
+
+The server only shells out: it queues jobs (bounded by `MaxConcurrentJobs`), spawns one `AnvilWorker.exe` per job with a `job.json`, parses JSON-lines progress from stdout, and calls the Python sidecar for STEP. **All voxel math lives in the worker.**
+
+## HTTP API
+
+Base path `/api`, JSON is camelCase, server binds `http://127.0.0.1:5238`.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/health` | Liveness plus worker and Python paths. |
+| `GET` `POST` `DELETE` | `/api/parts` | List, upload (`.stl` / `.step` / `.stp`) and delete parts. |
+| `GET` | `/api/parts/{id}/mesh.stl` | Binary STL for the preview. |
+| `POST` | `/api/ops` | Run a tool op, producing a new derived part. `duplicate` returns `200`; everything else returns `202` and finishes as a job. |
+| `POST` | `/api/jobs` | Start a lattice generate. Returns `202`. |
+| `GET` `POST` | `/api/jobs/{id}` , `/api/jobs/{id}/cancel` | Poll status (the UI polls at 500 ms) or kill the worker. |
+| `POST` | `/api/export` | Unified export. Returns `202` with an export id. |
+| `GET` | `/api/export/{id}` , `/api/export/{id}/file` | Poll, then download. `409` if not ready. |
+| `POST` | `/api/scripts/run` | Compile and run a C# script. |
+| `GET` `POST` | `/api/scripts` | Browse and save the script library. |
+| n/a | `/mcp` | The MCP endpoint. |
+
+Validation is strict and returns `400` with an actionable message: unknown op or boolean kind, non-distinct or missing inputs, feature sizes at or below 1.5x voxel, and anything blowing the resolution guard.
+
+> [!NOTE]
+> The TRS translation field is **`translateMM`** (millimetres) everywhere: op `inputs[].transform`, the job `transforms` map and the export `transforms` map. Sending `translate` or `position` is silently ignored. Transforms compose as `scale -> rotX -> rotY -> rotZ -> translate` in worker, server and viewer alike.
 
 ## Testing
 
-Three PowerShell harnesses cover the tool, HTTP, scripting and MCP surfaces. All
-are **self-contained and side-effect-free against a running dev server** — they
-build to a scratch output and use an isolated port/data dir, so a live server on
-`5238` is never touched.
+Three PowerShell harnesses cover the worker, HTTP, scripting and MCP surfaces. Each builds to a scratch output and runs its own server on an isolated port and data directory, so a live dev server on 5238 is never touched. Each prints an `N passed / N failed / N total` summary and exits non-zero on failure.
 
 ```powershell
-# Worker CLI — drives AnvilWorker.exe directly with generated job.json files.
-# Asserts primitive volumes, boolean/shell/offset results, transform-bake and
-# rotate bbox math, the winding-corrected mirror, a full zoned generate
-# (latticeRegion + void-clear), and the legacy single/fuse regression.
-powershell -ExecutionPolicy Bypass -File scripts\test_ops.ps1
-
-# HTTP API — builds the server to a scratch dir, runs it on port 5239, then:
-# upload → POST /api/ops boolean → poll → GET /api/parts (derived w/ mass props)
-# → duplicate 200 → a zoned /api/jobs on op-created primitives → preview.stl,
-# plus the negative cases (zone == base, unknown op, over-resolution → 400).
-powershell -ExecutionPolicy Bypass -File scripts\test_api.ps1
-
-# Scripting + MCP — (a) a worker-direct script job (manifest + watertight STL),
-# (b) a compile-error script → structured scriptError, (c) POST /api/scripts/run
-# heat_exchanger_core → parts registered, and (d) an MCP smoke over raw JSON-RPC
-# to /mcp (initialize → tools/list → create_primitive → boolean_op →
-# generate_infill → run_script).
-powershell -ExecutionPolicy Bypass -File scripts\test_scripts.ps1
+powershell -ExecutionPolicy Bypass -File scripts\test_ops.ps1      # worker CLI, driven directly
+powershell -ExecutionPolicy Bypass -File scripts\test_api.ps1      # HTTP surface incl. export
+powershell -ExecutionPolicy Bypass -File scripts\test_scripts.ps1  # Roslyn scripting + MCP
 ```
 
-A clean `dotnet build Anvil.sln` plus a green run of all three scripts is the
-gate. (`scripts\test_api.ps1` and `scripts\test_scripts.ps1` accept `-Port` to
-move their throwaway instance off 5239 if needed.)
+A clean `dotnet build Anvil.sln` plus all three green is the merge gate. `test_api.ps1` and `test_scripts.ps1` accept `-Port` (default 5239).
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `error MSB3202: project file ..\..\PicoGK\src\PicoGK.csproj was not found` | PicoGK is missing or in the wrong place. It must be a **sibling** of `anvil`, not inside it, and it must be the patched fork (upstream keeps sources at the repo root). See [Requirements](#requirements). |
+| `run.ps1` says the worker exe is missing | The build failed. Run `dotnet build Anvil.sln` and read the errors. |
+| `run.ps1` cannot find Python | Set `PythonPath` in `appsettings.json` to your interpreter, and confirm `build123d` and `cadquery-ocp` are installed into *that* interpreter. |
+| STEP upload or export fails immediately | The sidecar could not import `OCP`. Run `C:\Python314\python.exe -c "import OCP, build123d"` to see the real error. |
+| Job rejected with a resolution error | The part is too big for that voxel size. Raise the voxel size; the guard trips above roughly 2000 voxels per axis. |
+| STEP export refuses or takes minutes | The mesh exceeds the triangle budget. Lower the STEP target, raise the voxel size, or export STL instead. |
+| Parts vanished after restarting the server | Expected. The part store is in memory only. |
+| The 3D preview is blank | three.js loads from a CDN, so the first load needs internet. Check the browser console. |
+| A shell or offset op is rejected | The feature size must exceed 1.5x the voxel size. |
+
+Server logs are at `data\server.out.log` and `data\server.err.log`.
 
 ## Platform note
 
-PicoGK ships an `osx-arm64` native runtime, so the worker could in principle run
-on Apple Silicon — but this app's launcher (`scripts\run.ps1`), default paths
-(`C:\Python314\python.exe`, `worker\bin\Debug\net9.0\AnvilWorker.exe`), and the
-native-DLL copy step are **Windows-first and untested on macOS**.
+PicoGK ships an `osx-arm64` native runtime, so the worker could in principle run on Apple Silicon. But the launcher (`scripts\run.ps1`), the default paths and the native-DLL copy step are **Windows-first and untested elsewhere**. Contributions that make this portable are welcome.
 
-## Credits & licenses
+## Contributing
 
-- **[PicoGK](https://github.com/leap71/PicoGK)** — the voxel geometry kernel that
-  does all the heavy lifting (booleans, offsets, TPMS rendering, meshing). PicoGK
-  is licensed under the **Apache License 2.0**. This project uses a local patched
-  **fork** at `..\PicoGK` via `ProjectReference`.
-- **`worker/TPMSWall.cs`** — the TPMS signed-distance implicit (Gyroid / Schwarz P
-  / Schwarz D / Lidinoid / Neovius) is **copied verbatim** (only the namespace
-  changed) from the PicoGK fork's `examples/03_SimpleShapes/GyroidCylinder.cs`
-  (class `TPMSWall`), which carries an `SPDX-License-Identifier: CC0-1.0` header.
-- **[bumpmesh.com](https://bumpmesh.com) / CNCKitchen `stlTexturizer`** — **UX
-  inspiration only** for the drag-drop → parameters → preview → export loop. **No
-  code was copied**, and its surface-displacement mesh math is unrelated to this
-  app's volumetric gyroid work.
+Yes, please. See **[CONTRIBUTING.md](.github/CONTRIBUTING.md)** for the sibling-checkout dev setup, the test suites, code style, the coordinate conventions that are not negotiable, and the DCO sign-off (`git commit -s`).
+
+Also: [Code of Conduct](.github/CODE_OF_CONDUCT.md) | [Security policy](.github/SECURITY.md) | [Getting help](.github/SUPPORT.md) | [Changelog](CHANGELOG.md)
+
+Documentation fixes and new `scripts-library/` examples are genuinely useful and need no geometry expertise.
+
+## Credits
+
+- **[PicoGK](https://github.com/leap71/PicoGK)** by LEAP 71: the voxel geometry kernel doing all the heavy lifting (booleans, offsets, TPMS rendering, meshing). Apache-2.0. ANVIL builds against a patched fork.
+- **`worker/TPMSWall.cs`**: the TPMS signed-distance implicit is copied verbatim (namespace changed only) from the PicoGK fork's `examples/03_SimpleShapes/GyroidCylinder.cs`, which carries a `CC0-1.0` header.
+- **[build123d](https://github.com/gumyr/build123d)** and **[cadquery-ocp](https://github.com/CadQuery/ocp)**: STEP import and faceted-BRep writing via OpenCascade.
+- **[three.js](https://threejs.org)**: the browser viewer.
+- **[bumpmesh.com](https://bumpmesh.com) / CNCKitchen `stlTexturizer`**: UX inspiration only for the drag-drop to parameters to preview to export loop. No code was copied, and its surface-displacement math is unrelated to this volumetric work.
+
+Built by [Delta Robotics Inc.](https://deltaroboticsinc.com)
+
+## License
+
+Licensed under the **Apache License, Version 2.0**. SPDX identifier: `Apache-2.0`.
+
+See [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for attribution.

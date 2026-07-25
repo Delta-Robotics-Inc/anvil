@@ -1,0 +1,97 @@
+name: Bug report
+description: Something in ANVIL behaves incorrectly, crashes, or produces bad geometry.
+title: '[bug] '
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a report. Please do not report security
+        vulnerabilities here - see the [security policy](https://github.com/Delta-Robotics-Inc/anvil/security/policy).
+
+        Questions and "how do I ..." belong in
+        [Discussions](https://github.com/Delta-Robotics-Inc/anvil/discussions).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, in one or two sentences.
+      placeholder: The generate job fails at the boolean stage with "worker exited 3".
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The exact sequence. Include the parameter values you used (pattern, cell
+        size, wall thickness, voxel size), or paste the JSON body if you drove
+        the API, MCP or a script directly.
+      value: |
+        1. Load part ...
+        2. Set role to ...
+        3. Parameters: pattern gyroid, cell 8 mm, wall 1.2 mm, voxel 0.3 mm
+        4. Click GENERATE
+        5. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Run `dotnet --version` and `git -C . rev-parse --short HEAD` for the
+        first two. The GPU matters because the viewer is WebGL.
+      value: |
+        - Windows version: (e.g. Windows 11 24H2, 10.0.26100)
+        - ANVIL commit:
+        - .NET SDK (`dotnet --version`):
+        - Python (`python --version`) and how you installed build123d / cadquery-ocp:
+        - GPU and browser (e.g. RTX 4070, Chrome 140):
+        - PicoGK commit you built against:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Errors and logs
+      description: |
+        Browser console errors (F12 -> Console), plus anything relevant from
+        `data/server.out.log` and `data/server.err.log`. Long output is fine.
+      render: text
+
+  - type: input
+    id: job-stats
+    attributes:
+      label: Job stats, if a generate or op job produced them
+      description: Triangle count, porosity, voxel size, part bounding box.
+
+  - type: checkboxes
+    id: sample
+    attributes:
+      label: Reproduction geometry
+      options:
+        - label: I can attach an STL or STEP that reproduces this (drag it into a comment), or it reproduces with a file from `samples/`.
+        - label: The geometry is confidential and I cannot share it.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am running a sibling PicoGK checkout and `dotnet build Anvil.sln` succeeds.
+          required: true

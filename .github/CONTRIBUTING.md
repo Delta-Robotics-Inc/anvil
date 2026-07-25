@@ -209,23 +209,43 @@ want a worker job instead.
 These are correctness guarantees, not preferences. A PR that breaks one will be
 sent back.
 
-1. **Never recenter geometry.** Every stage - worker, sidecar and viewer -
-   operates in the source world frame. STLs load force-MM and save MM, TPMS
-   fields are world-anchored, no boolean recenters, and the viewer fits the
+1. **Never recenter or reorient geometry.** Every stage - worker, sidecar and
+   viewer - operates in the source world frame. STLs load force-MM and save MM,
+   TPMS fields are world-anchored, no boolean recenters, and the viewer fits the
    camera with a `Box3` union instead of moving the mesh. This is the feature
    that makes results merge back into CAD; a recenter anywhere silently destroys
    it. `CENTER` in the transform panel is an explicit, visible, clearable
    translate, not a hidden one.
-2. **Transforms compose one way, everywhere:** `scale -> rotX -> rotY -> rotZ ->
+2. **The up axis is a DISPLAY convention, never a data transform.** The user
+   picks it from the `UP` chips in the view strip (`+Y`, `-Y`, `+Z`, `-Z`;
+   default `-Y`, persisted in `localStorage` under `anvil.upAxis`). `UP_AXES` in
+   `viewer.js` holds the trio it drives - `UP`, `FRONT`, and `RIGHT =
+   cross(UP, FRONT)` - and `_homeDir`, the view-cube labels (`_cubeFaceSpec`)
+   and the pole-snap tilt (`_snapDir`) are all DERIVED from that trio, never
+   hand-tabulated per mode. It lives entirely in the camera up vector, the grid
+   plane and height, the view-cube labels and the plate math (`LAY FLAT`,
+   `DROP`, plate drag, primitive spawn pose). Switching modes must leave every
+   part's TRS and every export byte-identical - if a change makes that untrue,
+   the change is wrong. File coordinates, world coordinates and export
+   coordinates are identical: never rotate or re-axis vertex data to suit the
+   view, and never add a hidden offset on import. ANVIL adds exactly one
+   transform on its own, the convention rotation that stands a new cylinder or
+   cone display-up, and it is a normal visible `rotateDeg` on the part,
+   undoable and clearable from `XFORM`.
+   The build plate is ADAPTIVE: normal to `UP`, at the resting height of
+   everything visible (`_restingHeight`), snapped to 0 when the content already
+   sits on the origin plane. Grounding targets `plateHeight()` as DRAWN, never
+   an absolute zero.
+3. **Transforms compose one way, everywhere:** `scale -> rotX -> rotY -> rotZ ->
    translate`. Worker, server and viewer must agree exactly or previews lie.
-3. **The TRS field is `translateMM`**, in millimetres, in every payload.
+4. **The TRS field is `translateMM`**, in millimetres, in every payload.
    `translate` and `position` are silently ignored.
-4. **Results must be watertight.** Mesh output runs through island removal and a
+5. **Results must be watertight.** Mesh output runs through island removal and a
    watertight check before it is registered or exported. Do not bypass it.
-5. **Voxel ops are accurate to plus or minus half a voxel; mesh-only ops are
+6. **Voxel ops are accurate to plus or minus half a voxel; mesh-only ops are
    exact.** Primitive, transform-bake and mirror are mesh-only by design - keep
    them that way rather than routing them through the voxel kernel.
-6. **Respect the resolution guard.** The server rejects jobs above roughly 2000
+7. **Respect the resolution guard.** The server rejects jobs above roughly 2000
    voxels per axis and warns above roughly 2e9 total voxels. New ops that build
    a voxel field must go through the same guard.
 

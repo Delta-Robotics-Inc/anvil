@@ -36,6 +36,7 @@ Then: drag `samples\hollow_bracket.step` onto the drop zone, leave the role as *
 
 - [Why](#why)
 - [The two workflows](#the-two-workflows)
+- [Worked example: a pneumatic manifold](#worked-example-a-pneumatic-manifold)
 - [Requirements](#requirements)
 - [Parameters](#parameters)
 - [Sheet vs skeletal](#sheet-vs-skeletal)
@@ -81,6 +82,32 @@ For fuse mode, model the positive and the cavity negative in one shared coordina
 
 Only base roles decide the mode. Zone roles layer on top without changing it, and you can also build parts from scratch with [the tool palette](#the-tool-palette).
 
+## Worked example: a pneumatic manifold
+
+A real fuse-mode job end to end: a 58 x 39 x 27 mm three-port pneumatic manifold with one internal gallery joining the ports. This is the case ANVIL exists for, because the gallery is sealed and an FDM slicer has no way to fill it with anything but unremovable support.
+
+**1. Model the body (the Positive).**
+
+![CAD render of the manifold body: a rounded triangular block with three stepped counterbores for push-to-connect fittings, one at each corner, plus a shallow circular pocket in the middle with a narrow slot running from it to the front edge. The orange internal gallery is visible through the bottom of each counterbore.](docs/assets/manifold-positive.png)
+
+**2. Export the gallery as its own solid (the Negative).** In CAD, the internal air path is just a body you can export on its own. Here it is a chevron with a short cylindrical stub that rises to the centre port.
+
+![CAD render of the gallery volume exported as a standalone orange solid: a flat chevron-shaped plate with two rounded arms meeting at a corner, and a short cylinder standing on the top face near that corner.](docs/assets/manifold-cavity.png)
+
+**3. Why it needs a lattice.** Sectioning the body shows the problem. The gallery (orange) is fully enclosed by the block, with no straight path to any outside face.
+
+![Sectioned CAD render of the manifold cut vertically through two counterbores. The stepped bores descend from the top face; the orange gallery runs as a stepped channel low in the block, sealed on every side by grey hatched material.](docs/assets/manifold-section.png)
+
+**4. Fuse it in ANVIL.** Load both files, set the body to **Positive** and the gallery to **Negative**, and hit **GENERATE**. The gallery is filled with a gyroid and voxel-boolean fused into the body as one watertight solid.
+
+![The ANVIL viewport showing the generated result: the manifold body drawn as a translucent orange ghost, with the gyroid lattice inside it rendered as a solid light grey chevron that exactly fills the gallery, following its two arms and the corner between them.](docs/assets/manifold-lattice.png)
+
+**5. Slice it.** The exported STL comes back in the original CAD frame, so it drops straight into the slicer. No support material is generated inside the gallery, and no powder or resin is trapped.
+
+![Slicer preview of the sliced manifold seen from above: the three counterbores and centre pocket are printed as clean stepped holes, the top surface is solid infill, and patches of the gyroid lattice are visible through the bottom of two of the bores.](docs/assets/manifold-sliced.png)
+
+![Slicer preview cut open horizontally: the chevron gallery is packed with self-supporting gyroid extrusions inside the yellow perimeter walls, with no support material anywhere in the enclosed volume.](docs/assets/manifold-sliced-section.png)
+
 ## Requirements
 
 | | |
@@ -105,13 +132,13 @@ Only base roles decide the mode. Zone roles layer on top without changing it, an
 | **Overlap (mm)** *(fuse only)* | How far the lattice grows past the cavity wall for a watertight joint. | 0.2 to 0.5 mm. Too small leaves a hairline seam. Default 0.3. |
 | **Smoothing (mm)** | Optional triple-offset that rounds sharp lattice edges. | 0 is off and fastest. 0.1 to 0.3 softens facet ridges. |
 | **Bias (mm)** *(skeletal only)* | Shifts the field iso-level, thickening or thinning the struts. Range -5 to +5. | Negative gives thinner struts and a more open channel. Replaces wall thickness in skeletal mode. |
-| **Flow axis** | The direction the flow profile and permeability are measured along. | Pick the axis fluid or powder actually travels. Default Z. |
+| **Flow axis** | The direction the flow profile and permeability are measured along. | Pick the axis fluid or powder actually travels. Default Y, the up axis. |
 | **Rotation / phase / per-axis cell** | Re-orient or stretch the field before sampling. | Under the advanced **LATTICE** disclosure. See below. |
 
 > [!IMPORTANT]
 > **Resolution guard.** The server rejects a job when the largest part dimension divided by the voxel size exceeds roughly **2000 voxels per axis**, and warns above roughly **2e9** total voxels. Start coarse (0.4 mm) and refine.
 
-**Orientation matters for some patterns.** Gyroid is near-isotropic, so rotation mostly changes how walls meet the part surface. **Schwarz P is strongly anisotropic** with straight axis-aligned channels: aligning the flow axis with a channel gives far more open area than sampling off-axis, and a 45 degree rotation deliberately chokes it. For FDM, prefer rotations that keep sheet walls near-vertical along print Z; for powder-bed processes, orientation is unconstrained.
+**Orientation matters for some patterns.** Gyroid is near-isotropic, so rotation mostly changes how walls meet the part surface. **Schwarz P is strongly anisotropic** with straight axis-aligned channels: aligning the flow axis with a channel gives far more open area than sampling off-axis, and a 45 degree rotation deliberately chokes it. For FDM, prefer rotations that keep sheet walls near-vertical along the up axis; for powder-bed processes, orientation is unconstrained.
 
 ## Sheet vs skeletal
 
@@ -144,7 +171,7 @@ ANVIL is an object workspace, not just a converter. Seven tools, each opening a 
 
 | Tool | What it does | Notes |
 | --- | --- | --- |
-| **PRIM** | Adds a box, cylinder, sphere or cone. | Mesh-exact. Placed at an explicit center and rests on the plate. |
+| **PRIM** | Adds a box, cylinder, sphere or cone. | Mesh-exact. Placed at an explicit center, in file coordinates, that defaults so the part rests on the plate. Cylinders and cones are authored along Y and stood up along the selected up axis, which shows as a visible, clearable rotation in `XFORM`. |
 | **BOOL** | `UNION`, `DIFFERENCE`, `INTERSECT`, or `SMOOTH` (filleted union with a blend radius). | **Consumes both sources**: they stay listed but hidden and locked, so the result is the single active base part. |
 | **SHELL** | Hollows a part into a wall, inward, outward or centered. | Thickness must exceed 1.5x voxel. |
 | **OFFSET** | Grows or shrinks by a signed distance. | Magnitude must exceed 1.5x voxel. |
@@ -160,11 +187,14 @@ The part store is **in memory**: uploaded and derived parts do not survive a ser
 
 ## Working in the viewport
 
-- **Z-up scene** with the build plate at Z0, a view cube (`TOP` / `BOTTOM` / `FRONT` / `BACK` / `LEFT` / `RIGHT`) and an orientation triad.
+- **Pick the up axis your CAD uses.** The `UP` chips in the view strip choose which world direction reads up on screen: `+Y`, `-Y`, `+Z` or `-Z`. The default is **-Y**, the convention most exports land in with their feature faces toward -Y. The choice is remembered between sessions and can be changed at any time, with parts loaded; the scene simply re-presents itself. **It is a display convention only: no geometry is moved and exports are identical in every mode.**
+- **The build plate is adaptive.** It is the plane normal to the up axis, drawn at the resting height of everything visible, so an imported part sits on the bed without anything being added to it. A part that already stands on the origin plane reads as sitting at zero. `LAY FLAT`, `DROP`, the plate drag and the primitive spawn height all ground on that plate.
+- **View cube and triad follow the frame.** For each up axis, `FRONT` is the negative of the remaining world axis (`-Z` when up is on Y, `-Y` when up is on Z) and `RIGHT` is `cross(UP, FRONT)`, so the default HOME camera is parked on the front-right-top octant and an imported CAD part faces you the way it did in CAD. A view cube (`TOP` / `BOTTOM` / `FRONT` / `BACK` / `LEFT` / `RIGHT`) and an orientation triad sit in the viewport corners, both derived from the same three vectors. A `TOP` snap keeps `FRONT` at the bottom of the screen, and the camera up vector never changes, so orbiting out of a top view behaves normally.
 - **Section view, Onshape style.** Pick an arbitrary plane from the triad, the X/Y/Z chips, or by clicking a flat face. Caps are drawn with **diagonal hatching**, so a cut reads as material and never as a hole. Drag the arrow to move the plane, or nudge it with `Alt`+wheel (`Alt`+`Shift`+wheel for fine steps). The swap chip inverts which half survives.
-- **Part-anchored gizmo** with `MOVE`, `ROTATE` and `SCALE`, plus `LAY FLAT` and `DROP`. Grab a selected part anywhere on its surface to slide it across the plate. Rotating auto-drops the part back onto the bed as part of the same action.
+- **Part-anchored gizmo** with `MOVE`, `ROTATE` and `SCALE`, plus `LAY FLAT` and `DROP`. `LAY FLAT` rests a picked face on the plate and `DROP` grounds the selection on the plate without rotating it. Grab a selected part anywhere on its surface to slide it across the plate. Rotating auto-drops the part back onto the bed as part of the same action.
 - **Undo and redo**, 50 deep: `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y`. Imports, tool ops, deletes, moves, role changes and transform edits are all reversible.
 - **Linked ghosts.** A finished lattice registers as a **first-class part**, and the sources it was built from stay visible as translucent ghosts linked to it. Move the lattice and its ghosts follow as one unit; delete it and they are released.
+- **The plate is always there.** With nothing loaded the viewport still shows the build plate framed from HOME, and `ADD PART` carries the one accent fill on screen. Deleting the last part returns to exactly that state, so the scene never reads as broken.
 
 ## Export
 
@@ -193,9 +223,15 @@ The tile also surfaces worker warnings, for example a sheet lattice's "two indep
 
 ## Coordinate preservation guarantee
 
+ANVIL lets you choose which world direction is up, from the `UP` chips in the view strip: `+Y`, `-Y` (the default), `+Z` or `-Z`. The build plate is the plane normal to that axis, drawn at the resting height of whatever is on screen. **Your file's frame is never modified. The up axis only changes how the scene is presented and where the plate draws** - so switching between all four modes leaves every export byte-identical, and nothing in the part data can tell you which one was selected.
+
+That is also why picking the right one matters: ANVIL will not silently "fix" a file exported in a different axis convention. If your CAD tool wrote the part with its feature faces toward `+Z`, choose `+Z` and it stands up. If a specific part is genuinely upside down in its own file, that belongs in an explicit `XFORM` or `LAY FLAT`, not in a hidden import correction.
+
 Every stage (worker, sidecar and viewer) operates in the **source world frame**. STLs load force-MM and save MM, TPMS fields are world-anchored, no boolean recenters, and the viewer fits the camera with a bounding-box union instead of moving the mesh.
 
 Consequently **the exported part lands exactly where the original did**, to within half a voxel. Import the STEP into Onshape or Fusion and it slots into place and boolean-merges with the source part, with no manual mesh alignment. Even `CENTER` in the transform panel is an explicit, visible, clearable translate, never a silent recenter.
+
+**There are no exceptions on import.** An imported part arrives with an identity transform, always: the adaptive plate is what makes it read as resting on the bed, so nothing has to be added to the geometry to put it there. The only transforms a part ever carries are ones you can see in the `XFORM` panel and remove with `CLEAR`: your own moves, a tool result, or the convention rotation a new cylinder or cone is given so it stands up under the selected up axis (primitives are authored in ANVIL, so there is no external frame to preserve).
 
 ## Drive it from an agent (MCP)
 

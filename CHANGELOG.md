@@ -14,6 +14,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The up axis is now selectable** from the `UP` chips in the view strip:
+  `+Y`, `-Y`, `+Z`, `-Z`, defaulting to `-Y` and remembered between sessions.
+  `LAY FLAT`, `DROP`, the plate drag, the primitive spawn pose, the view cube
+  labels and the orientation triad all follow it. This is a display change only:
+  no geometry is rotated or recentered, so file, world and export coordinates
+  stay identical and switching modes leaves every export byte-identical.
+- **`FRONT` is the negative of the remaining world axis** - `-Z` when up is on
+  Y, `-Y` when up is on Z - and `RIGHT` is `cross(UP, FRONT)`, so `+Y` gives
+  `RIGHT = -X` and `-Y` gives `RIGHT = +X`. The Y-up case was measured against
+  reference CAD renders of a real imported part: with `FRONT` on `+Z`, HOME
+  parked the camera behind every import and users saw the back of the part.
+- **The build plate is adaptive.** It is the plane normal to the up axis, drawn
+  at the resting height of everything visible and snapped to zero when the
+  content already stands on the origin plane. Grounding targets that plate
+  rather than an absolute zero.
+- **The camera up vector no longer changes.** A `TOP` or `BOTTOM` view cube snap
+  parks a hair off the pole, tilted toward `FRONT`, instead of swapping the up
+  vector, so a top view still keeps `FRONT` at the bottom of the screen and
+  orbiting out of it behaves normally.
+- **Cylinder and cone primitives stand display-up.** They are authored along Y
+  (`sizeMM.X` and `sizeMM.Z` are the diameters, `sizeMM.Y` the height) and given
+  the convention rotation for the selected up axis, which shows in the `XFORM`
+  panel like any other transform.
+- The default **flow axis** is now `Y`.
+
+### Removed
+
+- **The import auto-lift is gone.** With a selectable up axis and an adaptive
+  plate it was unnecessary, and removing it means an imported part now always
+  arrives with an identity transform - nothing is ever added to your geometry.
+
+### Added
+
+- **`CLEAR`** in the `XFORM` panel resets a part to an identity transform.
+- **An empty scene now shows the build plate**, framed from HOME, instead of an
+  empty void. Deleting the last part restores exactly that state.
+- **`ADD PART` holds the single accent fill while the scene is empty**, and
+  hands it back to `GENERATE` / `EXPORT` the moment a part exists, so there is
+  always exactly one filled primary action on screen.
+- README: a **worked example** walking a real three-port pneumatic manifold from
+  CAD body plus gallery, through a fuse-mode lattice, to the sliced result.
+
 ## [0.6.0] - 2026-07-25
 
 Slicer-grade direct manipulation.

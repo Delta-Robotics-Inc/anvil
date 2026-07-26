@@ -22,7 +22,13 @@
           - POST /api/jobs single-mode ZONED on the op-created box (base) + sphere
             (zone-lattice) + cylinder (zone-void), skin 1.5 / keepOutGrow 0.5
           - poll done -> GET preview.stl 200 & > 0 bytes; stats.latticeRegionVolumeMM3 present
+          - POST /api/project/save -> a .anvil zip; inspect its entries + parse
+            project.json (version, upAxis, roles, visibility, TRS, latticeParams)
+          - POST /api/project/open on that same file -> both rows come back with
+            NEW part ids and verbatim geometry (bbox + triangle count unchanged)
         Negatives (all expect 400):
+          - project/open on a zip with no project.json, and on a bundle written
+            in a future format version
           - zone id == base id
           - unknown op
           - op with absurd voxel (0.001) -> resolution guard
@@ -133,6 +139,21 @@ function Http-Download([string]$url, [string]$outPath) {
     $fname = ($fname -replace '"', '')
     if ($bytes.Length -gt 0) { [System.IO.File]::WriteAllBytes($outPath, $bytes) }
     [pscustomobject]@{ status=[int]$resp.StatusCode; length=$bytes.Length; fileName=$fname; path=$outPath }
+}
+# POST JSON, get BYTES back (project save streams a .anvil zip, not JSON).
+function Http-PostJsonDownload([string]$url, $obj, [string]$outPath) {
+    $json    = ($obj | ConvertTo-Json -Depth 20 -Compress)
+    $content = New-Object System.Net.Http.StringContent -ArgumentList $json,([System.Text.Encoding]::UTF8),'application/json'
+    $resp    = $client.PostAsync($url, $content).GetAwaiter().GetResult()
+    $bytes   = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+    $fname = ''
+    $cd = $resp.Content.Headers.ContentDisposition
+    if ($cd) { if ($cd.FileNameStar) { $fname = $cd.FileNameStar } elseif ($cd.FileName) { $fname = $cd.FileName } }
+    $fname = ($fname -replace '"', '')
+    if ($bytes.Length -gt 0) { [System.IO.File]::WriteAllBytes($outPath, $bytes) }
+    $bodyText = ''
+    if ([int]$resp.StatusCode -ge 400) { $bodyText = [System.Text.Encoding]::UTF8.GetString($bytes) }
+    [pscustomobject]@{ status=[int]$resp.StatusCode; length=$bytes.Length; fileName=$fname; path=$outPath; body=$bodyText; obj=(Try-Json $bodyText) }
 }
 
 # --- binary-STL readers (header count + world-frame X range) -----------------
@@ -733,6 +754,103 @@ try {
         $n10 = Http-Get "$Base/api/parts/$($cyl1.id)/sdf.json"
         Add-Result 'GET sdf.json before any bake -> 404' ($n10.status -eq 404) ("status={0} err={1}" -f $n10.status, $n10.obj.error)
     }
+
+    # ================================================================
+    # PROJECT SAVE / OPEN — the `.anvil` bundle (server\Api\ProjectEndpoints.cs)
+    # ================================================================
+    # Two rows, one of them carrying a TRS, go in; the zip is inspected entry by
+    # entry and its manifest parsed; then the same file is re-opened and the
+    # registered meshes are compared to the originals. Malformed input and a
+    # future format version must both come back 400 with a message.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $projDir = Join-Path $WorkTmp 'project'
+    New-Item -ItemType Directory -Force -Path $projDir | Out-Null
+    $anvilFile = Join-Path $projDir 'round_trip.anvil'
+
+    $saveBody = [ordered]@{
+        upAxis = '-y'
+        latticeParams = [ordered]@{ pattern='gyroid'; cellSizeMM=6; wallThicknessMM=1.2; voxelSizeMM=0.3; flowAxis='z'; latticeType='sheet' }
+        parts = @(
+            [ordered]@{ partId=$cyl1.id; name='CYL A'; role='part'; colorHex='#7fd4ff'; visible=$true; ghostVisible=$true
+                        trs=[ordered]@{ translateMM=@{x=12.5;y=0;z=0}; rotateDeg=@{x=0;y=0;z=30}; scale=@{x=1;y=1;z=1} } },
+            [ordered]@{ partId=$cyl2.id; name='CYL B'; role='negative'; visible=$false; ghostVisible=$true; trs=$null }
+        )
+    }
+    $sv = Http-PostJsonDownload "$Base/api/project/save" $saveBody $anvilFile
+    $svOk = ($sv.status -eq 200) -and ($sv.length -gt 0) -and ($sv.fileName -match '^anvil_project_\d{4}-\d{2}-\d{2}\.anvil$')
+    $zipEntries = @()
+    $manifest = $null
+    if ($svOk) {
+        try {
+            $za = [System.IO.Compression.ZipFile]::OpenRead($anvilFile)
+            $zipEntries = @($za.Entries | ForEach-Object { $_.FullName })
+            $me = $za.GetEntry('project.json')
+            if ($me) {
+                $sr = New-Object System.IO.StreamReader($me.Open())
+                $manifest = Try-Json $sr.ReadToEnd()
+                $sr.Dispose()
+            }
+            $za.Dispose()
+        } catch { $svOk = $false }
+    }
+    $entryOk = $svOk -and ($zipEntries.Count -eq 3) -and ($zipEntries -contains 'project.json') `
+               -and ($zipEntries -contains 'parts/0.stl') -and ($zipEntries -contains 'parts/1.stl')
+    Add-Result 'POST project/save -> a valid .anvil zip with 1 manifest + 2 meshes' $entryOk `
+        ("status={0} bytes={1} file='{2}' entries=[{3}]" -f $sv.status, $sv.length, $sv.fileName, ($zipEntries -join ', '))
+
+    $manOk = $manifest -and ([int]$manifest.anvil -eq 1) -and ($manifest.upAxis -eq '-y') `
+             -and ($manifest.parts.Count -eq 2) -and ($manifest.parts[0].name -eq 'CYL A') `
+             -and ($manifest.parts[0].file -eq 'parts/0.stl') -and ($manifest.parts[1].role -eq 'negative') `
+             -and ($manifest.parts[1].visible -eq $false) `
+             -and ([double]$manifest.parts[0].trs.translateMM.x -eq 12.5) `
+             -and ([double]$manifest.parts[0].trs.rotateDeg.z -eq 30) `
+             -and ([double]$manifest.latticeParams.cellSizeMM -eq 6)
+    Add-Result 'project.json carries version, upAxis, roles, visibility, TRS and lattice params' $manOk `
+        ("anvil={0} upAxis={1} rows={2} trs.x={3} rotZ={4} cell={5} row1.visible={6}" -f `
+            $manifest.anvil, $manifest.upAxis, $manifest.parts.Count, `
+            $manifest.parts[0].trs.translateMM.x, $manifest.parts[0].trs.rotateDeg.z, `
+            $manifest.latticeParams.cellSizeMM, $manifest.parts[1].visible)
+
+    $op = Http-Upload "$Base/api/project/open" $anvilFile
+    $rt = $op.obj
+    $openOk = ($op.status -eq 200) -and $rt -and ($rt.parts.Count -eq 2) `
+              -and $rt.parts[0].partId -and ($rt.parts[0].partId -ne $cyl1.id) `
+              -and ($rt.parts[0].name -eq 'CYL A') -and ($rt.parts[1].role -eq 'negative') `
+              -and ($rt.upAxis -eq '-y') -and ([double]$rt.latticeParams.cellSizeMM -eq 6) `
+              -and ([double]$rt.parts[0].trs.translateMM.x -eq 12.5)
+    # Coordinates VERBATIM: the re-registered mesh must report the source bbox.
+    $bboxOk = $openOk -and ([math]::Abs([double]$rt.parts[0].part.bbox.min[0] - [double]$cyl1.bbox.min[0]) -lt 1e-6) `
+                      -and ([math]::Abs([double]$rt.parts[0].part.bbox.max[2] - [double]$cyl1.bbox.max[2]) -lt 1e-6) `
+                      -and ([int]$rt.parts[0].part.triangles -eq [int]$cyl1.triangles)
+    Add-Result 'POST project/open round-trips both rows with new ids and verbatim geometry' ($openOk -and $bboxOk) `
+        ("status={0} rows={1} newId={2} (was {3}) tris={4}/{5} upAxis={6}" -f `
+            $op.status, $rt.parts.Count, $rt.parts[0].partId, $cyl1.id, `
+            $rt.parts[0].part.triangles, $cyl1.triangles, $rt.upAxis)
+
+    # --- negatives -------------------------------------------------------
+    $emptyZip = Join-Path $projDir 'empty.anvil'
+    $ezDir = Join-Path $projDir 'ez'
+    New-Item -ItemType Directory -Force -Path $ezDir | Out-Null
+    if (Test-Path $emptyZip) { Remove-Item $emptyZip -Force }
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($ezDir, $emptyZip)
+    $bad = Http-Upload "$Base/api/project/open" $emptyZip
+    Add-Result 'project/open on a zip with no project.json -> 400' `
+        (($bad.status -eq 400) -and ($bad.obj.error -match 'project\.json')) `
+        ("status={0} err={1}" -f $bad.status, $bad.obj.error)
+
+    $futureZip = Join-Path $projDir 'future.anvil'
+    $fzDir = Join-Path $projDir 'fz'
+    New-Item -ItemType Directory -Force -Path $fzDir | Out-Null
+    # No BOM: a bundle written by any other tool is plain UTF-8 JSON.
+    [System.IO.File]::WriteAllText((Join-Path $fzDir 'project.json'),
+        '{"anvil":99,"savedAt":"2026-01-01T00:00:00Z","upAxis":"+z","parts":[]}',
+        (New-Object System.Text.UTF8Encoding($false)))
+    if (Test-Path $futureZip) { Remove-Item $futureZip -Force }
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($fzDir, $futureZip)
+    $fut = Http-Upload "$Base/api/project/open" $futureZip
+    Add-Result 'project/open on a newer format version -> 400' `
+        (($fut.status -eq 400) -and ($fut.obj.error -match 'newer Anvil')) `
+        ("status={0} err={1}" -f $fut.status, $fut.obj.error)
 }
 finally {
     if ($serverProc -and -not $serverProc.HasExited) {

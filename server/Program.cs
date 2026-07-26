@@ -148,6 +148,7 @@ app.MapOpsApi();
 app.MapScriptsApi();
 app.MapExportApi();
 app.MapSdfApi();
+app.MapProjectApi();
 
 // MCP JSON-RPC endpoint (stateless streamable HTTP). Loopback only, no auth —
 // see the README SECURITY section: connecting an agent lets it run code here.

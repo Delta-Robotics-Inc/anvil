@@ -5,7 +5,7 @@
 import * as api from './api.js';
 import * as ui from './ui.js';
 import * as tools from './tools.js';
-import * as scriptsPanel from './scripts.js';
+import * as scriptsView from './scripts.js';
 import * as history from './history.js';
 import { Viewer, UP_AXIS_DEFAULT, UP_AXIS_KEYS } from './viewer.js';
 import { isBaseRole, isZoneRole, effectiveColorHex } from './roles.js';
@@ -359,13 +359,17 @@ async function addOpPart(part) {
   pushCreateCommand(rec.id, `Create ${rec.name}`);
 }
 
-// ── Scripting (SCRIPTS panel → /api/scripts/run → poll → new parts) ────
+// ── Scripting (SCRIPTS view → /api/scripts/run → poll → new parts) ─────
 // A script job registers EVERY part it SavePart-ed; on `done` the server has
 // already populated st.parts (registered before the job flips to done), so we
 // add each through the normal derived-part flow. Returns the added parts.
-async function runScriptFlow(scriptId, name, onProgress) {
-  const { code } = await api.getScript(scriptId);
+// The SOURCE now comes from the editor, not from a library id: the view owns the
+// text, so the same flow serves a template, an upload and a hand-written script.
+// `onJob` hands the jobId back the moment it exists so the view's CANCEL button
+// has something to cancel.
+async function runScriptFlow(code, name, onProgress, onJob) {
   const resp = await api.runScript({ code, name });
+  onJob?.(resp.jobId);
   const parts = await pollScriptJob(resp.jobId, onProgress);
   // Every part a script emitted is ONE command — a script run undoes as a unit.
   const tx = history.begin(`Script ${name}`);
@@ -373,20 +377,43 @@ async function runScriptFlow(scriptId, name, onProgress) {
   finally { history.end(tx); }
   return parts;
 }
+// A compile failure comes back as the worker's whole error JSON in
+// JobStatus.errorData — {error, scriptError:[{line,character,severity,message}]}.
+// Normalised here so the editor can list them and place a caret per row.
+function scriptDiagnostics(errorData) {
+  const arr = errorData?.scriptError;
+  if (!Array.isArray(arr)) return [];
+  return arr.map((d) => ({
+    line: Number(d?.line) || 0,
+    character: Number(d?.character) || 0,
+    severity: d?.severity || 'error',
+    message: String(d?.message ?? ''),
+  }));
+}
 function pollScriptJob(jobId, onProgress) {
   return new Promise((resolve, reject) => {
+    const fail = (h, st, fallback) => {
+      clearInterval(h);
+      const err = new Error(st?.error || fallback);
+      err.diagnostics = scriptDiagnostics(st?.errorData);
+      reject(err);
+    };
     const h = setInterval(async () => {
       let st;
       try { st = await api.getJob(jobId); }
       catch (err) { clearInterval(h); reject(new Error(`lost contact with job: ${err.message}`)); return; }
       onProgress?.(prettyStage(st.stage, st.state));
       if (st.state === 'done') { clearInterval(h); resolve(st.parts || []); }
-      else if (st.state === 'failed' || st.state === 'error') { clearInterval(h); reject(new Error(st.error || 'script failed')); }
-      else if (st.state === 'cancelled') { clearInterval(h); reject(new Error('script cancelled')); }
+      else if (st.state === 'failed' || st.state === 'error') fail(h, st, 'script failed');
+      else if (st.state === 'cancelled') fail(h, st, 'script cancelled');
     }, 500);
   });
 }
-scriptsPanel.initScripts({ runScript: runScriptFlow, toast: (m, k, ms) => ui.toast(m, k, ms) });
+scriptsView.initScriptsView({
+  runScript: runScriptFlow,
+  toast: (m, k, ms) => ui.toast(m, k, ms),
+  onStateChange: () => updateAccents(),
+});
 
 // ── Tool controller (passed to tools.initTools) ───────────────────────
 const toolCtx = {
@@ -857,9 +884,12 @@ function isTypingTarget(el) {
   const tag = (el.tagName || '').toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
 }
-/** A HUD dialog is up (MCP, or any future .hud-modal) — it owns the keyboard. */
+/** A HUD dialog is up (MCP, or any future .hud-modal) — it owns the keyboard.
+ *  The PROJECT OPEN guard counts: while it is asking, ESC is its answer and
+ *  Ctrl+Z would be editing a scene the user is about to replace. */
 function modalOpen() {
-  return !!document.querySelector('.hud-overlay:not([hidden]), .hud-modal:not([hidden])');
+  return ui.isProjectAskOpen()
+      || !!document.querySelector('.hud-overlay:not([hidden]), .hud-modal:not([hidden])');
 }
 
 document.addEventListener('keydown', (e) => {
@@ -888,6 +918,265 @@ history.onChange((s) => {
 // Leaving the page settles the deferred server deletes: every command still on
 // the stack disposes, and the ones holding a removed part release its file.
 window.addEventListener('pagehide', () => history.clear());
+
+// ══ PROJECT SAVE / OPEN — the whole session as ONE `.anvil` file ═══════
+// An `.anvil` is a ZIP: `project.json` (the row manifest, the LATTICE panel
+// values and the UP convention) plus one binary STL per row and, for a latticed
+// row, its lattice mesh alongside. See server\Api\ProjectEndpoints.cs.
+//
+// The contract that makes it worth having:
+//   · COORDINATES ARE VERBATIM. The STL bytes are copied untransformed and each
+//     row's non-destructive TRS travels in the manifest, so an export taken
+//     after an open is byte-identical to one taken before the save.
+//   · A LATTICED ROW SURVIVES AS ONE OBJECT. The lattice mesh, its host, the
+//     ghost linkage and both visibility flags come back, so the reopened unit
+//     still moves as a body and REVERT still gives the plain part back.
+//   · SCRIPTS ARE NOT BUNDLED. They live in the server-side library (SCRIPTS
+//     view) and are shared across projects on purpose.
+//   · OPENING RESETS UNDO. It is a new document; an undo stack that could
+//     "unwind" past the open into the previous session would be a lie. The
+//     success toast says so.
+// Saving pushes NOTHING onto the history stack — it is a read of the scene.
+
+/** The save payload: one entry per ROW, in objects-list order. */
+function buildProjectPayload() {
+  const rows = rowParts();
+  const rowIndex = new Map(rows.map((p, i) => [p.id, i]));
+  const parts = rows.map((p, i) => {
+    const lat = latticeOf(p);
+    const entry = {
+      partId: p.id,
+      latticePartId: lat ? lat.id : null,
+      name: p.name,
+      role: p.role,
+      colorHex: p.colorHex || null,
+      sourceFormat: p.sourceFormat || null,
+      // The eye owns the UNIT mesh (the lattice when latticed); the ghost icon
+      // owns the source shell behind it — exactly as partRowVMs reads them.
+      visible: lat ? lat.visible !== false : p.visible !== false,
+      ghostVisible: p.visible !== false,
+      trs: nonIdentityTrs(p.trs),
+    };
+    if (lat) {
+      // A latticed unit is transformed through its LATTICE (the viewer's link
+      // host), so that record holds the pose the user sees.
+      entry.latticeTrs = nonIdentityTrs(lat.trs);
+      // Which ROWS ride this lattice as ghosts — a fuse or zoned generate has
+      // more than one. Stored as row INDICES because part ids are re-minted on
+      // open, and an index is stable across that.
+      const idx = [...new Set((lat.sourceIds || [])
+        .map((sid) => rowIndex.get(rowIdOf(sid)))
+        .filter((n) => n != null))];
+      entry.latticeSourceRows = idx.length ? idx : [i];
+    }
+    return entry;
+  });
+  return { parts, upAxis: viewer.upAxis(), latticeParams: ui.readParams() };
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function onProjectSave() {
+  const rows = rowParts();
+  if (!rows.length) { ui.toast('Nothing to save yet - add a part first.', 'warn'); return; }
+  ui.closeProjectAsk();
+  try {
+    const { blob, fileName } = await api.saveProject(buildProjectPayload());
+    downloadBlob(blob, fileName);
+    ui.toast(`Project saved - ${rows.length} ${rows.length === 1 ? 'part' : 'parts'} in ${fileName}`,
+      'success', 5500);
+  } catch (err) {
+    ui.toast(`Save failed: ${err.message}`, 'error', 11000);
+  }
+}
+
+/** Wipe the session down to an empty document. Undo is CLEARED, not rewritten. */
+function clearSceneForOpen() {
+  stopPolling();
+  if (state.stepPoll) { clearInterval(state.stepPoll); state.stepPoll = null; }
+  stopPreview(null);
+  history.clear();          // opening resets undo (and settles deferred deletes)
+
+  const gone = state.parts.map((p) => p.id);
+  state.selection = [];
+  viewer.setSelected([]);
+  state.gizmoMode = null;
+  state.layFlatArmed = false;
+  viewer.stopGizmo();
+  for (const id of gone) viewer.removePart(id);
+  state.parts = [];
+  state.pending = [];
+  state.latticePartId = null;
+  state.job = null;
+  state.resultStats = null;
+  state.resultFresh = false;
+  viewer.undimUploaded();
+  ui.hideResult();
+  ui.showProgress(false);
+  exportUi.dirty.clear();
+  exportUi.nameDirty = false;
+  refreshParts();
+  // The previous session's server-side meshes are unreachable now (no undo can
+  // ask for them back), so release their files.
+  for (const id of gone) flushServerDelete(id);
+}
+
+/** Rebuild the whole session from a /project/open response. */
+async function rebuildFromProject(doc) {
+  clearSceneForOpen();
+  const rows = doc.parts || [];
+
+  // ── pass 1 — every SOURCE part becomes a row, in the saved order ──────
+  const newIdByRow = [];
+  for (const row of rows) {
+    const part = row.part;
+    if (!part) { newIdByRow.push(null); continue; }
+    const rec = {
+      id: part.id,
+      name: row.name || part.name,
+      triangles: part.triangles,
+      sourceFormat: row.sourceFormat || part.sourceFormat,
+      role: row.role || 'part',
+      // A latticed row's eye drives the LATTICE mesh; the source shell answers
+      // to the ghost icon, so its visibility comes from ghostVisible.
+      visible: row.latticed ? row.ghostVisible !== false : row.visible !== false,
+      volumeMM3: part.volumeMM3,
+      bbox: part.bbox,
+      derived: part.derived || null,
+      trs: row.trs || null,
+      colorHex: row.colorHex || null,
+      stlUrl: part.stlUrl || api.partMeshUrl(part.id),
+    };
+    state.parts.push(rec);
+    newIdByRow.push(rec.id);
+    try {
+      await viewer.addPart(rec.id, rec.stlUrl, rec.role, { colorHex: rec.colorHex });
+      if (rec.trs) viewer.setPartTransform(rec.id, cloneTrs(rec.trs), { fit: false });
+      if (rec.visible === false) viewer.setPartVisible(rec.id, false);
+    } catch (err) {
+      ui.toast(`"${rec.name}" loaded, but its 3D preview failed: ${err.message}`, 'warn');
+    }
+  }
+
+  // ── pass 2 — re-adopt each lattice (needs every source row to exist) ──
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const lp = row.latticePart;
+    const host = newIdByRow[i] ? partById(newIdByRow[i]) : null;
+    if (!row.latticed || !lp || !host) continue;
+
+    const ghostIds = [...new Set((row.latticeSourceRows || [i])
+      .map((n) => newIdByRow[n])
+      .filter(Boolean))];
+    if (!ghostIds.includes(host.id)) ghostIds.unshift(host.id);
+
+    const lrec = {
+      id: lp.id,
+      name: host.name,          // the row's identity — the lattice IS the part
+      serverName: lp.name,
+      triangles: lp.triangles,
+      sourceFormat: lp.sourceFormat || 'derived',
+      role: host.role,
+      visible: row.visible !== false,
+      volumeMM3: lp.volumeMM3,
+      bbox: lp.bbox,
+      derived: lp.derived || null,
+      trs: row.latticeTrs || null,
+      stlUrl: lp.stlUrl || api.partMeshUrl(lp.id),
+      isResult: true, hostPartId: host.id, sourceIds: ghostIds,
+      colorHex: host.colorHex || null,
+    };
+    state.parts.push(lrec);
+    state.latticePartId = lrec.id;
+    host.latticePartId = lrec.id;
+    for (const gid of ghostIds) { const g = partById(gid); if (g) g.ghosted = true; }
+
+    try {
+      await viewer.addPart(lrec.id, lrec.stlUrl, lrec.role, { solid: true, colorHex: lrec.colorHex });
+      // The lattice's own pose lands FIRST: linkGhosts captures each ghost's own
+      // matrix as its base and composes it under the host matrix already set here.
+      if (lrec.trs) viewer.setPartTransform(lrec.id, cloneTrs(lrec.trs), { fit: false });
+      if (lrec.visible === false) viewer.setPartVisible(lrec.id, false);
+      viewer.linkGhosts(lrec.id, ghostIds);
+      viewer.dimUploaded();
+    } catch (err) {
+      ui.toast(`"${lrec.name}" lattice loaded, but its 3D preview failed: ${err.message}`, 'warn');
+    }
+  }
+
+  // ── document-level state: UP convention + the LATTICE panel ───────────
+  if (doc.upAxis && doc.upAxis !== viewer.upAxis()) {
+    const applied = viewer.setUpAxis(doc.upAxis);
+    try { localStorage.setItem(UP_KEY, applied); } catch { /* private mode */ }
+    syncUpChips(applied);
+  }
+  ui.applyParams(doc.latticeParams);
+  pushPreviewParams();
+
+  // NOT applyAutoRoles(): the saved roles ARE the answer. Two plain "Part" rows
+  // in a bundle were saved that way on purpose, and the auto positive/negative
+  // flip would silently overrule the user's own document.
+  syncViewerRoles();
+  refreshParts();
+  refreshExport();
+  updateOrbitPivot();
+  updateDims();
+  syncSelToolbar();
+  tools.onPartsChanged();
+  tools.onSelectionChanged();
+  viewer.fitView({ union: true });
+}
+
+async function openProjectFile(file) {
+  if (!/\.anvil$/i.test(file.name)) {
+    ui.toast(`"${file.name}" is not a .anvil project file.`, 'warn');
+    return;
+  }
+  let doc;
+  // The upload happens BEFORE anything is cleared: a malformed bundle leaves the
+  // current scene exactly as it was, with only a toast to show for it.
+  try {
+    doc = await api.openProject(file);
+  } catch (err) {
+    ui.toast(`Could not open "${file.name}": ${err.message}`, 'error', 11000);
+    return;
+  }
+  try {
+    await rebuildFromProject(doc);
+  } catch (err) {
+    ui.toast(`Project opened with errors: ${err.message}`, 'error', 11000);
+    return;
+  }
+  const n = doc.parts?.length || 0;
+  ui.toast(`Project opened - ${n} ${n === 1 ? 'part' : 'parts'}. Undo history was cleared.`,
+    'success', 6500);
+}
+
+ui.initProjectAsk();
+ui.els.projectSaveBtn?.addEventListener('click', (e) => { e.preventDefault(); onProjectSave(); });
+ui.els.projectOpenBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
+  if (ui.isProjectAskOpen()) { ui.closeProjectAsk(); return; }
+  // An empty plate has nothing to lose — no question asked.
+  if (rowParts().length === 0) { ui.els.projectFile?.click(); return; }
+  ui.askProjectOpen('Opening replaces the current scene - continue?', (go) => {
+    if (go) ui.els.projectFile?.click();
+  });
+});
+ui.els.projectFile?.addEventListener('change', () => {
+  const f = ui.els.projectFile.files?.[0] || null;
+  ui.els.projectFile.value = '';
+  if (f) openProjectFile(f);
+});
 
 // ── Mode logic (roles → single | fuse | disabled) ─────────────────────
 // BASE roles (part/positive/negative) decide the mode exactly as before; ZONE
@@ -934,7 +1223,9 @@ function computeMode() {
   const picked = selectionTargets();
   if (picked.length === 1) {
     baseMode = 'single'; baseInfo = { partId: picked[0].id };
-    pickedNote = `SELECTED: ${picked[0].name} - gyroidize this part`;
+    // "lattice", not "gyroidize": the pattern picker offers five TPMS surfaces
+    // and only one of them is a gyroid (matches the PATTERN tooltip copy).
+    pickedNote = `SELECTED: ${picked[0].name} - lattice this part`;
   } else if (picked.length === 2) {
     const pp = picked.find((p) => p.role === 'positive');
     const nn = picked.find((p) => p.role === 'negative');
@@ -985,8 +1276,8 @@ function computeMode() {
   const nameOf = (id) => partById(id)?.name || 'part';
   const zoneNote = zones.length ? ` · ${zones.length} zone${zones.length > 1 ? 's' : ''}` : '';
   m.note = (pickedNote || (baseMode === 'single'
-    ? `Single mode — gyroidize ${nameOf(m.partId)}.`
-    : `Fuse mode — lattice ${nameOf(m.negativeId)} and merge into ${nameOf(m.positiveId)}.`)) + zoneNote;
+    ? `Single mode: lattice ${nameOf(m.partId)}.`
+    : `Fuse mode: lattice ${nameOf(m.negativeId)} and merge into ${nameOf(m.positiveId)}.`)) + zoneNote;
   return m;
 }
 
@@ -1029,12 +1320,25 @@ function updateAccents() {
   // machine the moment the tool closes. Exactly one solid fill at all times.
   if (tools.isOpen()) {
     ui.setToolConfirmFilled(tools.isValid());
+    scriptsView.setRunFilled(false);
     ui.setAddPartFilled(false);
     ui.setGenerateFilled(false);
     exportFill(false);
     return;
   }
   ui.setToolConfirmFilled(false);
+  // The SCRIPTS view sits at the same rung as an open tool: its RUN is that
+  // view's CONFIRM, so it holds the single fill whenever there is code to run.
+  // While a run is in flight RUN paints its own .generating pulse instead (CSS
+  // steps every other .solid back for the duration).
+  if (scriptsView.isOpen()) {
+    scriptsView.setRunFilled(scriptsView.canRun());
+    ui.setAddPartFilled(false);
+    ui.setGenerateFilled(false);
+    exportFill(false);
+    return;
+  }
+  scriptsView.setRunFilled(false);
   // EMPTY scene: the only useful next action is ADD PART, so it takes the slot
   // (GENERATE is disabled anyway and ghosts via CSS). Same predicate as the
   // viewport hint, so the hint and the lit button always appear together — and
@@ -1673,6 +1977,9 @@ async function pollHealth() {
       if (repoUrl) { gh.href = repoUrl; gh.hidden = false; }
       else gh.hidden = true;
     }
+    // …and the SCRIPTS view's TOOLS ? link points at the scripting reference in
+    // the same repo (hidden until the server reports where that repo is).
+    scriptsView.setDocsUrl(repoUrl ? `${repoUrl}/blob/main/docs/scripting.md` : '');
   } catch {
     ui.setHealth('err', 'offline');
   }
@@ -1781,12 +2088,33 @@ ui.els.tbXform?.addEventListener('click', () => toolButton('transform'));
 ui.els.tbMirror?.addEventListener('click', () => toolButton('mirror'));
 ui.els.tbDupe?.addEventListener('click', () => toolButton('duplicate'));
 
+// SCRIPTS is a left-panel view on the SAME toggle contract as the tools:
+// collapsed → expand and open; open → close it and collapse; any other state →
+// open it (closing whichever tool held the panel first).
+ui.els.tbScripts?.addEventListener('click', () => {
+  const showing = scriptsView.isOpen();
+  if (ui.isPanelCollapsed('left')) {
+    ui.setPanelCollapsed('left', false);
+    if (!showing) { tools.close(); scriptsView.open(); }
+    return;
+  }
+  if (showing) { scriptsView.close(); ui.setPanelCollapsed('left', true); return; }
+  tools.close();
+  scriptsView.open();
+});
+
 // LATTICE is the HOME view: it closes whatever tool owns the panel and brings
 // the lattice parameters (and GENERATE) back — and, being the home view, its
 // second click collapses the panel rather than switching anywhere.
 function showLatticeView(flash) {
+  // Whichever view held the panel has to be told, not just hidden: an open tool
+  // and the SCRIPTS editor both hold the single accent fill while they are up,
+  // and tools.close() is a no-op when no tool is open. The explicit
+  // updateAccents() closes that gap either way.
   tools.close();
+  scriptsView.close();
   ui.setLeftView('lattice');
+  updateAccents();
   if (flash) ui.focusSection('lattice');
 }
 ui.els.tbLattice?.addEventListener('click', () => {
@@ -1850,21 +2178,25 @@ ui.els.pattern?.addEventListener('change', refreshParts);
 // Re-arm the primary action (and refresh the viewport context) on any
 // generation-param change (Fix 1 / Fix 6). input/change bubble from every
 // stepper input and select; the SHEET/SKELETAL + X/Y/Z toggles fire click.
-ui.els.panelLeft?.addEventListener('input', markParamsDirty);
-ui.els.panelLeft?.addEventListener('change', markParamsDirty);
-ui.els.panelLeft?.addEventListener('click', (e) => {
+// The SCRIPTS view shares the panel but owns NO generation parameter — typing
+// code (or picking a template) must not un-freshen a result, so its events are
+// filtered out before either handler sees them.
+const notScripts = (fn) => (e) => { if (e.target?.closest?.('#view-scripts')) return; fn(e); };
+ui.els.panelLeft?.addEventListener('input', notScripts(markParamsDirty));
+ui.els.panelLeft?.addEventListener('change', notScripts(markParamsDirty));
+ui.els.panelLeft?.addEventListener('click', notScripts((e) => {
   // PREVIEW / QUALITY are view controls, not generation parameters: toggling
   // them must not un-freshen a result and hand the accent fill back to GENERATE.
   if (e.target.closest?.('#preview-seg, #quality-seg')) return;
   if (e.target.closest?.('.seg-btn, .fchip')) markParamsDirty();
-});
+}));
 // …and the same three events drive the preview's uniforms (cheap: a handful of
 // scalar writes, no allocation, no fetch).
-ui.els.panelLeft?.addEventListener('input', pushPreviewParams);
-ui.els.panelLeft?.addEventListener('change', pushPreviewParams);
-ui.els.panelLeft?.addEventListener('click', (e) => {
+ui.els.panelLeft?.addEventListener('input', notScripts(pushPreviewParams));
+ui.els.panelLeft?.addEventListener('change', notScripts(pushPreviewParams));
+ui.els.panelLeft?.addEventListener('click', notScripts((e) => {
   if (e.target.closest?.('.seg-btn, .fchip')) pushPreviewParams();
-});
+}));
 
 // Floating view strip — HOME · FIT · GHOSTS · SECTION.
 // HOME is the documented default camera: iso (1, −0.9, 0.65), up +Z, framed on
@@ -1974,6 +2306,19 @@ const selDrop  = document.getElementById('sel-drop');
 
 function partById(id) { return state.parts.find((p) => p.id === id) || null; }
 
+/**
+ * Disable a HUD-tipped button and say why IN ITS TIP. The authored copy is
+ * stashed on first call so the reason can be appended and taken away again
+ * without the original wording drifting.
+ */
+function setDisabledReason(btn, disabled, reason) {
+  if (!btn) return;
+  if (btn.dataset.tipBase == null) btn.dataset.tipBase = btn.getAttribute('data-tip') || '';
+  btn.disabled = !!disabled;
+  const base = btn.dataset.tipBase;
+  btn.setAttribute('data-tip', disabled ? `${base} ${reason}` : base);
+}
+
 // The floating selection toolbar mirrors selection + active gizmo mode. Neutral
 // styling (outside the accent machine) — the active mode reads via a --fg tint.
 // Multi-selection: the name reads "N PARTS", SCALE and LAY FLAT go disabled
@@ -1985,14 +2330,11 @@ function syncSelToolbar() {
   if (selName) selName.textContent = n > 1 ? `${n} PARTS` : p.name;
   if (selBar) selBar.hidden = false;
   const multi = n > 1;
-  if (selScale) {
-    selScale.disabled = multi;
-    selScale.title = multi ? 'select a single part to scale' : '';
-  }
-  if (selFlat) {
-    selFlat.disabled = multi;
-    selFlat.title = multi ? 'select a single part to lay flat' : '';
-  }
+  // These five buttons carry HUD tips (index.html), so the "why is this off?"
+  // line is APPENDED to the tip rather than added as a native title: one
+  // element never holds both (tooltip convention, see ui.initTooltips).
+  setDisabledReason(selScale, multi, 'Off while more than one part is selected.');
+  setDisabledReason(selFlat, multi, 'Off while more than one part is selected.');
   const map = { translate: selMove, rotate: selRot, scale: selScale };
   for (const [mode, btn] of Object.entries(map))
     btn?.classList.toggle('active', state.gizmoMode === mode && !state.layFlatArmed);
@@ -2231,7 +2573,8 @@ viewer.onLayFlat = (id, trs) => {                           // one-shot face pic
 // The EXPORT view is a panel view like a tool, so it sits at the same rung: it
 // closes before an armed lay-flat or the selection is touched.
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || tools.isOpen() || modalOpen()) return;
+  // tools.js and scripts.js each close their own view on Escape first.
+  if (e.key !== 'Escape' || tools.isOpen() || scriptsView.isOpen() || modalOpen()) return;
   // A right-panel sub-view (EXPORT or FLOW) closes back to OBJECTS first. The
   // LATTICE home view is deliberately NOT on this ladder: Escape never collapses
   // a panel, that is what its ESC ✕ button and the chevron are for.
@@ -2413,6 +2756,9 @@ window.__anvil = {
   partRowVMs, computeMode, selectionTargets, exportItems,
   // per-part colour (swatch/hex picker)
   setPartColor, applyPartColor,
+  // project save / open (.anvil) — the payload builder is also the session
+  // fingerprint a round-trip test compares before-save against after-open.
+  buildProjectPayload, openProjectFile, rebuildFromProject,
 };
 
 // ── init ──────────────────────────────────────────────────────────────

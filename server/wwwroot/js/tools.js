@@ -141,7 +141,7 @@ function bindRow(key) {
       const nm = ctx.partName(id) || '—';
       row.style.setProperty('--role-color', ctx.partColor(id) || 'var(--dim)');
       name.textContent = nm;
-      row.title = `${key}: ${nm}`;
+      row.title = `${key}: ${nm}`;   // truncation reveal only, never an explanation
     },
   };
 }
@@ -177,6 +177,7 @@ function bindPair(host) {
   const swapWrap = el('div', 'tool-actions tool-swap');
   const swap = el('button', 'btn tool-mini');
   swap.type = 'button'; swap.textContent = '⇄ SWAP';
+  swap.classList.add('has-tip');   // text button → HUD tip (see ui.initTooltips)
   swap.setAttribute('data-tip', 'Exchange A and B. Order matters: A − B is not B − A.');
   swapWrap.appendChild(swap);
   const empty = el('div', 'xf-bind empty', EMPTY_TWO);
@@ -288,7 +289,7 @@ const TOOLS = {
         paramBlock('Shape', seg.el, { tip: 'Box, cylinder, sphere or cone.' }),
         shapeHost, cen.el,
         paramBlock('Resolution <em>voxel mm</em>', vox.el,
-          { tip: 'Voxel size the curved shapes (cylinder, sphere, cone) are faceted at — finer = smoother. Box is exact.' }),
+          { tip: 'Voxel size the curved shapes (cylinder, sphere, cone) are faceted at. Finer is smoother and heavier; a box is exact at any setting.' }),
       );
 
       // Rebuild the shape-specific fields for the current kind. On the initial
@@ -409,12 +410,12 @@ const TOOLS = {
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
       host.append(
         paramBlock('Operation', seg.el,
-          { tip: 'Union (A+B), difference (A−B), intersect (A∩B), or smooth — a filleted union that blends the seam. '
+          { tip: 'Union (A+B), difference (A−B), intersect (A∩B), or smooth, a filleted union that blends the seam. '
             + 'Runs on your selection: A is the first part you picked, B the second.' }),
       );
       const segWrap = host.lastChild; segWrap.appendChild(hint);
       const blendBlock = paramBlock('Blend radius <em>mm</em>', blend.el,
-        { tip: 'SMOOTH only — fillet radius applied to the union, rounding the seam where the two parts meet.' });
+        { tip: 'SMOOTH only: the fillet radius applied to the union, rounding the seam where the two parts meet.' });
       host.append(blendBlock, paramBlock('Resolution <em>voxel mm</em>', vox.el,
         { tip: 'Voxel size for this operation.' }));
       blend.inp.addEventListener('input', () => onChange());
@@ -505,7 +506,7 @@ const TOOLS = {
       const hint = el('span', 'regmark tool-hint');
       host.append(
         paramBlock('Distance <em>signed mm</em>', dist.el,
-          { tip: 'Grow (+) or shrink (−) the part surface. Small offsets erode fine detail.' }),
+          { tip: 'Grow (+) or shrink (−) the part surface by this distance. Shrinking erodes fine detail first.' }),
       );
       host.lastChild.appendChild(hint);
       host.append(paramBlock('Resolution <em>voxel mm</em>', vox.el, { tip: 'Voxel size for this operation.' }));
@@ -543,18 +544,18 @@ const TOOLS = {
       const bind = el('div', 'xf-bind');
       const fields = el('div', 'xf-fields');
       const tr = tripletStepper('Position', 'mm', { x: 0, y: 0, z: 0 }, 1,
-        'World position of the selected part. Non-destructive — travels with the part into GENERATE.');
+        'World position of the selected part. Non-destructive: it travels with the part into GENERATE.');
       const rot = tripletStepper('Rotation', 'deg', { x: 0, y: 0, z: 0 }, 15,
         'Rotation about the part origin (X then Y then Z).');
       const scl = tripletStepper('Scale', '×', { x: 1, y: 1, z: 1 }, 0.05,
         'Per-axis scale factor (1 = original). Applied before rotation; travels with the part.');
       for (const ax of ['x', 'y', 'z']) { scl.inp[ax].min = '0.01'; }
-      const center = el('button', 'btn tool-mini'); center.type = 'button'; center.textContent = 'CENTER';
+      const center = el('button', 'btn tool-mini has-tip'); center.type = 'button'; center.textContent = 'CENTER';
       center.setAttribute('data-tip', 'Preset: translate the part bbox centre to the origin.');
-      const clear = el('button', 'btn tool-mini'); clear.type = 'button'; clear.textContent = 'CLEAR';
+      const clear = el('button', 'btn tool-mini has-tip'); clear.type = 'button'; clear.textContent = 'CLEAR';
       clear.setAttribute('data-tip',
-        'Reset this part to identity — no translate, no rotate, scale 1. An import never '
-        + 'carries one, so this only ever removes transforms you (or a tool) applied.');
+        'Reset this part to identity: no translate, no rotate, scale 1. An import never '
+        + 'carries a transform, so this only ever removes ones you or a tool applied.');
       const actions = el('div', 'tool-actions'); actions.append(center, clear);
       fields.append(tr.el, rot.el, scl.el,
         paramBlock('Preset', actions, { tip: 'One-tap placement presets.' }));

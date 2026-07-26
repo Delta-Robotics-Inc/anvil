@@ -44,6 +44,7 @@ Then: drag `samples\hollow_bracket.step` onto the drop zone, leave the role as *
 - [The tool palette](#the-tool-palette)
 - [Working in the viewport](#working-in-the-viewport)
 - [Export](#export)
+- [Projects](#projects)
 - [Flow metrics](#flow-metrics)
 - [Coordinate preservation guarantee](#coordinate-preservation-guarantee)
 - [Drive it from an agent (MCP)](#drive-it-from-an-agent-mcp)
@@ -191,7 +192,7 @@ ANVIL is an object workspace, not just a converter. Seven tools, each **taking o
 
 **No tool has a part dropdown.** What an op runs on is what is **selected** in the canvas or the objects list, in pick order, and the panel header is a live readout of it: a colour dot and the object's name per input. Changing the selection while a tool is open rebinds it instantly, and with nothing selected the tool shows `Select a part in the canvas or the objects list` with `CONFIRM` disabled.
 
-**One tool per sidebar.** The left panel shows exactly one view at a time, full height: the **LATTICE** view (the home view) or a single open tool. Nothing stacks and nothing scrolls from one tool into another. A toolbar button opens its tool; `Esc` or the `✕` returns to LATTICE.
+**One tool per sidebar.** The left panel shows exactly one view at a time, full height: the **LATTICE** view (the home view), a single open tool, or the **SCRIPTS** editor ([Scripting](#scripting)). Nothing stacks and nothing scrolls from one tool into another. A toolbar button opens its view; `Esc` or the `✕` returns to LATTICE.
 
 - The **LATTICE** view holds the TPMS parameters (pattern, sheet/skeletal, cell, wall or bias, resolution, overlap, smoothing, cleanup, flow axis), the **ZONES** tile once any zone role exists, a collapsible **POSITION** section (rotation, phase offset, per-axis cell size, reference flow) and the pinned **GENERATE** button.
 - `GENERATE` exists **only** in the LATTICE view. While a tool is open the panel is that tool's, and its `CONFIRM` is the one filled action on screen.
@@ -235,6 +236,27 @@ One pipeline handles everything: tick any number of objects in the `EXPORT` tile
 - **Multiple parts** export either as a **zip** of one file each, or **combined** into a single merged file.
 - Per-part transforms are baked at export time, once, and **nothing is ever recentered**.
 
+## Projects
+
+`SAVE` and `OPEN` in the header put an entire session in one file. A **`.anvil` project** is a plain ZIP:
+
+```
+project.json          { anvil:1, savedAt, upAxis, latticeParams, parts:[ ... ] }
+parts/0.stl           row 0's source mesh, binary STL, copied verbatim
+parts/0_lattice.stl   its lattice mesh, when that row is latticed
+parts/1.stl           ...
+```
+
+**What is bundled.** Every object in the objects list, in order: its mesh, its name, its role, its colour, its eye and ghost visibility, its `XFORM` transform, and its provenance line (`PRIM · BOX 60x40x20`, `TPMS · GYROID`). A latticed row bundles **both** meshes plus the link between them, so it reopens as one object that still moves as a body and can still be reverted. The document also carries the `UP` convention and every value in the `LATTICE` panel.
+
+**What is not.** Scripts - they live in the server-side library and are shared across projects, so a bundle never carries a stale copy. Job artefacts and the in-flight `RESULT` tile are not bundled either; a project is the scene, not a run.
+
+**Coordinates are preserved verbatim.** The STL bytes are copied without a single transform applied, and each row's transform travels in the manifest, so an export taken after an open is *byte-identical* to one taken before the save. That is asserted in the test suite, not just intended.
+
+**Opening replaces the session.** With something already on the plate, `OPEN` asks first. Accepting clears the scene, the selection and **the undo history** - a reopened project is a new document, and an undo stack that could unwind past the open into the previous session would be a lie. Saving pushes nothing onto that stack: it only reads the scene.
+
+A bundle written by a newer ANVIL is refused with the version it needs rather than half-loaded, and anything malformed - not a ZIP, no `project.json`, a missing or non-binary mesh - comes back as a `400` with the reason, leaving the current scene untouched.
+
 ## Flow metrics
 
 When a job finishes, the **FLOW** tile reports **geometric** flow descriptors computed from the voxel field and result mesh, sampled in up to 128 bins along the chosen flow axis. These are **fast geometric estimates, not a CFD solution**: no Navier-Stokes, no turbulence, no real fluid. Use them to *compare* lattices and spot a choke, not to predict an absolute pressure drop.
@@ -265,7 +287,7 @@ Consequently **the exported part lands exactly where the original did**, to with
 
 ## Drive it from an agent (MCP)
 
-ANVIL hosts an in-process [Model Context Protocol](https://modelcontextprotocol.io) server at `/mcp` (streamable HTTP, stateless) exposing **20 tools**. Any MCP client can list parts, run every tool op, generate lattices, run scripts and export results.
+ANVIL hosts an in-process [Model Context Protocol](https://modelcontextprotocol.io) server at `/mcp` (streamable HTTP, stateless) exposing **21 tools**. Any MCP client can list parts, run every tool op, generate lattices, run scripts and export results.
 
 ```bash
 claude mcp add anvil --transport http --url http://127.0.0.1:5238/mcp
@@ -273,22 +295,44 @@ claude mcp add anvil --transport http --url http://127.0.0.1:5238/mcp
 
 Tools that spawn jobs poll to completion internally (250 ms, 10 minute cap) and return the terminal job as JSON, so an agent sees synchronous results. Structured worker errors, including a script's compile diagnostics, pass straight through.
 
-Covered surfaces: `list_parts`, `add_part_from_file`, `delete_part`, `duplicate_part`, `create_primitive`, `boolean_op`, `merge_parts`, `shell_part`, `offset_part`, `transform_part`, `mirror_part`, `generate_infill`, `get_job`, `cancel_job`, `export_step`, `get_result_stl`, `run_script`, `list_scripts`, `get_script`, `save_script`.
+Covered surfaces: `list_parts`, `add_part_from_file`, `delete_part`, `duplicate_part`, `create_primitive`, `boolean_op`, `merge_parts`, `shell_part`, `offset_part`, `transform_part`, `mirror_part`, `generate_infill`, `get_job`, `cancel_job`, `export_step`, `get_result_stl`, `run_script`, `list_scripts`, `get_script`, `save_script`, `get_forge_reference`.
+
+`get_forge_reference` serves [`docs/scripting.md`](docs/scripting.md) as markdown, and `run_script` / `save_script` tell an agent to read it first, so an agent writing geometry has the whole command vocabulary before its first compile.
 
 **Connecting an agent to `/mcp` means that agent can run code on this machine.** See [Security](#security).
 
 ## Scripting
 
-ANVIL compiles and runs user **C# scripts** (`.csx`) against the PicoGK and `Anvil.Worker` APIs in a per-job worker process. This is the escape hatch for computational parts the fixed palette cannot express: parametric heat exchangers, functionally graded lattices, anything expressible with signed distance fields. Run one from the **SCRIPTS** panel, `POST /api/scripts/run`, or the `run_script` MCP tool.
+ANVIL compiles and runs user **C# scripts** (`.csx`) against the PicoGK and `Anvil.Worker` APIs in a per-job worker process. This is the escape hatch for computational parts the fixed palette cannot express: parametric heat exchangers, functionally graded lattices, anything expressible with signed distance fields. Run one from the **SCRIPTS** toolbar view, `POST /api/scripts/run`, or the `run_script` MCP tool.
 
-Globals available unqualified: `Params` and the typed readers `ParamF` / `ParamS` / `ParamB`, `VoxelSizeMM`, `SavePart(name, Voxels)` (meshes the field, removes floating islands, watertight-checks and registers it), `SavePart(name, Mesh)`, and `Log(msg)`. Imported automatically: `PicoGK` (`Voxels`, `Mesh`, `IImplicit`, `BBox3`, booleans and offsets), `Anvil.Worker` (`MeshUtil`, `TPMSWall`), plus `System`, `System.Numerics` and a static `Math`.
+**SCRIPTS** is a toolbar view sitting between DUPE and LATTICE, and it takes the left panel the way every other tool does: click to open, click again to close. Inside it is a canvas-plus-terminal workspace: a template picker listing the library seeds and everything you have saved, a monospace editor with a line-number gutter (Tab indents two spaces, Ctrl+Z is ordinary text undo and never touches the app history), and **RUN**. RUN posts the editor's text, shows the job's stage inline with a CANCEL beside it, and lands every part the script saved straight in the canvas and the OBJECTS tree, so a whole run undoes as one step. A compile failure lists Roslyn's errors with their line and character; clicking one puts the caret on that line. **SAVE** names the buffer and files it under your saved scripts, **UPLOAD** reads a `.csx` off disk into the editor, and **TOOLS ?** opens the scripting reference. Ctrl+Enter runs from anywhere in the view.
 
-Two annotated seeds live in [`scripts-library/`](scripts-library):
+Globals available unqualified: `Params` and the typed readers `ParamF` / `ParamS` / `ParamB`, `VoxelSizeMM`, `SavePart(name, Shape)` (meshes the field, removes floating islands, watertight-checks and registers it), `SavePart(name, Voxels)`, `SavePart(name, Mesh)`, and `Log(msg)`. Imported automatically: the **Forge** command set, `PicoGK` (`Voxels`, `Mesh`, `IImplicit`, `BBox3`, booleans and offsets), `Anvil.Worker` (`MeshUtil`, `TPMSWall`), plus `System`, `System.Numerics` and a static `Math`.
 
-| Seed | What it makes |
+### The Forge API
+
+Scripts are written against **Forge**, a flat command layer over the voxel kernel that is auto-imported into every `.csx`. Units are millimetres, angles are degrees, +Y is up, and every builder's `at` is the shape's centre and defaults to the origin. Commands never mutate their inputs.
+
+```csharp
+Shape plate = Box(60, 4, 40);
+Shape boss  = Cylinder(d: 12, h: 8, at: V(0, 6, 0));
+Shape body  = SmoothUnion(plate, boss, radius: 2);
+Shape holes = ArrayRadial(Cylinder(4, 20), count: 6, radius: 20);
+SavePart("bracket", Subtract(body, holes));
+```
+
+**[`docs/scripting.md`](docs/scripting.md) is the canonical reference**: every command with its signature, units, defaults and meaning, grouped into builders (`Box`, `Cylinder`, `Cone`, `Sphere`, `Capsule`, `Torus`, `Loft`, `Pipe`, `FromFile`), combinators (`Union`, `Subtract`, `Intersect`, `SmoothUnion`), modifiers (`Move`, `RotateX/Y/Z`, `Scale`, `Mirror`, `Shell`, `Offset`, `Smooth`, `ArrayLinear`, `ArrayRadial`, `Lattice`, `Emboss`) and info (`Volume`, `BBox`, `Center`), plus the script globals, the voxel-size rule and a worked example. The `TOOLS ?` button in the SCRIPTS view opens it, and the `get_forge_reference` MCP tool serves it to agents.
+
+Six annotated examples live in [`scripts-library/`](scripts-library) and show up in the template picker:
+
+| Script | What it makes |
 | --- | --- |
-| `heat_exchanger_core.csx` | A parametric gyroid heat-exchanger core. The template for this style of work. |
+| `rocket_nozzle.csx` | A parametric bell nozzle: a Rao contour built with `Loft` from throat, exit and chamber diameters, a bolted chamber flange, and regenerative cooling tubes arrayed around the outside. The flagship "math in, part out" demo. |
+| `embossed_card.csx` | A rounded card with one depth map raised on the front and engraved on the back, via `Smooth` plus `Emboss`. |
+| `manifold_block.csx` | A ported pneumatic manifold: `ArrayLinear` bores, a `Pipe` gallery joining them, and a gyroid `Lattice` filling that gallery. The ANVIL story in one script. |
+| `heat_exchanger_core.csx` | A parametric gyroid heat-exchanger core, written the raw PicoGK way with `MeshUtil` and `TPMSWall`. |
 | `graded_lattice_puck.csx` | A 40 by 15 mm puck filled with a radially graded skeletal gyroid via a custom inline `IImplicit`. |
+| `forge_smoke.csx` | Two demo parts plus an assertion per Forge command, checked against the analytic answer. An executable spec. |
 
 Scripts you save land in `data/scripts/` (gitignored, slugified, path traversal rejected). Part provenance stores the script name, params and SHA-256, never the source.
 
@@ -338,6 +382,8 @@ Base path `/api`, JSON is camelCase, server binds `http://127.0.0.1:5238`.
 | `GET` `POST` | `/api/jobs/{id}` , `/api/jobs/{id}/cancel` | Poll status (the UI polls at 500 ms) or kill the worker. |
 | `POST` | `/api/export` | Unified export. Returns `202` with an export id. |
 | `GET` | `/api/export/{id}` , `/api/export/{id}/file` | Poll, then download. `409` if not ready. |
+| `POST` | `/api/project/save` | Package the posted scene into a `.anvil` bundle and stream it back. |
+| `POST` | `/api/project/open` | Unpack an uploaded `.anvil`, register its meshes, return the manifest with the new part ids. |
 | `POST` | `/api/scripts/run` | Compile and run a C# script. |
 | `GET` `POST` | `/api/scripts` | Browse and save the script library. |
 | n/a | `/mcp` | The MCP endpoint. |

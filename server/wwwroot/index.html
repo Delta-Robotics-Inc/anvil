@@ -39,97 +39,137 @@
     <span class="label jp tracking-[0.05em] leading-none whitespace-nowrap opacity-60 hidden sm:inline">· LATTICE FORGE<span class="cursor">_</span></span>
     <div class="flex-1"></div>
     <div class="barcode hidden md:flex" data-seed="4412" data-bars="22"></div>
-    <div class="flex items-center gap-2 shrink-0" title="Server / worker health">
+    <!-- Status readout, not a control: HUD tip (see the convention note in
+         ui.initTooltips), never a native title. -->
+    <div id="conn-group" class="flex items-center gap-2 shrink-0 has-tip" data-tip="Server and worker health. LOCAL · READY means this machine's Anvil server answered its last poll and the PicoGK worker is free to take a job.">
       <span id="conn-dot" class="conn-dot"></span>
       <span id="conn-txt" class="label">connecting</span>
     </div>
-    <!-- Wave-4 UNDO — ↶ / ↷ mirror Ctrl+Z / Ctrl+Shift+Z; disabled when the
-         matching stack is empty (main.js drives them from history.onChange). -->
+    <!-- Wave-4 UNDO — mirrors Ctrl+Z / Ctrl+Shift+Z; disabled when the matching
+         stack is empty (main.js drives them from history.onChange).
+         GLYPHS: Lucide `undo-2` / `redo-2`. The old hand-drawn 3/4-turn arcs
+         (`M3.5 13a9 9 0 1 0 …`) collapsed into a grey blob at the 14px header
+         size — a near-full circle has no readable direction that small. These
+         are one short chevron head plus a shallow half-round return, so the
+         direction survives down to 12px. 24×24, stroke 2, round caps/joins:
+         the same conventions every other icon in the app is drawn to. -->
+    <!-- PROJECT SAVE / OPEN — the whole session as ONE `.anvil` file (a zip of
+         project.json + one binary STL per row). Text links, HUD tips: they have
+         to say what the bundle contains, because "save" in a CAD app is a
+         promise about what comes back. Left of UNDO so the header reads
+         file → history → agent → community, left to right. -->
+    <a id="project-save-btn" class="hdr-link has-tip" href="#" role="button" data-tip="Save project. Writes one .anvil file holding every part in this session: the meshes, their positions, roles, colours, visibility, any lattice, the LATTICE panel values and the UP convention. Scripts are not bundled - they stay in your library.">SAVE</a>
+    <a id="project-open-btn" class="hdr-link has-tip" href="#" role="button" data-tip="Open project. Loads a .anvil file back into a fresh session: every part returns at its saved coordinates with its lattice re-linked. This replaces what is on the plate and clears the undo history.">OPEN</a>
+    <input type="file" id="project-file" accept=".anvil,application/zip" hidden />
     <button type="button" id="undo-btn" class="hdr-link hdr-ico" aria-label="Undo" title="Nothing to undo (Ctrl+Z)" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.1-9.4L3 7"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>
     </button>
     <button type="button" id="redo-btn" class="hdr-link hdr-ico" aria-label="Redo" title="Nothing to redo (Ctrl+Shift+Z)" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.1-9.4L21 7"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"/></svg>
     </button>
-    <a id="scripts-btn" class="hdr-link" href="#" hidden>SCRIPTS</a>
+    <!-- SCRIPTS is a first-class TOOLBAR view now (#tb-scripts), not a header popover. -->
     <!-- MCP is always visible: the server it documents is the one serving this page. -->
-    <a id="mcp-btn" class="hdr-link" href="#" role="button" aria-haspopup="dialog">MCP</a>
-    <a id="feedback-btn" class="hdr-link" href="#" target="_blank" rel="noopener" hidden>FEEDBACK</a>
+    <a id="mcp-btn" class="hdr-link has-tip" href="#" role="button" aria-haspopup="dialog" data-tip="Agent access. Shows this server's MCP endpoint and the one-line command that points Claude Code at it.">MCP</a>
+    <a id="feedback-btn" class="hdr-link has-tip" href="#" target="_blank" rel="noopener" data-tip="Open a new issue on the Anvil GitHub repo." hidden>FEEDBACK</a>
     <!-- Community: GitHub repo (href filled from /api/health repoUrl, like FEEDBACK)
          and the Delta Robotics Discord. Icon-only, same chamfered .hdr-ico chrome. -->
-    <a id="github-btn" class="hdr-link hdr-ico" href="#" target="_blank" rel="noopener" aria-label="GitHub repository" title="GitHub repository" hidden>
+    <a id="github-btn" class="hdr-link hdr-ico" href="#" target="_blank" rel="noopener" aria-label="Open the GitHub repository" title="Open the GitHub repository" hidden>
       <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
     </a>
-    <a id="discord-btn" class="hdr-link hdr-ico" href="https://discord.gg/W69MdWMrhH" target="_blank" rel="noopener" aria-label="Delta Robotics Discord" title="Delta Robotics Discord">
+    <a id="discord-btn" class="hdr-link hdr-ico" href="https://discord.gg/W69MdWMrhH" target="_blank" rel="noopener" aria-label="Open the Delta Robotics Discord" title="Open the Delta Robotics Discord">
       <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 0 0-4.8851-1.5152.0741.0741 0 0 0-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 0 0-.0785-.037 19.7363 19.7363 0 0 0-4.8852 1.515.0699.0699 0 0 0-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 0 0 .0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 0 0 .0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 0 0-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 0 1-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 0 1 .0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 0 1 .0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 0 1-.0066.1276 12.2986 12.2986 0 0 1-1.873.8914.0766.0766 0 0 0-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 0 0 .0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 0 0 .0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 0 0-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg>
     </a>
+
+    <!-- OPEN guard — an inline HUD row hung off the app bar, never a browser
+         confirm(). Same vocabulary as the SCRIPTS overwrite guard: the question
+         states the consequence, the two verbs are the two outcomes. -->
+    <div class="pj-ask" id="pj-ask" hidden>
+      <span class="pj-ask-msg" id="pj-ask-msg">Opening replaces the current scene - continue?</span>
+      <span class="pj-ask-acts">
+        <button type="button" class="btn tool-mini" id="pj-ask-no">CANCEL</button>
+        <button type="button" class="btn tool-mini" id="pj-ask-yes">OPEN</button>
+      </span>
+    </div>
   </header>
 
   <!-- ═══ Region 2 — grouped pipeline toolbar ══════════════════════════ -->
+  <!-- Every toolbar button carries a HUD tip (.has-tip + data-tip): the icon is a
+       hint, the 4-6 letter label is a name, and neither says what the op DOES.
+       Never a native title here — see the convention note in ui.initTooltips.
+       A DISABLED button still shows its tip (Chrome dispatches pointerover on
+       disabled controls), so FLOW and EXPORT explain what they are waiting for
+       instead of going silent exactly when the question comes up. -->
   <nav class="toolbar shrink-0 relative z-40" id="toolbar" aria-label="Pipeline">
     <div class="tb-group" data-group="import">
-      <button type="button" class="tb-btn" id="tb-import" data-tip="Add part — import an STL / STEP file (same as the drop zone).">
+      <button type="button" class="tb-btn has-tip" id="tb-import" data-tip="Add part: import an STL or STEP file. Same as dropping files on the OBJECTS strip.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/></svg>
         <span class="tb-label">ADD PART</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="primitive">
-      <button type="button" class="tb-btn" id="tb-prim" data-tip="Primitive — add a box, cylinder, sphere or cone at a chosen centre.">
+      <button type="button" class="tb-btn has-tip" id="tb-prim" data-tip="Primitive: add a box, cylinder, sphere or cone at a centre you choose.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/></svg>
         <span class="tb-label">PRIM</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="combine">
-      <button type="button" class="tb-btn" id="tb-bool" data-tip="Boolean — combine two parts: UNION (A+B), DIFFERENCE (A−B), INTERSECT (A∩B) or SMOOTH (filleted union that blends the seam). Consumes its inputs - undo restores them.">
+      <button type="button" class="tb-btn has-tip" id="tb-bool" data-tip="Boolean: combine the two selected parts. UNION (A+B), DIFFERENCE (A−B), INTERSECT (A∩B), or SMOOTH, a filleted union that blends the seam. The two inputs are consumed; undo brings them back.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg>
         <span class="tb-label">BOOL</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="modify">
-      <button type="button" class="tb-btn" id="tb-shell" data-tip="Shell — hollow a part inward, outward or centred by a wall thickness.">
+      <button type="button" class="tb-btn has-tip" id="tb-shell" data-tip="Shell: hollow the selected part inward, outward or centred by a wall thickness.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16"/><rect x="8" y="8" width="8" height="8"/></svg>
         <span class="tb-label">SHELL</span>
       </button>
-      <button type="button" class="tb-btn" id="tb-offset" data-tip="Offset — grow (+) or shrink (−) a part by a signed distance.">
+      <button type="button" class="tb-btn has-tip" id="tb-offset" data-tip="Offset: grow (+) or shrink (−) the selected part by a signed distance.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10"/><path d="M3 9V3h6M21 15v6h-6"/></svg>
         <span class="tb-label">OFFSET</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="place">
-      <button type="button" class="tb-btn" id="tb-xform" data-tip="Transform — translate / rotate a part (live preview); APPLY bakes it.">
+      <button type="button" class="tb-btn has-tip" id="tb-xform" data-tip="Transform: translate, rotate and scale the selected part with a live preview. APPLY bakes the pose into the mesh.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><path d="m8 7 4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>
         <span class="tb-label">XFORM</span>
       </button>
-      <button type="button" class="tb-btn" id="tb-mirror" data-tip="Mirror — reflect a part across the XY, YZ or XZ plane (winding-corrected).">
+      <button type="button" class="tb-btn has-tip" id="tb-mirror" data-tip="Mirror: reflect the selected part across the XY, YZ or XZ plane, winding corrected.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18" stroke-dasharray="2 3"/><path d="M9 7 5 12l4 5ZM15 7l4 5-4 5Z"/></svg>
         <span class="tb-label">MIRROR</span>
       </button>
-      <button type="button" class="tb-btn" id="tb-dupe" data-tip="Duplicate — an instant independent copy of a part.">
+      <button type="button" class="tb-btn has-tip" id="tb-dupe" data-tip="Duplicate: an instant independent copy of the selected part.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="1"/><path d="M4 16V5a1 1 0 0 1 1-1h11"/></svg>
         <span class="tb-label">DUPE</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
+    <div class="tb-group" data-group="script">
+      <button type="button" class="tb-btn has-tip" id="tb-scripts" data-tip="Scripts: write and run C# geometry code (.csx). Templates, upload and save; Ctrl+Enter runs. Whatever a script builds lands in the canvas as normal objects.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>
+        <span class="tb-label">SCRIPTS</span>
+      </button>
+    </div>
+    <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="lattice">
-      <button type="button" class="tb-btn" id="tb-lattice" data-tip="Lattice — the home panel: pattern, type, cell, wall, resolution, POSITION and GENERATE.">
+      <button type="button" class="tb-btn has-tip" id="tb-lattice" data-tip="Lattice: the home panel. Pattern, lattice type, cell size, wall, resolution, POSITION and GENERATE.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg>
         <span class="tb-label">LATTICE</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="analyze">
-      <button type="button" class="tb-btn" id="tb-flow" disabled data-tip="Jump to the FLOW metrics (available after a result).">
+      <button type="button" class="tb-btn has-tip" id="tb-flow" disabled data-tip="Flow: the open-area profile along one axis, plus porosity, choke, hydraulic diameter and an estimated pressure drop. Unlocks once GENERATE has produced a result.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15c3 0 3-6 6-6s3 6 6 6 3-4 6-4"/></svg>
         <span class="tb-label">FLOW</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="export">
-      <button type="button" class="tb-btn" id="tb-export" disabled data-tip="Export — pick parts and/or the result, choose STL or STEP, and name the file.">
+      <button type="button" class="tb-btn has-tip" id="tb-export" disabled data-tip="Export: tick any mix of loaded parts and the generated result, choose STL or STEP, and name the file. Unlocks once there is something to export.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
         <span class="tb-label">EXPORT</span>
       </button>
@@ -160,7 +200,7 @@
                    to collapse the whole left panel (same as a second LATTICE click). -->
               <span class="thead-tail">
                 <span class="tag">TPMS</span>
-                <button type="button" class="tool-close" id="lattice-close" title="Collapse the parameters panel" aria-label="Collapse parameters">ESC ✕</button>
+                <button type="button" class="tool-close" id="lattice-close" title="Collapse the parameters panel" aria-label="Collapse the parameters panel">ESC ✕</button>
               </span>
             </div>
             <div class="param-grid grid grid-cols-2 gap-[10px]">
@@ -169,14 +209,14 @@
                    lattice at interactive rates. Session-only (never persisted);
                    GENERATE is still the ground truth for export and metrics. -->
               <div class="param">
-                <span class="label has-tip" data-tip="Live GPU preview of the lattice inside the target part. An approximation — GENERATE stays the ground truth for export and metrics.">Preview</span>
+                <span class="label has-tip" data-tip="Live GPU preview of the lattice inside the target part. It is an approximation: GENERATE stays the ground truth for export and metrics.">Preview</span>
                 <div class="seg" id="preview-seg" role="group" aria-label="Live preview">
                   <button type="button" class="seg-btn active" data-val="off" aria-pressed="true">OFF</button>
                   <button type="button" class="seg-btn" data-val="on" aria-pressed="false">ON</button>
                 </div>
               </div>
               <div class="param">
-                <span class="label has-tip" data-tip="Raymarch budget. HIGH refines every cell crossing; LOW takes coarser steps and skips refinement — drop to LOW if the viewport feels heavy.">Quality</span>
+                <span class="label has-tip" data-tip="Raymarch budget for the live preview. HIGH refines every cell crossing; LOW takes coarser steps and skips refinement. Drop to LOW if the viewport feels heavy.">Quality</span>
                 <div class="seg" id="quality-seg" role="group" aria-label="Preview quality">
                   <button type="button" class="seg-btn" data-val="low" aria-pressed="false">LOW</button>
                   <button type="button" class="seg-btn active" data-val="high" aria-pressed="true">HIGH</button>
@@ -184,7 +224,7 @@
               </div>
               <span class="regmark param-wide preview-note" id="preview-note" hidden>BAKING PART FIELD<span class="cursor">_</span></span>
               <label class="param param-wide">
-                <span class="label has-tip" data-tip="TPMS surface type. Gyroid = balanced, isotropic. Schwarz P = straight axis-aligned channels. Schwarz D = branched diamond channels.">Pattern</span>
+                <span class="label has-tip" data-tip="Which triply periodic minimal surface the lattice follows. Gyroid is balanced and isotropic; Schwarz P gives straight axis-aligned channels; Schwarz D branches into diamond channels; Lidinoid and Neovius are denser, more tortuous variants.">Pattern</span>
                 <span class="field">
                   <select id="p-pattern">
                     <option value="gyroid" selected>Gyroid</option>
@@ -196,7 +236,7 @@
                 </span>
               </label>
               <div class="param param-wide">
-                <span class="label has-tip" data-tip="Sheet = wall around the surface — splits the cavity into two separate air networks. Skeletal = fills one side — one open channel.">Lattice type</span>
+                <span class="label has-tip" data-tip="SHEET builds a wall around the surface, which splits the cavity into two separate air networks. SKELETAL fills one side of it, leaving one open channel.">Lattice type</span>
                 <div class="seg" id="lattice-seg" role="group" aria-label="Lattice type">
                   <button type="button" class="seg-btn active" data-val="sheet" aria-pressed="true">SHEET</button>
                   <button type="button" class="seg-btn" data-val="skeletal" aria-pressed="false">SKELETAL</button>
@@ -204,7 +244,7 @@
                 <span class="regmark" id="lattice-hint">wall lattice · two air networks</span>
               </div>
               <label class="param" for="p-cell">
-                <span class="label has-tip" data-tip="Size of one repeating cell. Bigger = more open flow, coarser structure.">Cell size <em>mm</em></span>
+                <span class="label has-tip" data-tip="Size of one repeating cell. Bigger cells mean more open flow and a coarser structure.">Cell size <em>mm</em></span>
                 <span class="step-group">
                   <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease cell size">−</button>
                   <span class="field"><input id="p-cell" type="number" value="8" min="1" step="0.5" /></span>
@@ -213,8 +253,8 @@
               </label>
               <label class="param" id="wall-field" for="p-wall">
                 <span class="label">
-                  <span id="lbl-wall" class="has-tip" data-tip="Lattice wall thickness. Thicker = stronger, more airtight, less flow. Below 0.8 mm risks FDM leaks.">Wall thick. <em>mm</em></span>
-                  <span id="lbl-bias" class="has-tip" data-tip="Shifts the solid/air split. 0 = 50/50. Negative = more air, positive = more solid." hidden>Bias <em>mm</em></span>
+                  <span id="lbl-wall" class="has-tip" data-tip="Thickness of the lattice wall. Thicker is stronger and more airtight but flows less; below 0.8 mm an FDM print starts to leak.">Wall thick. <em>mm</em></span>
+                  <span id="lbl-bias" class="has-tip" data-tip="Shifts the solid/air split of a skeletal lattice. 0 is an even 50/50; negative leaves more air, positive leaves more solid." hidden>Bias <em>mm</em></span>
                 </span>
                 <span class="step-group">
                   <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease wall thickness / bias">−</button>
@@ -223,7 +263,7 @@
                 </span>
               </label>
               <label class="param" for="p-voxel">
-                <span class="label has-tip" data-tip="Voxel size for generation. Smaller = finer detail but slower and heavier. Keep at or below wall/3.">Resolution <em>voxel mm</em></span>
+                <span class="label has-tip" data-tip="Voxel size the lattice is generated at. Smaller resolves finer detail but runs slower and produces a heavier mesh. Keep it at or below wall thickness / 3.">Resolution <em>voxel mm</em></span>
                 <span class="step-group">
                   <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease resolution">−</button>
                   <span class="field"><input id="p-voxel" type="number" value="0.3" min="0.05" step="0.05" /></span>
@@ -239,7 +279,7 @@
                 </span>
               </label>
               <label class="param" for="p-smooth">
-                <span class="label has-tip" data-tip="Rounds sharp edges after generation. 0 = off.">Smoothing <em>mm</em></span>
+                <span class="label has-tip" data-tip="Rounds sharp edges after generation. 0 turns it off.">Smoothing <em>mm</em></span>
                 <span class="step-group">
                   <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease smoothing">−</button>
                   <span class="field"><input id="p-smooth" type="number" value="0" min="0" step="0.1" /></span>
@@ -254,7 +294,7 @@
                 </div>
               </div>
               <div class="param param-wide">
-                <span class="label has-tip" data-tip="Axis used for the open-area profile and choke metrics.">Flow axis</span>
+                <span class="label has-tip" data-tip="World axis the open-area profile and the choke metrics are measured along. It also sets which plane an axis-picked section starts on.">Flow axis</span>
                 <div class="chips" id="flow-axis" role="group" aria-label="Flow axis">
                   <button type="button" class="fchip" data-val="x" aria-pressed="false">X</button>
                   <button type="button" class="fchip active" data-val="y" aria-pressed="true">Y</button>
@@ -287,7 +327,7 @@
               </label>
               <label class="param param-wide" for="z-transition">
                 <span class="label">
-                  <span class="has-tip" data-tip="Reserved for a smooth solid↔lattice blend. Wave-1 uses a hard edge; this value is accepted but not yet applied.">Transition <em>mm</em></span>
+                  <span class="has-tip" data-tip="Reserved for a smooth solid-to-lattice blend. Not applied yet: the boundary is still a hard edge, so this value is accepted and ignored.">Transition <em>mm</em></span>
                   <span class="tag v2-tag">V2 — hard edge for now</span>
                 </span>
                 <span class="step-group">
@@ -297,7 +337,7 @@
                 </span>
               </label>
               <label class="param param-wide" for="z-keepout">
-                <span class="label has-tip" data-tip="Outward growth of the white VOID zones. The lattice (and body) is carved back this many mm around every void — a safety margin.">Keep-out grow <em>mm</em></span>
+                <span class="label has-tip" data-tip="Outward growth of the white VOID zones. Lattice and body are both carved back this many mm around every void, as a safety margin.">Keep-out grow <em>mm</em></span>
                 <span class="step-group">
                   <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease keep-out grow">−</button>
                   <span class="field"><input id="z-keepout" type="number" value="0.5" min="0" step="0.1" /></span>
@@ -315,7 +355,7 @@
             <div class="param param-wide adv" id="lattice-adv">
               <button type="button" class="disc-head" id="lattice-adv-toggle" aria-expanded="false" aria-controls="lattice-adv-body">
                 <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-                <span class="label">POSITION</span><span class="jp label">位置</span>
+                <span class="label has-tip" data-tip="Where the lattice FIELD sits inside the part: rotation, phase and per-axis cell size. Nothing here moves the part itself.">POSITION</span><span class="jp label">位置</span>
                 <span class="regmark disc-tail">ROTATION · PHASE · CELL</span>
               </button>
               <div class="disc-body" id="lattice-adv-body" hidden>
@@ -345,7 +385,7 @@
                 </div>
 
                 <div class="subparam">
-                  <span class="label has-tip" data-tip="Slides the pattern within its cell — controls where cell openings land on the cavity walls.">Phase offset <em>0–1</em></span>
+                  <span class="label has-tip" data-tip="Slides the pattern within its own cell, which controls where the cell openings land on the cavity walls.">Phase offset <em>0–1</em></span>
                   <div class="triplet">
                     <div class="axis-cell"><span class="axis-lab">X</span>
                       <span class="step-group compact">
@@ -369,7 +409,7 @@
                 </div>
 
                 <div class="subparam">
-                  <span class="label has-tip" data-tip="Stretch cells per axis. Longer cells along the flow axis = straighter channels.">Cell size <em>xyz</em></span>
+                  <span class="label has-tip" data-tip="Stretch the cell per axis. Longer cells along the flow axis give straighter, less tortuous channels.">Cell size <em>xyz</em></span>
                   <div class="seg" id="cell-seg" role="group" aria-label="Cell size mode">
                     <button type="button" class="seg-btn active" data-val="uniform" aria-pressed="true">UNIFORM</button>
                     <button type="button" class="seg-btn" data-val="peraxis" aria-pressed="false">PER-AXIS</button>
@@ -436,7 +476,7 @@
           <div class="tile tool-tile" id="sec-tool">
             <div class="thead">
               <span class="lbls"><span class="label" id="tool-title">TOOL</span><span class="jp label" id="tool-title-jp"></span></span>
-              <button type="button" class="tool-close" id="tool-cancel" title="Close tool (Esc)" aria-label="Close tool">ESC ✕</button>
+              <button type="button" class="tool-close" id="tool-cancel" title="Close the tool panel" aria-label="Close the tool panel">ESC ✕</button>
             </div>
             <div class="tool-body" id="tool-body"></div>
             <div class="tool-foot">
@@ -449,9 +489,90 @@
             </div>
           </div>
         </div>
+
+        <!-- ── SCRIPTS view ─────────────────────────────────────────────────
+             Code-to-geometry, in the same one-view host as the tools: a template
+             picker, a self-contained monospace editor (gutter + textarea, no
+             editor library), and RUN — which posts /api/scripts/run and lands the
+             resulting parts through the normal derived-part flow. -->
+        <div class="panel-scroll hidden" id="view-scripts">
+          <div class="tile tool-tile scripts-tile" id="sec-scripts">
+            <div class="thead">
+              <span class="lbls"><span class="label">SCRIPTS</span><span class="jp label">台本</span></span>
+              <button type="button" class="tool-close" id="scripts-close" title="Close the scripts panel" aria-label="Close the scripts panel">ESC ✕</button>
+            </div>
+
+            <div class="sx-body">
+              <div class="param param-wide sx-pick">
+                <span class="label has-tip" data-tip="Load a library seed or one of your saved scripts into the editor. A dirty editor asks before it is overwritten.">Template</span>
+                <span class="field">
+                  <select id="sx-template" aria-label="Script template">
+                    <option value="">LOADING…</option>
+                  </select>
+                </span>
+              </div>
+
+              <!-- Overwrite guard — an inline HUD row, never a browser confirm(). -->
+              <div class="sx-ask" id="sx-ask" hidden>
+                <span class="sx-ask-msg" id="sx-ask-msg">Unsaved changes in the editor.</span>
+                <span class="sx-ask-acts">
+                  <button type="button" class="btn tool-mini" id="sx-ask-no">KEEP</button>
+                  <button type="button" class="btn tool-mini" id="sx-ask-yes">DISCARD</button>
+                </span>
+              </div>
+
+              <!-- The editor: a line-number gutter synced to a plain textarea.
+                   No wrapping (wrap="off"), so one logical line is one gutter row. -->
+              <div class="sx-editor" id="sx-editor">
+                <div class="sx-gutter" id="sx-gutter" aria-hidden="true">1</div>
+                <textarea id="sx-code" class="sx-code" wrap="off" spellcheck="false"
+                          autocomplete="off" autocapitalize="off" autocorrect="off"
+                          aria-label="Script source" placeholder="// pick a template, upload a .csx, or write C# here"></textarea>
+              </div>
+
+              <div class="sx-bar">
+                <span class="regmark sx-file" id="sx-file-name">untitled</span>
+                <i class="sx-dot has-tip" id="sx-dirty" data-tip="The editor holds changes that are not saved to a script file yet." aria-hidden="true" hidden></i>
+                <span class="sx-bar-gap"></span>
+                <span class="regmark sx-count" id="sx-count">1 line</span>
+              </div>
+
+              <!-- Structured compile errors — the neutral advisory block. Clicking
+                   a row puts the caret on that line in the editor. -->
+              <div class="sx-errors" id="sx-errors" hidden></div>
+            </div>
+
+            <div class="tool-foot sx-foot">
+              <button type="button" class="btn btn-block sx-run has-tip" id="sx-run" data-tip="Compile and run this script on the server (Ctrl+Enter). Anything it builds arrives as normal parts in the canvas." disabled>RUN</button>
+              <div class="sx-acts">
+                <button type="button" class="btn tool-mini has-tip" id="sx-save" data-tip="Save the editor contents into your scripts library under a name you choose.">SAVE</button>
+                <button type="button" class="btn tool-mini has-tip" id="sx-upload" data-tip="Load a .csx, .cs or .txt file from disk into the editor.">UPLOAD</button>
+                <a class="btn tool-mini sx-docs has-tip" id="sx-docs" target="_blank" rel="noopener" data-tip="Open the scripting reference: the geometry tools a script can call." hidden>TOOLS ?</a>
+              </div>
+
+              <!-- Inline SAVE name prompt — same HUD vocabulary, no prompt(). -->
+              <div class="sx-save-row" id="sx-save-row" hidden>
+                <span class="field sx-name-field">
+                  <input id="sx-name" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Script name" />
+                </span>
+                <button type="button" class="btn tool-mini" id="sx-save-cancel">CANCEL</button>
+                <button type="button" class="btn tool-mini" id="sx-save-ok">SAVE</button>
+              </div>
+
+              <div class="tool-note" id="sx-note"></div>
+              <div class="tool-progress hidden" id="sx-progress">
+                <span class="spinner" aria-hidden="true"></span>
+                <span class="tool-prog-stage" id="sx-prog-stage">Working…</span>
+                <button type="button" class="btn tool-mini sx-cancel" id="sx-cancel">CANCEL</button>
+              </div>
+              <div class="regmark sx-agents">agents: mcp run_script / list_scripts</div>
+            </div>
+          </div>
+          <input id="sx-file" type="file" accept=".csx,.cs,.txt" hidden />
+        </div>
       </div>
 
-      <button type="button" class="panel-chevron" id="left-chevron" aria-label="Collapse parameters" aria-expanded="true">
+      <button type="button" class="panel-chevron" id="left-chevron" aria-label="Collapse the parameters panel" title="Collapse the parameters panel" aria-expanded="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
       </button>
       <div class="rail-label"><span class="label">PARAMETERS</span><span class="jp label">設定</span></div>
@@ -460,33 +581,37 @@
     <!-- ── Region 5 — viewport ────────────────────────────────────────── -->
     <section class="viewport relative flex-1 min-w-0 overflow-hidden bg-[var(--bg)]" id="viewport">
       <!-- empty scene = clean plate; ADD PART carries the accent fill instead of a center hint -->
-      <div class="vp-chrome vp-tl regmark" id="vp-context">GYROID · SHEET · SINGLE</div>
+      <div class="vp-chrome vp-tl regmark has-tip" id="vp-context" data-tip="What GENERATE will build right now: the TPMS pattern, the lattice type, and the mode the current part roles resolve to (SINGLE or FUSE).">GYROID · SHEET · SINGLE</div>
 
       <!-- floating selection toolbar (appears with a selection; neutral HUD chrome,
            outside the accent machine) — MOVE / ROTATE / SCALE gizmo + LAY FLAT -->
       <div class="sel-toolbar" id="sel-toolbar" role="group" aria-label="Selection tools" hidden>
         <span class="sel-name" id="sel-name">PART</span>
         <span class="sel-sep" aria-hidden="true"></span>
-        <button type="button" class="sel-btn" id="sel-move" data-mode="translate" data-tip="Move the selected part (drag the arrows).">MOVE</button>
-        <button type="button" class="sel-btn" id="sel-rotate" data-mode="rotate" data-tip="Rotate the selected part (drag the rings).">ROTATE</button>
-        <button type="button" class="sel-btn" id="sel-scale" data-mode="scale" data-tip="Scale the selected part (drag the handles).">SCALE</button>
+        <button type="button" class="sel-btn has-tip" id="sel-move" data-mode="translate" data-tip="Move the selection: drag the gizmo arrows, or type exact numbers in XFORM.">MOVE</button>
+        <button type="button" class="sel-btn has-tip" id="sel-rotate" data-mode="rotate" data-tip="Rotate the selection: drag the gizmo rings, or type exact angles in XFORM.">ROTATE</button>
+        <button type="button" class="sel-btn has-tip" id="sel-scale" data-mode="scale" data-tip="Scale the part: drag the gizmo handles. One part at a time, since a world-axis group scale would shear the set.">SCALE</button>
         <span class="sel-sep" aria-hidden="true"></span>
-        <button type="button" class="sel-btn" id="sel-layflat" data-tip="Lay flat — then click a face to rest it on Y = 0 (the plate).">LAY FLAT</button>
-        <button type="button" class="sel-btn" id="sel-drop" data-tip="Drop to the plate — rest the selection on Y = 0 without rotating it.">DROP</button>
+        <button type="button" class="sel-btn has-tip" id="sel-layflat" data-tip="Lay flat: arms a face pick. Click a flat face on the part and it rotates to rest that face on the build plate.">LAY FLAT</button>
+        <button type="button" class="sel-btn has-tip" id="sel-drop" data-tip="Drop: lower the selection straight down onto the build plate without rotating it.">DROP</button>
       </div>
 
-      <!-- floating right-edge vertical view strip -->
+      <!-- Floating right-edge vertical view strip. These four are ICON-ONLY
+           buttons, so by the tooltip convention (see ui.initTooltips) they carry
+           a short verb-first native `title` as their name and never a HUD tip.
+           The UP cluster below them is different: it has a visible text label,
+           so it takes the HUD tip. -->
       <div class="view-strip" id="view-strip" role="group" aria-label="View controls">
-        <button type="button" class="vstrip-btn" id="vp-home" data-tip="Home view — the default camera: isometric, Z up, framed on everything visible." aria-label="Home view">
+        <button type="button" class="vstrip-btn" id="vp-home" title="Reset to the home view" aria-label="Reset to the home view">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10.5 9-7 9 7V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9.5 21v-6h5v6"/></svg>
         </button>
-        <button type="button" class="vstrip-btn" id="vp-fit" data-tip="Fit camera to visible objects." aria-label="Fit view">
+        <button type="button" class="vstrip-btn" id="vp-fit" title="Fit the camera to everything visible" aria-label="Fit the camera to everything visible">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/></svg>
         </button>
-        <button type="button" class="vstrip-btn" id="vp-ghosts" data-tip="Toggle visibility of all uploaded parts (result stays)." aria-label="Toggle ghosts" aria-pressed="false">
+        <button type="button" class="vstrip-btn" id="vp-ghosts" title="Hide or show the uploaded parts (the result stays)" aria-label="Hide or show the uploaded parts" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
-        <button type="button" class="vstrip-btn" id="vp-section" data-tip="Section plane — pick a plane from the triad, a chip, or a flat face, then push/pull the arrow. Click the arrow or ⇄ to flip. Alt+wheel nudges the offset." aria-label="Toggle section" aria-pressed="false" disabled>
+        <button type="button" class="vstrip-btn" id="vp-section" title="Toggle the section plane (pick a plane, then drag its arrow; Alt+wheel nudges)" aria-label="Toggle the section plane" aria-pressed="false" disabled>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4Z"/><path d="M4 13h16"/></svg>
         </button>
         <div class="vstrip-slider-wrap" id="vp-section-wrap" hidden>
@@ -494,13 +619,13 @@
             <button type="button" class="sec-chip" data-ax="x" aria-pressed="false">X</button>
             <button type="button" class="sec-chip" data-ax="y" aria-pressed="false">Y</button>
             <button type="button" class="sec-chip" data-ax="z" aria-pressed="false">Z</button>
-            <button type="button" class="sec-chip sec-invert" id="sec-invert" title="Invert the kept side" aria-label="Invert section side">⇄</button>
+            <button type="button" class="sec-chip sec-invert" id="sec-invert" title="Flip which side of the plane is kept" aria-label="Flip which side of the plane is kept">⇄</button>
           </div>
         </div>
         <!-- MODEL UP — which world direction reads screen-up. Display only:
              no geometry is moved and exports are identical in every mode. -->
-        <div class="vstrip-up" id="vp-up" role="group" aria-label="Model up axis"
-             data-tip="Model up — which world axis reads UP on screen, and where the build plate draws. Display convention only: your file's frame is never modified and exports are identical in every mode. Default +Z.">
+        <div class="vstrip-up has-tip" id="vp-up" role="group" aria-label="Model up axis"
+             data-tip="Which world axis reads UP on screen, and where the build plate draws. Display convention only: your file's frame is never modified and exports are byte-identical in every mode. Defaults to +Z.">
           <span class="vstrip-label label">UP</span>
           <div class="up-axis">
             <button type="button" class="sec-chip up-chip" data-up="+z" aria-pressed="false">+Z</button>
@@ -520,7 +645,7 @@
 
     <!-- ── Region 4 — right panel: objects tree + results ─────────────── -->
     <aside class="panel panel-right" id="panel-right">
-      <button type="button" class="panel-chevron" id="right-chevron" aria-label="Collapse objects" aria-expanded="true">
+      <button type="button" class="panel-chevron" id="right-chevron" aria-label="Collapse the objects panel" title="Collapse the objects panel" aria-expanded="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
       </button>
       <div class="rail-label"><span class="label">OBJECTS</span><span class="jp label">部品</span></div>
@@ -555,9 +680,9 @@
               <span class="tag">GYROID</span>
             </div>
             <div class="stats-grid grid grid-cols-3 gap-2 mb-3">
-              <div class="stat"><div class="stat-val num" id="stat-volume">&mdash;</div><div class="stat-label label">Volume <em>cm&sup3;</em></div></div>
-              <div class="stat"><div class="stat-val num" id="stat-infill">&mdash;</div><div class="stat-label label">Infill</div></div>
-              <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label">Tris</div></div>
+              <div class="stat"><div class="stat-val num" id="stat-volume">&mdash;</div><div class="stat-label label has-tip" data-tip="Solid volume of the generated lattice, material only.">Volume <em>cm&sup3;</em></div></div>
+              <div class="stat"><div class="stat-val num" id="stat-infill">&mdash;</div><div class="stat-label label has-tip" data-tip="Share of the target region the lattice fills, by volume. The rest is open air.">Infill</div></div>
+              <div class="stat"><div class="stat-val num" id="stat-tris">&mdash;</div><div class="stat-label label has-tip" data-tip="Triangle count of the generated mesh. Driven mostly by resolution.">Tris</div></div>
             </div>
             <div class="result-chips" id="result-chips" hidden>
               <span class="wt-chip" id="wt-chip"></span>
@@ -577,7 +702,7 @@
               <span class="lbls"><span class="label">FLOW</span><span class="jp label">流量</span></span>
               <span class="thead-tail">
                 <span class="tag">GEOMETRIC</span>
-                <button type="button" class="tool-close" id="flow-close" title="Close flow (Esc)" aria-label="Close flow">ESC ✕</button>
+                <button type="button" class="tool-close" id="flow-close" title="Close the FLOW panel" aria-label="Close the FLOW panel">ESC ✕</button>
               </span>
             </div>
 
@@ -594,23 +719,23 @@
               <span class="regmark" id="fl-pos-max">&mdash;</span>
             </div>
             <div class="flow-legend" id="fl-legend">
-              <span class="fl-key has-tip" data-tip="Air (open) cross-section at each position along the flow axis — higher = freer flow."><i class="fl-sw fl-sw-open"></i>Open area</span>
-              <span class="fl-key has-tip" data-tip="Gross part cross-section at the same position — the ceiling open area could reach."><i class="fl-sw fl-sw-env"></i>Envelope</span>
-              <span class="fl-key has-tip" data-tip="Tightest open slice — the flow bottleneck. The label above shows its area and position."><i class="fl-sw fl-sw-choke"></i>Choke</span>
+              <span class="fl-key has-tip" data-tip="Air (open) cross-section at each position along the flow axis. Higher means freer flow."><i class="fl-sw fl-sw-open"></i>Open area</span>
+              <span class="fl-key has-tip" data-tip="Gross part cross-section at the same position: the ceiling open area could reach."><i class="fl-sw fl-sw-env"></i>Envelope</span>
+              <span class="fl-key has-tip" data-tip="The tightest open slice, i.e. the flow bottleneck. The label above gives its area and position."><i class="fl-sw fl-sw-choke"></i>Choke</span>
             </div>
 
             <div class="flow-stats grid grid-cols-2 gap-2">
               <div class="stat"><div class="stat-val num" id="fl-porosity">&mdash;</div><div class="stat-label label has-tip" data-tip="Open share of the lattice region's volume.">Porosity <em>%</em></div></div>
               <div class="stat"><div class="stat-val num" id="fl-freevol">&mdash;</div><div class="stat-label label has-tip" data-tip="Total air volume inside the lattice region.">Free vol <em>cm&sup3;</em></div></div>
-              <div class="stat"><div class="stat-val num" id="fl-choke">&mdash;</div><div class="stat-label label has-tip" data-tip="Smallest open cross-section along the flow axis — the bottleneck.">Choke <em>mm&sup2;</em></div><div class="stat-sub regmark" id="fl-chokeratio">&mdash;</div></div>
+              <div class="stat"><div class="stat-val num" id="fl-choke">&mdash;</div><div class="stat-label label has-tip" data-tip="Smallest open cross-section along the flow axis: the bottleneck that sets the achievable flow.">Choke <em>mm&sup2;</em></div><div class="stat-sub regmark" id="fl-chokeratio">&mdash;</div></div>
               <div class="stat"><div class="stat-val num" id="fl-dh">&mdash;</div><div class="stat-label label has-tip" data-tip="Effective channel diameter: 4·porosity ÷ specific surface.">D<sub>h</sub> <em>mm</em></div></div>
             </div>
 
             <div class="flow-metrics" id="fl-metrics">
               <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Lattice surface area per unit volume.">S/V</span><span class="fl-met-v"><span class="num" id="fl-sv">&mdash;</span> <em>mm&#8315;&sup1;</em></span></div>
               <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Total lattice surface area.">Surface</span><span class="fl-met-v"><span class="num" id="fl-surface">&mdash;</span> <em>cm&sup2;</em></span></div>
-              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Permeability estimate (Kozeny–Carman) — geometric, not CFD.">Perm</span><span class="fl-met-v"><span class="num" id="fl-perm">&mdash;</span> <em>m&sup2;</em></span></div>
-              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Estimated pressure drop at the reference flow — geometric estimate, not CFD.">&Delta;P @<span id="fl-refflow">10</span> L/min</span><span class="fl-met-v"><span class="num" id="fl-dp">&mdash;</span> <em id="fl-dp-unit">kPa</em> <span class="tag est-tag">EST</span></span></div>
+              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Permeability estimate from Kozeny-Carman. Geometric, not CFD.">Perm</span><span class="fl-met-v"><span class="num" id="fl-perm">&mdash;</span> <em>m&sup2;</em></span></div>
+              <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Estimated pressure drop at the reference flow. A geometric estimate, not CFD.">&Delta;P @<span id="fl-refflow">10</span> L/min</span><span class="fl-met-v"><span class="num" id="fl-dp">&mdash;</span> <em id="fl-dp-unit">kPa</em> <span class="tag est-tag">EST</span></span></div>
               <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Extent of the lattice region along the flow axis.">Length</span><span class="fl-met-v"><span class="num" id="fl-length">&mdash;</span> <em>mm</em></span></div>
             </div>
 
@@ -625,11 +750,11 @@
           <div class="tile export-tile" id="sec-export-panel">
             <div class="thead">
               <span class="lbls"><span class="label">EXPORT</span><span class="jp label">出力</span></span>
-              <button type="button" class="tool-close" id="export-close" title="Close export (Esc)" aria-label="Close export">ESC ✕</button>
+              <button type="button" class="tool-close" id="export-close" title="Close the EXPORT panel" aria-label="Close the EXPORT panel">ESC ✕</button>
             </div>
 
             <div class="ex-block">
-              <span class="label has-tip" data-tip="Tick everything you want in this export — any mix of loaded parts and the generated result. Parts export exactly where you placed them.">Objects</span>
+              <span class="label has-tip" data-tip="Tick everything you want in this export: any mix of loaded parts and the generated result. Parts export exactly where you placed them.">Objects</span>
               <div class="ex-sources" id="ex-sources"></div>
               <!-- live sum of the TICKED sources — a multi-select's real weight in
                    one line, so the triangle budget never has to be added by hand. -->
@@ -637,7 +762,7 @@
             </div>
 
             <div class="ex-block">
-              <span class="label has-tip" data-tip="STL = triangle mesh for slicers. STEP = faceted B-rep for CAD — heavier, and conversion takes time.">Format</span>
+              <span class="label has-tip" data-tip="STL is a triangle mesh for slicers. STEP is a faceted B-rep for CAD: much heavier, and the conversion takes time.">Format</span>
               <div class="seg" id="ex-format" role="group" aria-label="Export format">
                 <button type="button" class="seg-btn active" data-val="stl" aria-pressed="true">STL</button>
                 <button type="button" class="seg-btn" data-val="step" aria-pressed="false">STEP</button>
@@ -664,7 +789,7 @@
                  block (target-triangle budget included) rides the format seg. -->
             <div class="ex-block ex-step-block" id="ex-step-block" hidden>
               <label class="param param-wide" for="p-steptris">
-                <span class="label has-tip" data-tip="Triangle budget for STEP export. The mesh is coarsened to fit — smaller = lighter CAD file, less detail.">STEP target <em>triangles</em></span>
+                <span class="label has-tip" data-tip="Triangle budget for the STEP export. The mesh is coarsened to fit it, so a smaller budget means a lighter CAD file with less detail.">STEP target <em>triangles</em></span>
                 <span class="step-group">
                   <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease STEP target">−</button>
                   <span class="field"><input id="p-steptris" type="number" value="60000" min="5000" step="5000" /></span>

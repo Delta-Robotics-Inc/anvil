@@ -85,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **The header `SCRIPTS` link and its popover are gone**, replaced by the
+  toolbar `SCRIPTS` view. The overlay markup, its module and its styles were
+  deleted rather than hidden. See the `SCRIPTS` entry below.
 - **The `USED · BOOL` / `USED · SMOOTH` source row is gone**, along with its
   dimmed styling and locked role select, because a boolean no longer leaves its
   sources behind. See the `BOOL` entry above.
@@ -94,6 +97,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Project save and open: the whole session in one `.anvil` file.** `SAVE` and
+  `OPEN` sit in the header, left of undo. A `.anvil` is a plain ZIP holding
+  `project.json` (the row manifest, the `UP` convention and every `LATTICE`
+  panel value) plus one binary STL per row, and a second STL for a latticed
+  row's lattice mesh. Reopening restores every object in order with its name,
+  role, colour, eye and ghost visibility, transform and provenance line; a
+  latticed row comes back as one object with its ghost linkage rebuilt, so it
+  still moves as a body and `REVERT` still gives the plain part back.
+  Coordinates travel **verbatim** - the STL bytes are copied without a single
+  transform applied and each row's TRS rides in the manifest, so an export taken
+  after an open is byte-identical to one taken before the save. Scripts are not
+  bundled: they live in the server-side library and are shared across projects.
+  Opening replaces the scene and **clears the undo history** (a stack that could
+  unwind past the open into the previous session would be a lie), and it asks
+  first when there is something on the plate. A bundle from a newer ANVIL is
+  refused with the version it needs; anything malformed comes back as a `400`
+  with the reason and leaves the current scene untouched. New endpoints
+  `POST /api/project/save` and `POST /api/project/open`.
+- **[`docs/scripting.md`](docs/scripting.md), the canonical Forge reference.** One
+  section per command, grouped into builders, combinators, modifiers and info,
+  each with its signature, a one-line description and a table of modifiers
+  giving units, defaults and meaning. Around it: how to run a script from the
+  `SCRIPTS` view, the HTTP API or MCP; the script globals; the coordinate
+  conventions; the voxel-size rule; a worked example walking `rocket_nozzle.csx`
+  from its six input numbers to a watertight part; and a gotchas list. Every
+  public Forge command is covered, checked against `Forge.cs` rather than
+  transcribed by hand. The `TOOLS ?` button in the `SCRIPTS` view has pointed
+  here since the view landed; the page now exists.
+- **Three showcase scripts in [`scripts-library/`](scripts-library)**, all
+  parameter-driven and all under 15 seconds at the default 0.3 mm voxel.
+  `rocket_nozzle.csx` turns throat, exit and chamber diameters into a Rao bell
+  contour with `Loft`, subtracts an over-length bore for a constant wall, fuses
+  a `Cylinder` plus `Torus` flange with `SmoothUnion`, and uses `ArrayRadial`
+  twice, once to cut bolt holes and once to add regenerative cooling tubes
+  swept with `Pipe`. `embossed_card.csx` rounds a blank with `Smooth` and bakes
+  one depth map onto it twice, raised on the front and engraved on the back.
+  `manifold_block.csx` drills `ArrayLinear` port bores, joins them with a
+  `Pipe` gallery that turns out through a side face, and fills that gallery
+  with a gyroid `Lattice` welded to the manifold wall. They join the existing
+  seeds in the template picker.
+- **`get_forge_reference` MCP tool.** Serves `docs/scripting.md` as markdown so
+  an agent has the whole command vocabulary before its first compile, trimmed
+  to the reference sections by default and complete with `full: true`. The
+  `run_script` and `save_script` descriptions now name the Forge API, list its
+  command groups, carry example calls, and tell the agent to read the reference
+  first. The MCP surface is 21 tools.
+- **`SCRIPTS` is a toolbar view with a real code editor.** The header `SCRIPTS`
+  link and its popover (a read-only list with a `RUN` per row) are gone. In their
+  place is a toolbar button between `DUPE` and `LATTICE` that takes the left
+  panel on the same toggle contract as every tool: click to open, click again to
+  close, `Esc` or `✕` back to `LATTICE`. The view holds a template picker (the
+  `scripts-library` seeds plus everything you have saved, loaded into the editor
+  on pick, with an inline confirm if the buffer is dirty), a self-contained
+  monospace editor with a line-number gutter, and `RUN`. `RUN` posts the
+  editor's text to `/api/scripts/run`, shows the job's stage inline with a
+  `CANCEL` beside it, and lands every part the script saved through the normal
+  derived-part flow, so a whole run is one `Ctrl+Z`. `SAVE` files the buffer
+  under a name you type inline, `UPLOAD` reads a `.csx` off disk into the editor,
+  and `TOOLS ?` opens the scripting reference in the repo. `Ctrl+Enter` runs,
+  `Tab` indents two spaces, and `Ctrl+Z` inside the editor is ordinary text undo
+  that never reaches the app history. `RUN` is this view's `CONFIRM` in the
+  accent budget: it holds the single solid fill while there is code to run and
+  swaps to the running pulse while a job is in flight. There is no editor
+  library and no new CDN dependency.
+- **Compile errors are structured and clickable.** A failed script run lists
+  Roslyn's diagnostics as `L<line>:<char>` plus the message in a neutral
+  advisory block; clicking a row focuses the editor and puts the caret on that
+  line and column. The diagnostics come from `JobStatus.errorData.scriptError`,
+  which the server already passed through verbatim for agents.
 - **Live lattice preview.** A `PREVIEW OFF | ON` row at the top of the `LATTICE`
   panel raymarches the TPMS field on the GPU inside the target part, so scrubbing
   cell size, wall thickness, bias, pattern, sheet/skeletal, rotation, phase or

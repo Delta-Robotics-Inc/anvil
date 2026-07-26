@@ -111,6 +111,14 @@ export const els = {
   connTxt: document.getElementById('conn-txt'),
   undoBtn:     document.getElementById('undo-btn'),   // Wave-4 UNDO — header ↶
   redoBtn:     document.getElementById('redo-btn'),   // Wave-4 UNDO — header ↷
+  // ── PROJECT save / open (the .anvil bundle) ───────────────────────────
+  projectSaveBtn: document.getElementById('project-save-btn'),
+  projectOpenBtn: document.getElementById('project-open-btn'),
+  projectFile:    document.getElementById('project-file'),
+  pjAsk:      document.getElementById('pj-ask'),
+  pjAskMsg:   document.getElementById('pj-ask-msg'),
+  pjAskNo:    document.getElementById('pj-ask-no'),
+  pjAskYes:   document.getElementById('pj-ask-yes'),
   feedbackBtn: document.getElementById('feedback-btn'),
   mcpBtn:      document.getElementById('mcp-btn'),
   toastStack:  document.getElementById('toast-stack'),
@@ -124,6 +132,7 @@ export const els = {
   tbXform:    document.getElementById('tb-xform'),
   tbMirror:   document.getElementById('tb-mirror'),
   tbDupe:     document.getElementById('tb-dupe'),
+  tbScripts:  document.getElementById('tb-scripts'),   // SCRIPTS view (code-to-geometry)
   tbLattice:  document.getElementById('tb-lattice'),   // home view (was TPMS; ORIENT is gone)
   tbGenerate: document.getElementById('tb-generate'),
   tbFlow:     document.getElementById('tb-flow'),
@@ -153,6 +162,7 @@ export const els = {
   // Left panel = a single-view host: exactly one of these is on screen.
   viewLattice:  document.getElementById('view-lattice'),
   viewTool:     document.getElementById('view-tool'),
+  viewScripts:  document.getElementById('view-scripts'),
   leftFoot:     document.getElementById('left-foot'),   // GENERATE — rides the LATTICE view
   latticeClose: document.getElementById('lattice-close'),  // ESC ✕ on the home view → collapse
   // Right panel = a single-view host too: OBJECTS (default), FLOW or EXPORT.
@@ -171,10 +181,11 @@ export const els = {
   vpDims:          document.getElementById('vp-dims'),
 };
 
-const ROLE_TIP = 'BASE: Part = gyroidize the whole part; one Positive + one Negative = fuse. '
-               + 'ZONES: Lattice (blue) / Keep-solid (green) / Void (white) regions layered on a base part.';
-const GHOST_TIP = 'source of the current lattice — delete the lattice to edit';
-const LATTICED_TIP = 'this part IS its lattice — REVERT to get the plain part back';
+const ROLE_TIP = 'What this part is to GENERATE. BASE roles: Part fills the whole part with lattice; '
+               + 'one Positive plus one Negative fuses them. ZONE roles layer regions on a base part: '
+               + 'Lattice (blue) is filled, Keep-solid (green) stays solid, Void (white) is left empty.';
+const GHOST_TIP = 'Locked: this part is a source of the current lattice. Delete the lattice to edit it again.';
+const LATTICED_TIP = 'This part IS its lattice, one object and one row. Use REVERT to get the plain part back.';
 const ROLE_GROUP_LABEL = { base: 'BASE', zone: 'ZONES' };
 
 // ── Parts list ────────────────────────────────────────────────────────
@@ -239,7 +250,7 @@ export function renderParts(parts, pending, handlers) {
     const name = document.createElement('div');
     name.className = 'part-name';
     name.textContent = p.name;
-    name.title = p.name;
+    name.title = p.name;   // truncation reveal only — the allowed non-icon title
     const meta = document.createElement('div');
     meta.className = 'part-meta';
     meta.textContent = `${fmtInt(p.triangles)} tris`
@@ -250,15 +261,16 @@ export function renderParts(parts, pending, handlers) {
     // wrapper supplies the two-layer chamfer rim (a <select> can't carry
     // ::before/::after, and a real border would drop on the corner cuts).
     const roleWrap = document.createElement('span');
-    roleWrap.className = 'field field-role';
-    // HUD hover tooltip — a locked row explains WHY it is locked.
+    roleWrap.className = 'field field-role has-tip';
+    // HUD hover tooltip on the WRAPPER (a <select> can't be the tip host and a
+    // native title would double up on it) — a locked row explains WHY it is
+    // locked. The select itself carries only its aria-label.
     roleWrap.setAttribute('data-tip',
       p.latticed ? LATTICED_TIP : p.ghosted ? GHOST_TIP : ROLE_TIP);
     const role = document.createElement('select');
     role.className = 'part-role';
     role.name = `role-${p.id}`;
     role.setAttribute('aria-label', `Role for ${p.name}`);
-    role.title = 'Role — BASE decides single/fuse; ZONES mark lattice/keep/void regions';
     role.style.color = roleColorHex(p.role);   // Fix 1 — role colour as text, no orange fill
     // Two optgroups: BASE (part/positive/negative) then ZONES (lattice/keep/void).
     for (const group of ['base', 'zone']) {
@@ -290,8 +302,8 @@ export function renderParts(parts, pending, handlers) {
       // Stacked so the badge costs no more width than the role select it
       // replaces — the name column is worth more than one wide chip.
       const cell = document.createElement('div');
-      cell.className = 'role-cell lattice-cell';
-      cell.title = LATTICED_TIP;
+      cell.className = 'role-cell lattice-cell has-tip';
+      cell.setAttribute('data-tip', LATTICED_TIP);
       const mark = document.createElement('span');
       mark.className = 'regmark';
       mark.textContent = 'LATTICE';
@@ -302,13 +314,13 @@ export function renderParts(parts, pending, handlers) {
       roleSlot = cell;
     } else if (p.isResult) {
       const tag = document.createElement('span');
-      tag.className = 'tag lattice-tag';
+      tag.className = 'tag lattice-tag has-tip';
       tag.textContent = 'LATTICE';
-      tag.title = p.derived?.label || 'Generated lattice';
+      tag.setAttribute('data-tip',
+        `Generated by GENERATE, not imported. Recipe: ${p.derived?.label || 'lattice'}.`);
       roleSlot = tag;
     } else if (p.ghosted) {
       role.disabled = true;
-      role.title = GHOST_TIP;
       const cell = document.createElement('div');
       cell.className = 'role-cell';
       const mark = document.createElement('span');
@@ -328,16 +340,17 @@ export function renderParts(parts, pending, handlers) {
       const ghost = document.createElement('button');
       ghost.type = 'button';
       ghost.className = 'icon-btn' + (p.ghostVisible ? '' : ' off');
-      ghost.title = p.ghostVisible ? 'Hide ghost (the source shell)' : 'Show ghost (the source shell)';
-      ghost.setAttribute('aria-label', p.ghostVisible ? 'Hide ghost' : 'Show ghost');
+      // Icon-only row buttons: short verb-first native title, no HUD tip.
+      ghost.title = p.ghostVisible ? 'Hide the ghost shell' : 'Show the ghost shell';
+      ghost.setAttribute('aria-label', ghost.title);
       ghost.innerHTML = ICON_GHOST;
       ghost.addEventListener('click', () => handlers.onToggleGhost?.(p.id));
 
       const revert = document.createElement('button');
       revert.type = 'button';
       revert.className = 'icon-btn';
-      revert.title = 'Revert lattice — back to the plain part';
-      revert.setAttribute('aria-label', 'Revert lattice');
+      revert.title = 'Revert the lattice, back to the plain part';
+      revert.setAttribute('aria-label', revert.title);
       revert.innerHTML = ICON_REVERT;
       revert.addEventListener('click', () => handlers.onRevertLattice?.(p.id));
 
@@ -350,8 +363,8 @@ export function renderParts(parts, pending, handlers) {
     const dot = document.createElement('button');
     dot.type = 'button';
     dot.className = 'icon-btn color-btn';
-    dot.title = p.colorHex ? `Colour ${p.colorHex} — click to change` : 'Colour — click to change';
-    dot.setAttribute('aria-label', `Colour for ${p.name}`);
+    dot.title = p.colorHex ? `Change the part colour (now ${p.colorHex})` : 'Change the part colour';
+    dot.setAttribute('aria-label', `Change the colour of ${p.name}`);
     dot.innerHTML = '<i class="color-chip" aria-hidden="true"></i>';
     dot.addEventListener('click', (e) => {
       const r = dot.getBoundingClientRect();
@@ -368,17 +381,17 @@ export function renderParts(parts, pending, handlers) {
     eye.type = 'button';
     eye.className = 'icon-btn' + (p.visible ? '' : ' off');
     eye.title = p.latticed
-      ? (p.visible ? 'Hide lattice' : 'Show lattice')
-      : (p.visible ? 'Hide' : 'Show');
-    eye.setAttribute('aria-label', p.visible ? 'Hide part' : 'Show part');
+      ? (p.visible ? 'Hide the lattice' : 'Show the lattice')
+      : (p.visible ? 'Hide this part' : 'Show this part');
+    eye.setAttribute('aria-label', eye.title);
     eye.innerHTML = p.visible ? ICON_EYE : ICON_EYE_OFF;
     eye.addEventListener('click', () => handlers.onToggleVisible(p.id));
 
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'icon-btn danger';
-    del.title = 'Remove';
-    del.setAttribute('aria-label', 'Remove part');
+    del.title = 'Delete this part';
+    del.setAttribute('aria-label', 'Delete this part');
     del.innerHTML = ICON_X;
     del.addEventListener('click', () => handlers.onDelete(p.id));
 
@@ -633,6 +646,90 @@ function setCellMode(mode) {
     els.cellX.value = v; els.cellY.value = v; els.cellZ.value = v;
   }
   els.cellXYZ.hidden = !perAxis;
+}
+
+// ── Write the LATTICE panel back (project OPEN) ───────────────────────
+// The exact inverse of readParams: every field it reads, this writes. Used by
+// PROJECT OPEN so a reopened project asks the same question of the geometry it
+// asked before it was saved. Unknown/absent keys are LEFT ALONE, so a bundle
+// written by an older build never blanks a control it never knew about.
+function forceSeg(group, val, sel = '.seg-btn') {
+  if (!group || val == null) return;
+  const btns = [...group.querySelectorAll(sel)];
+  if (!btns.some((b) => b.dataset.val === String(val))) return;   // unknown value
+  for (const b of btns) {
+    const on = b.dataset.val === String(val);
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+function setNum(input, v) {
+  if (!input || v == null || Number.isNaN(Number(v))) return;
+  input.value = String(v);
+}
+export function applyParams(p) {
+  if (!p) return;
+  // SHEET | SKELETAL first: the mode morph swaps the wall field's min/max and
+  // stashes the other mode's value, so it must land BEFORE the number is written.
+  if (p.latticeType) {
+    forceSeg(els.latticeSeg, p.latticeType);
+    setLatticeType(p.latticeType);
+  }
+  if (els.pattern && p.pattern) {
+    if ([...els.pattern.options].some((o) => o.value === p.pattern)) els.pattern.value = p.pattern;
+  }
+  setNum(els.cell, p.cellSizeMM);
+  // One input, two meanings — write whichever the restored mode is showing.
+  setNum(els.wall, p.latticeType === 'skeletal' ? p.biasMM : p.wallThicknessMM);
+  setNum(els.voxel, p.voxelSizeMM);
+  setNum(els.overlap, p.overlapMM);
+  setNum(els.smooth, p.smoothOffsetMM);
+  setNum(els.stepTris, p.stepTargetTriangles);
+  setNum(els.refFlow, p.refFlowLpm);
+  if (p.cleanup != null) forceSeg(els.cleanupSeg, p.cleanup ? 'on' : 'off');
+  forceSeg(els.flowAxis, p.flowAxis, '.fchip');
+
+  if (p.rotationDeg) {
+    setNum(els.rotX, p.rotationDeg.x); setNum(els.rotY, p.rotationDeg.y); setNum(els.rotZ, p.rotationDeg.z);
+  }
+  if (p.phaseOffset) {
+    setNum(els.phaseX, p.phaseOffset.x); setNum(els.phaseY, p.phaseOffset.y); setNum(els.phaseZ, p.phaseOffset.z);
+  }
+  // PER-AXIS cell: setCellMode prefills the triplet from the uniform value, so
+  // the saved triplet is written after it.
+  const cellMode = p.cellMode || (p.cellSizeXYZ ? 'peraxis' : 'uniform');
+  forceSeg(els.cellSeg, cellMode);
+  setCellMode(cellMode);
+  if (p.cellSizeXYZ) {
+    setNum(els.cellX, p.cellSizeXYZ.x); setNum(els.cellY, p.cellSizeXYZ.y); setNum(els.cellZ, p.cellSizeXYZ.z);
+  }
+  // One synthetic `input` so anything listening (the live preview, the wall-vs-
+  // cell advisory) re-reads the panel as if the user had typed the values.
+  els.cell?.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// ── PROJECT OPEN guard (inline, never a browser confirm()) ────────────
+// The header's one destructive verb asks first. `then(true|false)` fires exactly
+// once; ESC and CANCEL are the same answer.
+let pjAsk = null;
+export function askProjectOpen(message, then) {
+  if (!els.pjAsk) { then(true); return; }
+  els.pjAskMsg.textContent = message;
+  els.pjAsk.hidden = false;
+  pjAsk = then;
+  els.pjAskYes?.focus();
+}
+export function closeProjectAsk() { pjAsk = null; if (els.pjAsk) els.pjAsk.hidden = true; }
+export function isProjectAskOpen() { return !!pjAsk; }
+export function initProjectAsk() {
+  const resolve = (go) => { const then = pjAsk; closeProjectAsk(); then?.(go); };
+  els.pjAskNo?.addEventListener('click', () => resolve(false));
+  els.pjAskYes?.addEventListener('click', () => resolve(true));
+  document.addEventListener('keydown', (e) => {
+    if (!pjAsk || e.key !== 'Escape') return;
+    e.preventDefault();
+    resolve(false);
+  });
 }
 
 // ── Number-input steppers ─────────────────────────────────────────────
@@ -1088,7 +1185,7 @@ export function renderExportSources(items, checked, onToggle) {
     const name = document.createElement('span');
     name.className = 'ex-src-name';
     name.textContent = it.name;
-    name.title = it.name;
+    name.title = it.name;   // truncation reveal only
 
     const meta = document.createElement('span');
     meta.className = 'ex-src-meta';
@@ -1243,7 +1340,15 @@ export function setPanelCollapsed(side, collapsed, persist = true) {
   const chev  = side === 'left' ? els.leftChevron : els.rightChevron;
   if (!panel) return;
   panel.classList.toggle('collapsed', collapsed);
-  if (chev) chev.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  if (chev) {
+    chev.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    // Icon-only button → its NAME is a native title, and it has to name the
+    // NEXT action, not the current state (tooltip convention, initTooltips).
+    const what = side === 'left' ? 'parameters' : 'objects';
+    const name = `${collapsed ? 'Expand' : 'Collapse'} the ${what} panel`;
+    chev.title = name;
+    chev.setAttribute('aria-label', name);
+  }
   if (persist) {
     try { localStorage.setItem(PANEL_KEY[side], collapsed ? 'collapsed' : 'open'); } catch { /* private mode */ }
   }
@@ -1272,24 +1377,29 @@ export function initPanels() {
 
 // ── Left panel · single-view host ─────────────────────────────────────
 // 'lattice' = the home view (TPMS parameters + ZONES + POSITION + the pinned
-// GENERATE foot); 'tool' = whichever tool js/tools.js has open, full height.
-// Exactly one is ever on screen, so a tool can never scroll into the lattice
-// parameters and GENERATE exists only while the LATTICE view is showing.
+// GENERATE foot); 'tool' = whichever tool js/tools.js has open, full height;
+// 'scripts' = the SCRIPTS editor (js/scripts.js), also full height. Exactly one
+// is ever on screen, so a tool can never scroll into the lattice parameters and
+// GENERATE exists only while the LATTICE view is showing.
+const LEFT_VIEWS = ['lattice', 'tool', 'scripts'];
 let _leftView = 'lattice';
 export function setLeftView(view) {
-  const tool = view === 'tool';
-  _leftView = tool ? 'tool' : 'lattice';
-  els.viewLattice?.classList.toggle('hidden', tool);
-  els.leftFoot?.classList.toggle('hidden', tool);
-  els.viewTool?.classList.toggle('hidden', !tool);
-  // The LATTICE toolbar button reads as the active view whenever no tool owns
-  // the panel (tools.js lights its own button on the same switch).
-  els.tbLattice?.classList.toggle('active', !tool);
+  _leftView = LEFT_VIEWS.includes(view) ? view : 'lattice';
+  const home = _leftView === 'lattice';
+  els.viewLattice?.classList.toggle('hidden', !home);
+  els.leftFoot?.classList.toggle('hidden', !home);
+  els.viewTool?.classList.toggle('hidden', _leftView !== 'tool');
+  els.viewScripts?.classList.toggle('hidden', _leftView !== 'scripts');
+  // Each toolbar button reads as the active view while the panel shows it
+  // (tools.js lights its own button on the same switch).
+  els.tbLattice?.classList.toggle('active', home);
+  els.tbScripts?.classList.toggle('active', _leftView === 'scripts');
   // A view swap resets the scroll position of the view being shown.
-  const shown = tool ? els.viewTool : els.viewLattice;
+  const shown = _leftView === 'tool' ? els.viewTool
+    : _leftView === 'scripts' ? els.viewScripts : els.viewLattice;
   if (shown) shown.scrollTop = 0;
 }
-/** Which view the left panel is showing: 'lattice' | 'tool'. */
+/** Which view the left panel is showing: 'lattice' | 'tool' | 'scripts'. */
 export function getLeftView() { return _leftView; }
 
 // ── Right panel · single-view host ────────────────────────────────────
@@ -1353,11 +1463,48 @@ export function focusSection(name) {
   });
 }
 
-// ── HUD tooltips ──────────────────────────────────────────────────────
+// ══ TOOLTIP CONVENTION — read this before adding any tooltip anywhere ══
+//
+// The app has TWO tooltip systems and they do NOT overlap. Which one a control
+// gets is decided by ONE question: does it show text the user might not
+// understand, or is it a bare glyph that needs a name?
+//
+//   1. HUD TIP  `class="has-tip" data-tip="…"`  (this module)
+//      Explanatory copy, 600 ms long-hover, styled like the rest of the HUD.
+//      Goes on anything that CARRIES VISIBLE TEXT and needs explaining:
+//        · parameter and metric labels        (Cell size, Porosity, ΔP …)
+//        · status readouts                    (LOCAL · READY, the vp-context line)
+//        · text or icon+text buttons          (toolbar ops, MOVE / LAY FLAT, RUN)
+//        · a labelled cluster                 (the UP chips, a part row's role field)
+//      Write it as prose: what the control does, then the consequence or the
+//      catch. No em dashes (house style); a colon or a second sentence instead.
+//      Disabled controls still show theirs, so "why is this greyed out?" has an
+//      answer exactly where the question gets asked.
+//
+//   2. NATIVE `title="…"`
+//      Only ever TWO jobs:
+//        a) the NAME of an ICON-ONLY button — short, verb-first, and carrying
+//           the hotkey in parens when one exists: "Undo (Ctrl+Z)",
+//           "Fit the camera to everything visible". A stateful button names the
+//           NEXT action, not the current state ("Collapse …" / "Expand …").
+//           Keep it identical to the button's aria-label.
+//        b) revealing text that is visually TRUNCATED (a long part name in a
+//           narrow row). Here the title IS the text, nothing more.
+//
+//   NEVER BOTH on one element — audit with
+//       document.querySelectorAll('[title][data-tip]').length === 0
+//   and a `data-tip` without `.has-tip` is dead weight, since this module only
+//   matches `.has-tip[data-tip]`:
+//       document.querySelectorAll('[data-tip]:not(.has-tip)').length === 0
+//
+//   NEITHER, for self-evident controls: OK / CANCEL / SAVE-name rows, − and ＋
+//   steppers, a text input sitting under its own label, the X/Y/Z axis chips.
+//   A tooltip that only restates the label is noise.
+//
+// ── implementation ────────────────────────────────────────────────────
 // One floating panel (appended to <body>, pointer-events:none) shared by every
-// element carrying a `data-tip` attribute — parameter labels, FLOW metric
-// labels, and the per-row role select. Positioning is measured from the target
-// so the panel escapes the sidebar's overflow clip and flips below / clamps
+// `.has-tip[data-tip]` element. Positioning is measured from the target so the
+// panel escapes the sidebar's overflow clip and flips below / clamps
 // horizontally near the viewport edges instead of clipping. Mirrors the HUD
 // .ledtip look (chamfered --card panel, --line rim, small text, no text-shadow).
 export function initTooltips() {
@@ -1368,8 +1515,9 @@ export function initTooltips() {
   let current = null, pending = null, timer = null;
   const DELAY = 600;   // long-hover intent before a tip appears
 
-  // Tooltips attach ONLY to text carrying `.has-tip` (parameter + metric labels) —
-  // never to inputs, selects, or buttons.
+  // The ONE selector that decides what has a HUD tip. `closest` means a tip may
+  // be hosted on a wrapper (the role FIELD, the UP cluster) and still fire when
+  // the pointer is over the control inside it.
   const tipTarget = (el) => el?.closest?.('.has-tip[data-tip]') || null;
 
   function place(el) {
@@ -1433,6 +1581,7 @@ export function toast(message, kind = 'info', timeout = 6000) {
 
   const close = document.createElement('button');
   close.className = 'toast-close';
+  close.title = 'Dismiss';
   close.setAttribute('aria-label', 'Dismiss');
   close.innerHTML = '&times;';
   const dismiss = () => { el.remove(); };
@@ -1502,7 +1651,7 @@ function armPopupDismiss(el, onClose) {
 }
 
 /**
- * items: [{ label, disabled?, onSelect(x, y)? } | { sep: true }]
+ * items: [{ label, disabled?, tip?, onSelect(x, y)? } | { sep: true }]
  * A disabled row stays VISIBLE and dim — the menu is a map of what exists, not
  * a shifting list. onSelect receives the menu's own anchor so a follow-up
  * popover (DUPLICATE…) opens exactly where the menu was.
@@ -1524,8 +1673,12 @@ export function openContextMenu(x, y, items) {
     b.className = 'ctx-item';
     b.setAttribute('role', 'menuitem');
     b.textContent = it.label;
-    if (it.disabled) { b.disabled = true; if (it.title) b.title = it.title; }
-    else b.addEventListener('click', () => { closeContextMenu(); it.onSelect?.(x, y); });
+    if (it.disabled) {
+      b.disabled = true;
+      // A menu row is TEXT, so its "why is this dim?" line is a HUD tip, not a
+      // native title (tooltip convention, see initTooltips).
+      if (it.tip) { b.classList.add('has-tip'); b.setAttribute('data-tip', it.tip); }
+    } else b.addEventListener('click', () => { closeContextMenu(); it.onSelect?.(x, y); });
     menu.appendChild(b);
   }
   document.body.appendChild(menu);
@@ -1643,8 +1796,9 @@ export function openColorPopover(x, y, opts = {}) {
     b.type = 'button';
     b.className = 'ctx-swatch' + (current === hex ? ' on' : '');
     b.style.setProperty('--sw', hex);
-    b.title = hex;
-    b.setAttribute('aria-label', hex);
+    // A colour chip is an icon-only button: its NAME is the hex it applies.
+    b.title = `Set ${hex}`;
+    b.setAttribute('aria-label', `Set ${hex}`);
     b.addEventListener('click', () => { closeContextMenu(); opts.onPick?.(hex); });
     grid.appendChild(b);
   }
@@ -1671,9 +1825,10 @@ export function openColorPopover(x, y, opts = {}) {
   acts.className = 'ctx-pop-acts';
   const reset = document.createElement('button');
   reset.type = 'button';
-  reset.className = 'btn tool-mini';
+  reset.className = 'btn tool-mini has-tip';
   reset.textContent = 'RESET';
-  reset.title = `Back to the role colour (${roleHex})`;
+  reset.setAttribute('data-tip',
+    `Drop the colour override and go back to the role colour (${roleHex}).`);
   reset.addEventListener('click', () => { closeContextMenu(); opts.onPick?.(null); });
   acts.append(reset);
 
@@ -1771,7 +1926,7 @@ function initMcpDialog() {
         <span class="label">${labelHtml}</span>
         <div class="mcp-cmd">
           <code>${escapeHtml(value)}</code>
-          <button type="button" class="mcp-copy" data-copy="${escapeHtml(value)}" aria-label="Copy">COPY</button>
+          <button type="button" class="mcp-copy" data-copy="${escapeHtml(value)}" aria-label="Copy to the clipboard">COPY</button>
         </div>
       </div>`;
   }
@@ -1784,7 +1939,7 @@ function initMcpDialog() {
       <div class="hud-card mcp-card" role="dialog" aria-modal="true" aria-label="MCP agent access">
         <div class="hud-head">
           <span class="label">MCP <span class="slash">//</span> AGENT ACCESS</span>
-          <button type="button" class="hud-close" aria-label="Close">✕</button>
+          <button type="button" class="hud-close" title="Close (Esc)" aria-label="Close (Esc)">✕</button>
         </div>
         <div class="hud-body">
           <p class="mcp-lede">${escapeHtml(MCP_BLURB).replace('20 tools', '<b>20 tools</b>')}</p>
@@ -1879,6 +2034,9 @@ const ICON_EYE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" st
 const ICON_EYE_OFF = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.7 5.1A9.7 9.7 0 0 1 12 5c6.5 0 10 7 10 7a15.8 15.8 0 0 1-2.8 3.6M6.6 6.6A15.8 15.8 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 4.2-.9"/><path d="m3 3 18 18"/></svg>';
 const ICON_X = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 // Latticed-row verbs: the source shell drawn behind the lattice, and the undo
-// arc that gives the plain part back.
+// glyph that gives the plain part back. REVERT is the header UNDO icon at row
+// scale — Lucide `undo-2`, same 24×24 / stroke-2 / round-cap conventions as
+// every other row icon. (It used to be the hand-drawn 3/4-turn arc, which was
+// unreadable at 16px; see the note on #undo-btn in index.html.)
 const ICON_GHOST = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V10a7 7 0 0 1 14 0v10l-2.3-1.8L14.3 20 12 18.2 9.7 20l-2.4-1.8Z"/><path d="M9.5 10h.01M14.5 10h.01"/></svg>';
-const ICON_REVERT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.1-9.4L3 7"/></svg>';
+const ICON_REVERT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>';

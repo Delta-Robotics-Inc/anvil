@@ -787,6 +787,16 @@ body.drag-active .viewport::after { opacity:1; }
   text-decoration:underline dotted color-mix(in oklch,var(--dim) 55%,transparent);
   text-underline-offset:3px; text-decoration-thickness:1px;
 }
+/* …but a CONTROL that carries a tip already looks interactive, so it takes the
+   tip without the dotted rule: the underline is a "this text explains itself"
+   affordance, and on a toolbar button or a link it just reads as damage.
+   Keep the pointer cursor too — `cursor:help` belongs to inert label text. */
+button.has-tip, a.has-tip, .tb-btn.has-tip, .sel-btn.has-tip,
+.vstrip-up.has-tip, .field-role.has-tip, .role-cell.has-tip,
+.lattice-tag.has-tip, #conn-group.has-tip { text-decoration:none; }
+button[data-tip], a[data-tip], [data-tip] > button, [data-tip] > select { cursor:pointer; }
+button[data-tip]:disabled, [data-tip] > button:disabled,
+[data-tip] > select:disabled { cursor:not-allowed; }
 
 /* ═══════════════════════════════════════════════════════════════════════
    CAD-STYLE WORKSPACE SHELL (HyDesign structural patterns, HUD skin)
@@ -1212,8 +1222,8 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 
 /* ══════════════════════════════════════════════════════════════════════
    ── HUD MODAL SHELL ──
-   One dialog component, shared by the SCRIPTS panel and the MCP dialog. Both
-   used to (or would) hand-roll their own overlay; this is the single source.
+   One dialog component. The MCP card is its only consumer today (SCRIPTS grew
+   out of a popover into a real left-panel view — see the SCRIPTS VIEW block).
 
    The card is a TWO-LAYER chamfer, never a real `border` — a border on a
    clip-path element loses its hairline on the diagonal corner cuts (see the
@@ -1221,70 +1231,45 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
    1px. Head/foot rules are real 1px borders on non-clipped children, which is
    fine because those children have square corners.
    ══════════════════════════════════════════════════════════════════════ */
-.hud-overlay, .scripts-overlay {
+.hud-overlay {
   position:fixed; inset:0; z-index:100;
   display:flex; align-items:flex-start; justify-content:center; padding:64px 16px;
   background:color-mix(in oklch,var(--bg) 55%,transparent); backdrop-filter:blur(3px);
   animation:hud-overlay-in .16s ease;
 }
-.hud-overlay[hidden], .scripts-overlay[hidden] { display:none; }
+.hud-overlay[hidden] { display:none; }
 @keyframes hud-overlay-in { from { opacity:0; } to { opacity:1; } }
 
-.hud-card, .scripts-panel {
+.hud-card {
   position:relative; isolation:isolate;
   width:min(560px,94vw); max-height:76vh; display:flex; flex-direction:column;
   background:transparent; animation:hud-card-in .18s ease;
 }
-.hud-card::before, .scripts-panel::before {
+.hud-card::before {
   content:""; position:absolute; inset:0; z-index:-2; background:var(--line);
   clip-path:polygon(0 0,calc(100% - 13px) 0,100% 13px,100% 100%,13px 100%,0 calc(100% - 13px));
 }
-.hud-card::after, .scripts-panel::after {
+.hud-card::after {
   content:""; position:absolute; inset:1px; z-index:-1; background:var(--card);
   clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,12px 100%,0 calc(100% - 12px));
 }
 @keyframes hud-card-in { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
 
-.hud-head, .scripts-head {
+.hud-head {
   display:flex; align-items:center; justify-content:space-between; gap:10px;
   padding:12px 14px; border-bottom:1px solid var(--line);
 }
-.hud-head .label .slash, .scripts-head .label .slash { color:var(--primary); }
+.hud-head .label .slash { color:var(--primary); }
 /* ✕ — same vocabulary as .tool-close: quiet --dim, accent on hover/focus. */
-.hud-close, .scripts-close {
+.hud-close {
   background:none; border:0; cursor:pointer; color:var(--dim);
   font-family:inherit; font-size:13px; line-height:1; padding:3px 6px;
   transition:color .15s;
 }
-.hud-close:hover, .scripts-close:hover,
-.hud-close:focus-visible, .scripts-close:focus-visible { color:var(--primary); outline:none; }
+.hud-close:hover,
+.hud-close:focus-visible { color:var(--primary); outline:none; }
 .hud-body { overflow:auto; padding:14px; display:flex; flex-direction:column; gap:14px; }
-.hud-foot, .scripts-foot { padding:10px 14px; border-top:1px solid var(--line); opacity:.6; font-size:9px; }
-
-/* ── SCRIPTS panel (Stage 5 — code-to-geometry) ───────────────────────── */
-.scripts-list { overflow:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
-.scripts-row {
-  display:flex; align-items:center; gap:10px; padding:8px 10px;
-  background:color-mix(in oklch,var(--card) 88%,var(--bg));
-  box-shadow:inset 0 0 0 1px var(--line);
-  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
-}
-.scripts-name { flex:1; min-width:0; font-size:12px; color:var(--fg); font-weight:600;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.scripts-src { flex:none; opacity:.6; text-transform:uppercase; letter-spacing:.1em; font-size:9px; }
-/* Both row actions are .btn (two-layer chamfer, outline). CODE is a --dim ghost;
-   RUN carries --primary because it IS this panel's action — but as an OUTLINE,
-   so the single solid --primary fill in the app is never duplicated here. */
-.scripts-peek, .scripts-run { flex:none; font-size:.6rem; letter-spacing:.14em; padding:6px 11px; }
-.scripts-peek { --c:var(--dim); }
-.scripts-peek:hover:not(:disabled) { --c:var(--fg); }
-.scripts-code {
-  margin:0 8px 6px; padding:10px; max-height:220px; overflow:auto;
-  background:var(--bg); box-shadow:inset 0 0 0 1px var(--line);
-  font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; color:var(--fg); white-space:pre;
-  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
-}
-.scripts-msg { padding:12px 10px; opacity:.6; }
+.hud-foot { padding:10px 14px; border-top:1px solid var(--line); opacity:.6; font-size:9px; }
 
 /* ══════════════════════════════════════════════════════════════════════
    ── MCP dialog (agent access) ──
@@ -1504,6 +1489,23 @@ button.hdr-link {
 .hdr-link:disabled:hover { color:var(--c); }
 .hdr-link:disabled:hover::before { background:var(--line); }
 
+/* ── PROJECT OPEN guard ──────────────────────────────────────────────────
+   The one destructive verb in the header asks before it fires, in the same
+   inline-HUD vocabulary as the SCRIPTS overwrite guard (.sx-ask) — never a
+   browser confirm(). It HANGS off the app bar (absolute, under the SAVE/OPEN
+   pair) instead of sitting in the flow, so raising the question never reflows
+   the toolbar underneath it. Neutral seat, no accent: this consumes no fill. */
+.pj-ask {
+  position:absolute; top:calc(100% - 1px); right:16px; z-index:60;
+  display:flex; align-items:center; gap:9px; padding:8px 10px;
+  background:var(--card); box-shadow:inset 0 0 0 1px var(--line), 0 6px 18px rgb(0 0 0 / .45);
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
+}
+.pj-ask[hidden] { display:none; }
+.pj-ask-msg { flex:1 1 auto; min-width:0; font-size:10px; line-height:1.5; color:var(--advisory); white-space:nowrap; }
+.pj-ask-acts { flex:none; display:flex; gap:6px; }
+.pj-ask-acts .btn { padding:5px 10px; font-size:.55rem; letter-spacing:.12em; }
+
 /* ══════════════════════════════════════════════════════════════════════
    WAVE-6 — multi-selection: canvas context menu · count popover · XFORM
    ══════════════════════════════════════════════════════════════════════
@@ -1645,3 +1647,110 @@ button.hdr-link {
   color:var(--dim); text-transform:uppercase;
 }
 .preview-note[hidden] { display:none; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   SCRIPTS VIEW — code-to-geometry in the left panel
+   ══════════════════════════════════════════════════════════════════════
+   The tile fills its view the way EXPORT does, so the editor gets the height
+   and RUN sits at the bottom of the panel instead of floating under a short
+   form. Editor chrome is deliberately plain: a --card well, a --line hairline,
+   a --muted gutter. NO new solid --primary fill is created here — RUN is the
+   view's single CONFIRM and takes its .solid from main.updateAccents, exactly
+   like a tool's CONFIRM does. Everything else (SAVE / UPLOAD / TOOLS ? /
+   CANCEL / error rows) is a --dim ghost or neutral text. */
+#view-scripts .scripts-tile {
+  flex:1 1 auto; display:flex; flex-direction:column; min-height:0;
+}
+.sx-body { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; gap:11px; }
+.sx-pick { flex:none; }
+
+/* ── the editor: gutter + textarea, one scrolling unit ────────────────
+   The textarea does NOT wrap (wrap="off" in the markup), so one logical line is
+   exactly one gutter row and the numbers can never drift from the code. Both
+   sides share the same font metrics and top padding; a scroll listener locks
+   the gutter's scrollTop to the textarea's. */
+.sx-editor {
+  --sx-line:18px;
+  flex:1 1 auto; min-height:190px; display:flex; align-items:stretch; overflow:hidden;
+  background:var(--card); box-shadow:inset 0 0 0 1px var(--line);
+  transition:box-shadow .15s;
+}
+.sx-editor:focus-within { box-shadow:inset 0 0 0 1px var(--primary), 0 0 6px color-mix(in oklch,var(--primary) 28%,transparent); }
+.sx-gutter {
+  flex:none; width:calc(var(--sx-digits,2) * 1ch + 17px);
+  padding:9px 8px 40px 0; overflow:hidden; text-align:right; user-select:none;
+  background:var(--muted); color:var(--dim);
+  font-family:var(--font-mono); font-size:12px; line-height:var(--sx-line);
+  font-variant-numeric:tabular-nums; white-space:pre; text-shadow:none;
+}
+.sx-code {
+  flex:1 1 auto; min-width:0; display:block; resize:none;
+  padding:9px 11px 40px; border:0; outline:none; background:transparent; color:var(--fg);
+  font-family:var(--font-mono); font-size:12px; line-height:var(--sx-line);
+  white-space:pre; overflow:auto; tab-size:2; text-shadow:none;
+  caret-color:var(--primary);
+}
+.sx-code::placeholder { color:var(--dim); opacity:.7; }
+
+/* status strip under the editor: filename · dirty dot · line count */
+.sx-bar { flex:none; display:flex; align-items:center; gap:7px; }
+.sx-bar-gap { flex:1 1 auto; }
+.sx-file { color:color-mix(in oklch,var(--dim) 45%,var(--fg)); letter-spacing:.1em; }
+.sx-dot {
+  display:block; width:6px; height:6px; flex:none; background:var(--primary);
+  box-shadow:0 0 6px color-mix(in oklch,var(--primary) 60%,transparent);
+}
+.sx-dot[hidden] { display:none; }
+
+/* ── inline prompts (overwrite guard · save name) ─────────────────────
+   Both replace a browser confirm()/prompt(): the same --muted chamfered seat
+   the XFORM bind row uses, with small ghost buttons. */
+.sx-ask {
+  flex:none; display:flex; align-items:center; gap:9px; padding:8px 10px;
+  background:var(--muted); box-shadow:inset 0 0 0 1px var(--line);
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
+}
+.sx-ask[hidden] { display:none; }
+.sx-ask-msg { flex:1 1 auto; min-width:0; font-size:10px; line-height:1.5; color:var(--advisory); }
+.sx-ask-acts { flex:none; display:flex; gap:6px; }
+.sx-ask-acts .btn { padding:5px 10px; font-size:.55rem; letter-spacing:.12em; }
+
+.sx-save-row { display:flex; align-items:center; gap:6px; margin-top:9px; }
+.sx-save-row[hidden] { display:none; }
+.sx-name-field { flex:1 1 auto; min-width:0; }
+.sx-name-field > input { height:26px; font-size:11px; }
+.sx-save-row .btn { flex:none; padding:6px 10px; font-size:.55rem; letter-spacing:.12em; }
+
+/* ── foot: RUN + the three secondary verbs ────────────────────────────── */
+.sx-run { height:38px; }
+.sx-acts { display:flex; gap:6px; margin-top:8px; }
+.sx-acts .btn { flex:1 1 0; padding:7px 6px; font-size:.55rem; letter-spacing:.1em; }
+.sx-docs { text-decoration:none; }
+.sx-docs[hidden] { display:none; }
+.sx-cancel { flex:none; margin-left:auto; padding:4px 10px; font-size:.55rem; letter-spacing:.12em; }
+.sx-agents { display:block; margin-top:9px; opacity:.75; }
+
+/* ── compile errors ───────────────────────────────────────────────────
+   The neutral advisory treatment the FLOW notes use (a --muted block behind a
+   quiet --line rule), made clickable: a row puts the caret on its line. No
+   hazard hue — the copy already says it failed. */
+.sx-errors {
+  flex:none; max-height:158px; overflow-y:auto; display:flex; flex-direction:column; gap:1px;
+  background:var(--line);
+  box-shadow:inset 0 0 0 1px var(--line);
+}
+.sx-errors[hidden] { display:none; }
+.sx-err {
+  appearance:none; -webkit-appearance:none; border:0; cursor:pointer;
+  display:flex; align-items:baseline; gap:9px; width:100%; text-align:left;
+  padding:7px 10px; background:var(--muted); border-left:3px solid var(--line);
+  font-family:inherit; font-size:10px; line-height:1.6; color:var(--advisory);
+  transition:color .12s, background .12s, border-color .12s;
+}
+.sx-err:hover, .sx-err:focus-visible {
+  outline:none; color:var(--fg); background:color-mix(in oklch,var(--fg) 8%,var(--muted));
+  border-left-color:var(--primary);
+}
+.sx-err-at { flex:none; color:var(--dim); font-variant-numeric:tabular-nums; }
+.sx-err:hover .sx-err-at, .sx-err:focus-visible .sx-err-at { color:var(--primary); }
+.sx-err-msg { flex:1 1 auto; min-width:0; word-break:break-word; }

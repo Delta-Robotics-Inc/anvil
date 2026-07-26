@@ -184,6 +184,48 @@ export async function runScript(body) {
   if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
+/** Save a USER script (the name is slugified server-side into a .csx filename).
+ *  Returns the saved descriptor { id, name, source, savedUtc }. */
+export async function saveScript(name, code) {
+  const res = await fetch(`${BASE}/scripts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, code }),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
+// ── Project save / open (the `.anvil` bundle) ──────────────────────────
+// One file, one round trip. SAVE posts the whole scene manifest and gets a ZIP
+// back (project.json + one binary STL per row, plus each row's lattice mesh);
+// OPEN posts that file and gets the manifest back with FRESH part ids, already
+// registered server-side. Scripts are never bundled — they live in the library.
+//
+/** POST the scene → { blob, fileName } for the download. Throws on 4xx/5xx. */
+export async function saveProject(body) {
+  const res = await fetch(`${BASE}/project/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  return {
+    blob: await res.blob(),
+    fileName: m ? decodeURIComponent(m[1]) : 'anvil_project.anvil',
+  };
+}
+
+/** Upload a .anvil → { anvil, savedAt, upAxis, latticeParams, parts:[…] }. */
+export async function openProject(file) {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  const res = await fetch(`${BASE}/project/open`, { method: 'POST', body: fd });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
 
 // ── URL helpers (used directly by <a>/download links and the STL loader) ──
 export const partMeshUrl = (id) => `${BASE}/parts/${encodeURIComponent(id)}/mesh.stl`;

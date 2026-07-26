@@ -16,15 +16,38 @@ import { LatticePreview } from './preview.js';
 
 // Wave-2 viewport constants.
 const SELECT_DRAG_PX = 4;      // pointer travel under which a pointerup counts as a click
-const CUBE_PX = 78;            // orientation-widget size (cube + corner triad, top-right)
-const CUBE_MARGIN = 12;        // px inset of the cube from the viewport corner
+// ORIENTATION WIDGET SIZING — these five hang together, so change them as a set.
+// The widget draws into a CUBE_PX square scissor slice through an ortho camera
+// of half-extent CUBE_ORTHO, so the cube's own on-screen edge is
+//     CUBE_PX · (2·CUBE_HALF) / (2·CUBE_ORTHO)  =  CUBE_PX · 0.469
+// and everything else (labels, triad) scales with it.
+//
+// History: the cube shipped at 96 px with ortho 1.35 (edge ≈ 53 px). Hanging the
+// world triad off a corner needed room, so ortho grew to 1.60 — which shrank the
+// cube inside the SAME box to ≈ 37 px, and 78 px made that worse still (≈ 27 px
+// of cube carrying a 6-letter "Bottom"). Restoring 96 px puts the cube back at
+// ≈ 45 px WITH the triad, and the label/axis constants below are re-tuned for
+// that draw size rather than the 78 px one.
+const CUBE_PX = 96;            // orientation-widget size (cube + corner triad, top-right)
+const CUBE_MARGIN = 14;        // px inset of the cube from the viewport corner
 const CUBE_CAM_DIST = 3.4;     // orthographic cube camera distance
 const CUBE_HALF = 0.75;        // half-extent of the cube mesh (edge 1.5)
 const CUBE_ORTHO = 1.60;       // ortho half-extent — the cube plus room for the triad
 const CUBE_ZONE = 0.22;        // edge/corner pick band ÷ half-extent (see _cubeZoneAt)
-const CUBE_AX_LEN = 0.44;      // corner-triad arrow length, cube units
-const CUBE_AX_GLYPH = 0.60;    // triad letter distance from the hub
-const CUBE_LABEL_W = 104;      // px of the 128px face texture a label may span
+const CUBE_AX_LEN = 0.40;      // corner-triad arrow length, cube units
+const CUBE_AX_FAT = 2.3;       // arrow xy fattening ÷ length (sub-pixel otherwise)
+const CUBE_AX_GLYPH = 0.58;    // triad letter distance from the hub
+const CUBE_AX_GLYPH_PX = 0.38; // triad letter sprite size, cube units
+// Label auto-fit: the widest a label may run across the 128 px face texture.
+// Note this ratio is SCALE-INVARIANT: label-to-edge clearance is a property of
+// the texture, not of CUBE_PX, so a bigger widget alone never un-crowds a face.
+// Dropped from 104 (81% of the face — near full-bleed, chosen at 78 px where
+// every pixel of type counted) to 96 (75%). "Front" and "Right" now stop short
+// of the vertical edge they share instead of meeting across it, and the corner
+// triad clears the "Bottom" / "Right" glyphs in all four UP modes. Even after
+// the trim the labels land ~16% LARGER on screen than they did at 78 px, since
+// 96 px buys more than the 8% the margin costs.
+const CUBE_LABEL_W = 96;       // px of the 128px face texture a label may span
 const SNAP_MS = 250;           // view-cube snap animation duration
 // EULER round-trip self-test flag. Flipped true during Stage-4 verification to
 // print the hand-chain-vs-proxy matrix proof to the console, then returned to
@@ -2192,8 +2215,9 @@ export class Viewer {
         const m = new THREE.Mesh(geo, mat);
         m.quaternion.copy(q);
         // xy fattened against z: a uniformly-scaled unit arrow is sub-pixel at
-        // this widget size.
-        m.scale.set(CUBE_AX_LEN * 2.6, CUBE_AX_LEN * 2.6, CUBE_AX_LEN);
+        // this widget size. The fattening eases off as the widget grows (2.6 at
+        // 78 px, 2.3 at 96 px) — the shafts read as lines again instead of bars.
+        m.scale.set(CUBE_AX_LEN * CUBE_AX_FAT, CUBE_AX_LEN * CUBE_AX_FAT, CUBE_AX_LEN);
         m.frustumCulled = false;
         m.renderOrder = 2;
         g.add(m);
@@ -2202,7 +2226,7 @@ export class Viewer {
         map: makeGlyphTexture(a.ch, a.col), depthTest: false, depthWrite: false, transparent: true,
       }));
       sp.position.copy(a.dir).multiplyScalar(CUBE_AX_GLYPH);
-      sp.scale.setScalar(0.42);
+      sp.scale.setScalar(CUBE_AX_GLYPH_PX);
       sp.renderOrder = 3;
       g.add(sp);
     }

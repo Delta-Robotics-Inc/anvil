@@ -1,4 +1,4 @@
-//
+﻿//
 // Anvil.Worker — SdfJob
 //
 // Bakes a per-part signed distance field the browser can upload as a 3D texture
@@ -232,43 +232,73 @@ namespace Anvil.Worker
             Voxels vox, int iBaseX, int iBaseY, int iBaseZ,
             int nx, int ny, int nz, out byte[] abyInside)
         {
-            abyInside = new byte[(long)nx * ny * nz];
+            byte[] aby = new byte[(long)nx * ny * nz];
+            abyInside = aby;
             vox.GetVoxelDimensions(out int xo, out int yo, out int zo,
                                    out int xs, out int ys, out int zs);
             if (xs <= 0 || ys <= 0 || zs <= 0) return 0;   // empty field -> all outside
 
-            var img = new ImageGrayScale(xs, ys);
-            float[] px = img.m_afValues;   // row-major (x + y*width)
-            long lInside = 0;
+            // Clip the x span once instead of testing per pixel.
+            int xLo = Math.Max(0, xo - iBaseX);
+            int xHi = Math.Min(nx, xo + xs - iBaseX);
 
-            for (int z = 0; z < nz; z++)
+            // Each destination slice z is written by exactly one worker and the
+            // inside tally is an integer sum, so the parallel sweep produces a
+            // byte-identical mask and the same count. Every worker holds its own
+            // slice image (PicoGK's native GetSlice builds a fresh const VDB
+            // accessor per call, so concurrent reads of one field are safe).
+            long SweepZ(SliceWorker w, int z0, int z1)
             {
-                int fz = iBaseZ + z - zo;
-                if (fz < 0 || fz >= zs) continue;
-                vox.GetVoxelSlice(fz, ref img, Voxels.ESliceMode.BlackWhite);
-
-                for (int y = 0; y < ny; y++)
+                float[] px = w.img.m_afValues;   // row-major (x + y*width)
+                long lLocal = 0;
+                for (int z = z0; z < z1; z++)
                 {
-                    int fy = iBaseY + y - yo;
-                    if (fy < 0 || fy >= ys) continue;
+                    int fz = iBaseZ + z - zo;
+                    if (fz < 0 || fz >= zs) continue;
+                    vox.GetVoxelSlice(fz, ref w.img, Voxels.ESliceMode.BlackWhite);
 
-                    int iSrcRow = fy * xs;
-                    int iDstRow = nx * (y + ny * z);
-                    // Clip the x span once instead of testing per pixel.
-                    int xLo = Math.Max(0, xo - iBaseX);
-                    int xHi = Math.Min(nx, xo + xs - iBaseX);
-                    for (int x = xLo; x < xHi; x++)
+                    for (int y = 0; y < ny; y++)
                     {
-                        if (px[iSrcRow + (iBaseX + x - xo)] < 0.5f)
+                        int fy = iBaseY + y - yo;
+                        if (fy < 0 || fy >= ys) continue;
+
+                        int iSrcRow = fy * xs;
+                        int iDstRow = nx * (y + ny * z);
+                        for (int x = xLo; x < xHi; x++)
                         {
-                            abyInside[iDstRow + x] = 1;
-                            lInside++;
+                            if (px[iSrcRow + (iBaseX + x - xo)] < 0.5f)
+                            {
+                                aby[iDstRow + x] = 1;
+                                lLocal++;
+                            }
                         }
                     }
                 }
+                return lLocal;
             }
+
+            if (nz < ParallelSdfSliceThreshold)
+                return SweepZ(new SliceWorker(xs, ys), 0, nz);
+
+            long lInside = 0;
+            Parallel.ForEach(
+                System.Collections.Concurrent.Partitioner.Create(0, nz),
+                () => new SliceWorker(xs, ys),
+                (rng, _, w) => { w.count += SweepZ(w, rng.Item1, rng.Item2); return w; },
+                w => Interlocked.Add(ref lInside, w.count));
             return lInside;
         }
+
+        /// <summary>Per-worker slice image + tally for the parallel occupancy read.</summary>
+        sealed class SliceWorker
+        {
+            public ImageGrayScale img;
+            public long count;
+            public SliceWorker(int xs, int ys) { img = new ImageGrayScale(xs, ys); }
+        }
+
+        // Grids shallower than this read their occupancy serially.
+        const int ParallelSdfSliceThreshold = 8;
 
         /// <summary>
         /// Two Felzenszwalb passes -> quantized signed distance. Pass 1 seeds the
@@ -283,27 +313,48 @@ namespace Anvil.Worker
             byte[] abyOut = new byte[n];
             float[] af = new float[n];
 
+            // The seed/quantize sweeps are element-wise (cell i reads and writes
+            // only index i), so they run over parallel index ranges — same value in
+            // every cell, just produced concurrently.
+
             // ---- exterior: distance to the nearest INSIDE voxel ----
-            for (int i = 0; i < n; i++) af[i] = abyInside[i] != 0 ? 0f : Inf;
+            Sweep(n, (lo, hi) => { for (int i = lo; i < hi; i++) af[i] = abyInside[i] != 0 ? 0f : Inf; });
             Edt3D(af, nx, ny, nz);
-            for (int i = 0; i < n; i++)
+            Sweep(n, (lo, hi) =>
             {
-                if (abyInside[i] != 0) continue;
-                float d = (MathF.Sqrt(af[i]) - 0.5f) * fCell;
-                abyOut[i] = Quantize(d, fBand);
-            }
+                for (int i = lo; i < hi; i++)
+                {
+                    if (abyInside[i] != 0) continue;
+                    float d = (MathF.Sqrt(af[i]) - 0.5f) * fCell;
+                    abyOut[i] = Quantize(d, fBand);
+                }
+            });
 
             // ---- interior: distance to the nearest OUTSIDE voxel ----
-            for (int i = 0; i < n; i++) af[i] = abyInside[i] == 0 ? 0f : Inf;
+            Sweep(n, (lo, hi) => { for (int i = lo; i < hi; i++) af[i] = abyInside[i] == 0 ? 0f : Inf; });
             Edt3D(af, nx, ny, nz);
-            for (int i = 0; i < n; i++)
+            Sweep(n, (lo, hi) =>
             {
-                if (abyInside[i] == 0) continue;
-                float d = -(MathF.Sqrt(af[i]) - 0.5f) * fCell;
-                abyOut[i] = Quantize(d, fBand);
-            }
+                for (int i = lo; i < hi; i++)
+                {
+                    if (abyInside[i] == 0) continue;
+                    float d = -(MathF.Sqrt(af[i]) - 0.5f) * fCell;
+                    abyOut[i] = Quantize(d, fBand);
+                }
+            });
 
             return abyOut;
+        }
+
+        // Element-wise sweeps below this length stay serial.
+        const int ParallelCellThreshold = 1 << 16;
+
+        /// <summary>Run an element-wise [0,n) sweep over parallel index ranges.</summary>
+        static void Sweep(int n, Action<int, int> range)
+        {
+            if (n < ParallelCellThreshold) { range(0, n); return; }
+            Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(0, n),
+                             rng => range(rng.Item1, rng.Item2));
         }
 
         /// <summary>byte = clamp(d / bandMM, -1, 1) * 127 + 128 (128 == surface).</summary>
@@ -317,49 +368,86 @@ namespace Anvil.Worker
 
         // ---- Felzenszwalb & Huttenlocher separable squared EDT ----------------
 
+        /// <summary>Per-worker scratch for one 1D transform (sized to the longest axis).</summary>
+        sealed class EdtScratch
+        {
+            public readonly float[] src, dst, z;
+            public readonly int[] v;
+            public EdtScratch(int nMax)
+            {
+                src = new float[nMax];
+                dst = new float[nMax];
+                z   = new float[nMax + 1];
+                v   = new int[nMax];
+            }
+        }
+
+        // Below this many lines the axis pass stays serial (one scratch alloc per
+        // worker is not worth it for a handful of lines).
+        const int ParallelLineThreshold = 64;
+
         /// <summary>
         /// In-place 3D squared distance transform of a seeded field (0 on the
         /// seed set, Inf elsewhere). Separable: one O(n) sweep per axis.
         /// Index layout is x-fastest: i = x + nx*(y + ny*z).
+        ///
+        /// Within one axis pass the lines are disjoint — each reads and writes only
+        /// its own row/column of f — so they run in parallel with a per-worker
+        /// scratch. Every output element is produced by the identical Edt1D call it
+        /// was before, just on another thread, so the field is bit-identical.
         /// </summary>
         static void Edt3D(float[] f, int nx, int ny, int nz)
         {
             int nMax = Math.Max(nx, Math.Max(ny, nz));
-            float[] afSrc = new float[nMax];
-            float[] afDst = new float[nMax];
-            float[] afZ   = new float[nMax + 1];
-            int[]   anV   = new int[nMax];
-
-            // X — contiguous rows.
-            for (int z = 0; z < nz; z++)
-                for (int y = 0; y < ny; y++)
-                {
-                    int b = nx * (y + ny * z);
-                    Array.Copy(f, b, afSrc, 0, nx);
-                    Edt1D(afSrc, nx, afDst, anV, afZ);
-                    Array.Copy(afDst, 0, f, b, nx);
-                }
-
-            // Y — stride nx.
-            for (int z = 0; z < nz; z++)
-                for (int x = 0; x < nx; x++)
-                {
-                    int b = x + nx * ny * z;
-                    for (int y = 0; y < ny; y++) afSrc[y] = f[b + y * nx];
-                    Edt1D(afSrc, ny, afDst, anV, afZ);
-                    for (int y = 0; y < ny; y++) f[b + y * nx] = afDst[y];
-                }
-
-            // Z — stride nx*ny.
             int nSlice = nx * ny;
-            for (int y = 0; y < ny; y++)
-                for (int x = 0; x < nx; x++)
+
+            // X — contiguous rows; line = z*ny + y, base = nx*line.
+            EdtAxis(f, ny * nz, nMax, (fld, line, s) => EdtLine(fld, nx * line, 1, nx, s));
+
+            // Y — stride nx; line = z*nx + x.
+            EdtAxis(f, nx * nz, nMax, (fld, line, s) =>
+                EdtLine(fld, (line % nx) + nSlice * (line / nx), nx, ny, s));
+
+            // Z — stride nx*ny; line = y*nx + x, base = line.
+            EdtAxis(f, nSlice, nMax, (fld, line, s) => EdtLine(fld, line, nSlice, nz, s));
+        }
+
+        /// <summary>Run one separable axis pass over <paramref name="nLines"/> independent lines.</summary>
+        static void EdtAxis(float[] f, int nLines, int nMax, Action<float[], int, EdtScratch> line)
+        {
+            if (nLines < ParallelLineThreshold)
+            {
+                var s = new EdtScratch(nMax);
+                for (int i = 0; i < nLines; i++) line(f, i, s);
+                return;
+            }
+
+            Parallel.ForEach(
+                System.Collections.Concurrent.Partitioner.Create(0, nLines),
+                () => new EdtScratch(nMax),
+                (rng, _, s) =>
                 {
-                    int b = x + nx * y;
-                    for (int z = 0; z < nz; z++) afSrc[z] = f[b + z * nSlice];
-                    Edt1D(afSrc, nz, afDst, anV, afZ);
-                    for (int z = 0; z < nz; z++) f[b + z * nSlice] = afDst[z];
-                }
+                    for (int i = rng.Item1; i < rng.Item2; i++) line(f, i, s);
+                    return s;
+                },
+                _ => { });
+        }
+
+        /// <summary>Gather one strided line, transform it, scatter it back.</summary>
+        static void EdtLine(float[] f, int b, int stride, int n, EdtScratch s)
+        {
+            if (stride == 1)
+            {
+                Array.Copy(f, b, s.src, 0, n);
+                Edt1D(s.src, n, s.dst, s.v, s.z);
+                Array.Copy(s.dst, 0, f, b, n);
+            }
+            else
+            {
+                for (int i = 0; i < n; i++) s.src[i] = f[b + i * stride];
+                Edt1D(s.src, n, s.dst, s.v, s.z);
+                for (int i = 0; i < n; i++) f[b + i * stride] = s.dst[i];
+            }
         }
 
         /// <summary>

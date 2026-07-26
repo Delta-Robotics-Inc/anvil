@@ -1,4 +1,4 @@
-//
+﻿//
 // Anvil.Worker — FlowMetrics
 //
 // Computes flow-oriented metrics for a built lattice, reusing the voxel fields
@@ -232,9 +232,35 @@ namespace Anvil.Worker
             return res;
         }
 
+        // Slice counts below which the parallel path is not worth its setup (one
+        // ImageGrayScale + two profile buffers per worker).
+        const int ParallelSliceThreshold = 8;
+
+        /// <summary>Per-worker scratch for the parallel slice sweep.</summary>
+        sealed class SliceLocal
+        {
+            public ImageGrayScale img;
+            public readonly long[] px;
+            public readonly long[] py;
+            public SliceLocal(int xs, int ys, int nX, int nY)
+            {
+                img = new ImageGrayScale(xs, ys);
+                px  = new long[nX];
+                py  = new long[nY];
+            }
+        }
+
         /// <summary>
         /// Accumulate per-axis set-voxel counts for one field into the shared
         /// absolute-index bins, in a single pass over the field's Z-slices.
+        ///
+        /// Slices are independent, so the sweep runs in parallel: each worker owns
+        /// its own slice image (PicoGK's native GetSlice builds a fresh const VDB
+        /// accessor per call, so concurrent reads of one field are safe) plus its
+        /// own X/Y tallies, merged at the end. profZ is indexed by absolute slice,
+        /// so exactly one worker ever writes each entry. Every accumulator is a
+        /// long, so the merge is an order-independent integer sum — the result is
+        /// bit-identical to the serial sweep.
         /// </summary>
         static void AccumulateProfiles(
             Voxels vox,
@@ -244,15 +270,50 @@ namespace Anvil.Worker
         {
             if (xs <= 0 || ys <= 0 || zs <= 0) return;
 
-            var img = new ImageGrayScale(xs, ys);
-            float[] px = img.m_afValues;   // row-major (x + y·width)
+            if (zs < ParallelSliceThreshold)
+            {
+                var one = new SliceLocal(xs, ys, profX.Length, profY.Length);
+                SweepSlices(vox, 0, zs, xo, yo, zo, xs, ys, xMin, yMin, zMin, one, profZ);
+                Merge(profX, one.px);
+                Merge(profY, one.py);
+                return;
+            }
+
+            object oLock = new();
+            Parallel.ForEach(
+                System.Collections.Concurrent.Partitioner.Create(0, zs),
+                () => new SliceLocal(xs, ys, profX.Length, profY.Length),
+                (rng, _, local) =>
+                {
+                    SweepSlices(vox, rng.Item1, rng.Item2, xo, yo, zo, xs, ys, xMin, yMin, zMin, local, profZ);
+                    return local;
+                },
+                local => { lock (oLock) { Merge(profX, local.px); Merge(profY, local.py); } });
+        }
+
+        static void Merge(long[] dst, long[] src)
+        {
+            for (int i = 0; i < dst.Length; i++) dst[i] += src[i];
+        }
+
+        /// <summary>Tally slices [z0,z1) of one field into a worker's local bins.</summary>
+        static void SweepSlices(
+            Voxels vox, int z0, int z1,
+            int xo, int yo, int zo, int xs, int ys,
+            int xMin, int yMin, int zMin,
+            SliceLocal local, long[] profZ)
+        {
+            float[] px = local.img.m_afValues;   // row-major (x + y·width)
+            long[] tallyX = local.px;
+            long[] tallyY = local.py;
+            int xBase = xo - xMin;
 
             // IMPORTANT PicoGK polarity: in ESliceMode.BlackWhite, INSIDE/solid voxels
             // (SDF ≤ 0) are written as 0.0 and OUTSIDE voxels as 1.0
             // (PicoGK_Voxels.cs GetVoxelSlice). So a SOLID/set voxel is value < 0.5.
-            for (int z = 0; z < zs; z++)
+            for (int z = z0; z < z1; z++)
             {
-                vox.GetVoxelSlice(z, ref img, Voxels.ESliceMode.BlackWhite);
+                vox.GetVoxelSlice(z, ref local.img, Voxels.ESliceMode.BlackWhite);
 
                 int absZ = zo + z - zMin;
                 long sliceCount = 0;
@@ -265,14 +326,14 @@ namespace Anvil.Worker
                     {
                         if (px[i] < 0.5f)   // solid / inside
                         {
-                            profX[xo + x - xMin]++;
+                            tallyX[xBase + x]++;
                             rowCount++;
                         }
                     }
-                    if (rowCount != 0) profY[absY] += rowCount;
+                    if (rowCount != 0) tallyY[absY] += rowCount;
                     sliceCount += rowCount;
                 }
-                if (sliceCount != 0) profZ[absZ] += sliceCount;
+                if (sliceCount != 0) profZ[absZ] += sliceCount;   // one writer per absZ
             }
         }
 
@@ -288,19 +349,50 @@ namespace Anvil.Worker
             return axisComp switch { 0 => v.X, 1 => v.Y, _ => v.Z };
         }
 
-        /// <summary>Sum of triangle areas of a mesh (mm²).</summary>
+        // Triangles per parallel batch for SurfaceArea (scratch = one double each).
+        const int AreaChunk             = 1 << 18;
+        const int ParallelAreaThreshold = 1 << 14;
+
+        /// <summary>
+        /// Sum of triangle areas of a mesh (mm²).
+        ///
+        /// Per-triangle areas are independent, so they are computed in parallel
+        /// into a reusable batch buffer; the accumulation then runs SERIALLY over
+        /// that buffer in ascending triangle order. Summation order — and so the
+        /// floating-point result — is bit-identical to the plain serial loop.
+        /// </summary>
         static float SurfaceArea(Mesh msh)
         {
             if (msh is null) return 0f;
             double area = 0.0;
             int n = msh.nTriangleCount();
-            for (int i = 0; i < n; i++)
+            if (n == 0) return 0f;
+
+            var adBatch = new double[Math.Min(n, AreaChunk)];
+            for (int b0 = 0; b0 < n; b0 += AreaChunk)
             {
-                msh.GetTriangle(i, out Vector3 a, out Vector3 b, out Vector3 c);
-                Vector3 cross = Vector3.Cross(b - a, c - a);
-                area += 0.5 * cross.Length();
+                int cnt = Math.Min(n, b0 + AreaChunk) - b0;
+                if (cnt >= ParallelAreaThreshold)
+                {
+                    Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(0, cnt), rng =>
+                    {
+                        for (int j = rng.Item1; j < rng.Item2; j++) adBatch[j] = TriArea(msh, b0 + j);
+                    });
+                }
+                else
+                {
+                    for (int j = 0; j < cnt; j++) adBatch[j] = TriArea(msh, b0 + j);
+                }
+                for (int j = 0; j < cnt; j++) area += adBatch[j];
             }
             return (float)area;
+        }
+
+        static double TriArea(Mesh msh, int i)
+        {
+            msh.GetTriangle(i, out Vector3 a, out Vector3 b, out Vector3 c);
+            Vector3 cross = Vector3.Cross(b - a, c - a);
+            return 0.5 * cross.Length();
         }
 
         /// <summary>Downsample the flow-axis profile to ≤ nMaxBins by averaging.</summary>

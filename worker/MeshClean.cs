@@ -1,4 +1,4 @@
-//
+﻿//
 // Anvil.Worker — MeshClean
 //
 // Mesh hygiene before export. PicoGK meshes are vertex soup (nAddTriangle never
@@ -16,12 +16,16 @@
 //
 // Coordinates are NEVER moved: welding only merges vertices already within
 // weldTol of each other, and kept triangles are re-added with their ORIGINAL
-// positions. Capacity-hinted dictionaries + array-backed union-find keep this
-// ~1-3 s at 2M triangles.
+// positions. Capacity-hinted dictionaries + array-backed union-find, an edge
+// table keyed by the CANONICAL (min,max) pair (half the entries, and the
+// open-edge test becomes a sequential walk instead of a probe per directed
+// edge), and a parallel prepass for the per-triangle math keep this ~1 s at
+// 1.8M triangles.
 //
 
 using System.Collections.Generic;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using PicoGK;
 
 namespace Anvil.Worker
@@ -93,6 +97,11 @@ namespace Anvil.Worker
         }
         static readonly EdgeHash EdgeCmp = new EdgeHash();
 
+        // Pass-1 chunking: triangles per parallel batch (scratch = 3 VKeys each,
+        // ~3 MB at 256k) and the batch size below which the batch stays serial.
+        const int TriChunk             = 1 << 18;
+        const int ParallelTriThreshold = 1 << 14;
+
         // ── union-find (array-backed, path-compression + union-by-rank) ────
         static int Find(int[] parent, int i)
         {
@@ -137,24 +146,67 @@ namespace Anvil.Worker
             int[]    triV  = new int[nTri * 3]; // 3 welded ids per triangle
             double[] triDv = new double[nTri];  // signed tetra volume per triangle
 
-            int GetId(in Vector3 p)
+            // One hash probe per vertex (miss path used to cost a second probe for
+            // the insert). Identical ids: they are still handed out in first-seen
+            // order.
+            int GetId(in VKey k)
             {
-                var k = Quantize(p, tol);
-                if (vmap.TryGetValue(k, out int id)) return id;
-                id = vCount++;
-                vmap[k] = id;
+                ref int slot = ref CollectionsMarshal.GetValueRefOrAddDefault(vmap, k, out bool bFound);
+                if (bFound) return slot;
+                int id = vCount++;
+                slot = id;
                 parent[id] = id;
                 return id;
             }
 
-            for (int i = 0; i < nTri; i++)
+            // Pass 1 runs CHUNKED: the pure per-triangle work (native vertex fetch,
+            // position quantization, tetra volume) is order-independent, so it is
+            // computed in parallel into a small reusable buffer; the hash/union-find
+            // consume then runs SERIALLY over that buffer in ascending i, so welded
+            // ids are handed out in exactly the same first-seen order as before.
+            // Chunking keeps the scratch at a couple of MB instead of one 60 MB
+            // array over the whole mesh.
+            int nChunk = Math.Min(nTri, TriChunk);
+            var akChunk = new VKey[nChunk * 3];
+            for (int b0 = 0; b0 < nTri; b0 += TriChunk)
             {
-                mesh!.GetTriangle(i, out Vector3 a, out Vector3 b, out Vector3 c);
-                int ia = GetId(a), ib = GetId(b), ic = GetId(c);
-                Union(parent, rank, ia, ib);
-                Union(parent, rank, ia, ic);
-                triV[i * 3] = ia; triV[i * 3 + 1] = ib; triV[i * 3 + 2] = ic;
-                triDv[i] = MeshUtil.TetraSignedVolume(a.X, a.Y, a.Z, b.X, b.Y, b.Z, c.X, c.Y, c.Z);
+                int b1 = Math.Min(nTri, b0 + TriChunk);
+                int cnt = b1 - b0;
+
+                if (cnt >= ParallelTriThreshold)
+                {
+                    Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(0, cnt), rng =>
+                    {
+                        for (int j = rng.Item1; j < rng.Item2; j++)
+                        {
+                            mesh!.GetTriangle(b0 + j, out Vector3 a, out Vector3 b, out Vector3 c);
+                            akChunk[j * 3]     = Quantize(a, tol);
+                            akChunk[j * 3 + 1] = Quantize(b, tol);
+                            akChunk[j * 3 + 2] = Quantize(c, tol);
+                            triDv[b0 + j] = MeshUtil.TetraSignedVolume(a.X, a.Y, a.Z, b.X, b.Y, b.Z, c.X, c.Y, c.Z);
+                        }
+                    });
+                }
+                else
+                {
+                    for (int j = 0; j < cnt; j++)
+                    {
+                        mesh!.GetTriangle(b0 + j, out Vector3 a, out Vector3 b, out Vector3 c);
+                        akChunk[j * 3]     = Quantize(a, tol);
+                        akChunk[j * 3 + 1] = Quantize(b, tol);
+                        akChunk[j * 3 + 2] = Quantize(c, tol);
+                        triDv[b0 + j] = MeshUtil.TetraSignedVolume(a.X, a.Y, a.Z, b.X, b.Y, b.Z, c.X, c.Y, c.Z);
+                    }
+                }
+
+                for (int j = 0; j < cnt; j++)
+                {
+                    int i = b0 + j;
+                    int ia = GetId(akChunk[j * 3]), ib = GetId(akChunk[j * 3 + 1]), ic = GetId(akChunk[j * 3 + 2]);
+                    Union(parent, rank, ia, ib);
+                    Union(parent, rank, ia, ic);
+                    triV[i * 3] = ia; triV[i * 3 + 1] = ib; triV[i * 3 + 2] = ic;
+                }
             }
 
             // Per-component signed-volume accumulation (keyed by union-find root).
@@ -162,8 +214,8 @@ namespace Anvil.Worker
             for (int i = 0; i < nTri; i++)
             {
                 int root = Find(parent, triV[i * 3]);
-                compVol.TryGetValue(root, out double v);
-                compVol[root] = v + triDv[i];
+                ref double v = ref CollectionsMarshal.GetValueRefOrAddDefault(compVol, root, out _);
+                v += triDv[i];   // same ascending-i order -> same rounding
             }
             result.components = compVol.Count;
 
@@ -203,7 +255,9 @@ namespace Anvil.Worker
             // Watertight check runs on the KEPT triangles' welded edges. Distinct
             // components never share a welded vertex (union-find would have merged
             // them), so the kept ids form a self-contained edge set.
-            var edge = new Dictionary<long, int>(nTri * 3, EdgeCmp);
+            // A closed mesh has exactly 3·nTri/2 undirected edges; sizing to that
+            // avoids every rehash on the (overwhelmingly common) closed case.
+            var edge = new Dictionary<long, EdgeCount>(nTri * 3 / 2 + 16, EdgeCmp);
             Mesh outMesh;
             if (removed == 0)
             {
@@ -252,7 +306,7 @@ namespace Anvil.Worker
             if (nTri == 0) { watertight = true; openEdges = 0; return; }
 
             var vmap = new Dictionary<VKey, int>(nTri * 2);
-            var edge = new Dictionary<long, int>(nTri * 3, EdgeCmp);
+            var edge = new Dictionary<long, EdgeCount>(nTri * 3 / 2 + 16, EdgeCmp);
             int vCount = 0;
 
             int GetId(in Vector3 p)
@@ -307,25 +361,52 @@ namespace Anvil.Worker
         }
 
         // ── directed-edge multiset helpers ─────────────────────────────────
-        static void AddEdge(Dictionary<long, int> edge, int a, int b)
+        //
+        // The multiset is keyed by the CANONICAL (min,max) pair, with the two
+        // directed counts held side by side. That is exactly equivalent to the
+        // per-direction map it replaces — see CountOpenEdges — but it halves the
+        // table (3·nTri/2 entries instead of 3·nTri) and, more importantly, turns
+        // the open-edge test into a pure sequential walk instead of one random
+        // probe per directed edge.
+        struct EdgeCount
         {
-            long k = ((long)a << 32) | (uint)b;
-            edge.TryGetValue(k, out int c);
-            edge[k] = c + 1;
+            public int Fwd;   // occurrences of (min -> max)
+            public int Rev;   // occurrences of (max -> min)
         }
 
-        // An edge is OPEN where the forward count differs from the reverse count.
-        static int CountOpenEdges(Dictionary<long, int> edge)
+        static void AddEdge(Dictionary<long, EdgeCount> edge, int a, int b)
+        {
+            bool bFwd = a <= b;
+            long k = bFwd ? (((long)a << 32) | (uint)b) : (((long)b << 32) | (uint)a);
+            // One hash probe per edge instead of two (TryGetValue + indexer set).
+            ref EdgeCount e = ref CollectionsMarshal.GetValueRefOrAddDefault(edge, k, out _);
+            if (a == b)
+            {
+                // Degenerate edge: its own reverse. The per-direction map matched
+                // it against itself and never called it open, so keep the counts
+                // balanced here too.
+                e.Fwd++; e.Rev++;
+            }
+            else if (bFwd) e.Fwd++;
+            else           e.Rev++;
+        }
+
+        /// <summary>
+        /// An edge is OPEN where the forward count differs from the reverse count.
+        /// Per undirected pair with counts (F,R): the per-direction map enumerated
+        /// the (min,max) slot iff F&gt;0 and the (max,min) slot iff R&gt;0, and marked
+        /// each open iff F != R — so the pair contributes (F&gt;0) + (R&gt;0) when the
+        /// counts differ and 0 when they match. Same total, no reverse probe.
+        /// </summary>
+        static int CountOpenEdges(Dictionary<long, EdgeCount> edge)
         {
             int open = 0;
             foreach (var kv in edge)
             {
-                long k = kv.Key;
-                int u = (int)(k >> 32);
-                int w = (int)(k & 0xffffffffL);
-                long rev = ((long)w << 32) | (uint)u;
-                edge.TryGetValue(rev, out int cRev);
-                if (cRev != kv.Value) open++;
+                EdgeCount e = kv.Value;
+                if (e.Fwd == e.Rev) continue;
+                if (e.Fwd > 0) open++;
+                if (e.Rev > 0) open++;
             }
             return open;
         }

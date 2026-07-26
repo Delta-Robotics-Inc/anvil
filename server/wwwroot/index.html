@@ -148,7 +148,7 @@
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="script">
-      <button type="button" class="tb-btn has-tip" id="tb-scripts" data-tip="Scripts: write and run C# geometry code (.csx). Templates, upload and save; Ctrl+Enter runs. Whatever a script builds lands in the canvas as normal objects.">
+      <button type="button" class="tb-btn has-tip" id="tb-scripts" data-tip="Scripts: write and run C# geometry code (.csx). Examples, upload and save; Ctrl+Enter runs. Whatever a script builds lands in the canvas as finished objects.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>
         <span class="tb-label">SCRIPTS</span>
       </button>
@@ -491,10 +491,12 @@
         </div>
 
         <!-- ── SCRIPTS view ─────────────────────────────────────────────────
-             Code-to-geometry, in the same one-view host as the tools: a template
+             Code-to-geometry, in the same one-view host as the tools: an EXAMPLES
              picker, a self-contained monospace editor (gutter + textarea, no
              editor library), and RUN — which posts /api/scripts/run and lands the
-             resulting parts through the normal derived-part flow. -->
+             resulting parts through the normal derived-part flow, drawn solid.
+             The panel widens to --panel-w-wide while this view is open (ui.js
+             puts .wide on .panel-left) so a real script is readable. -->
         <div class="panel-scroll hidden" id="view-scripts">
           <div class="tile tool-tile scripts-tile" id="sec-scripts">
             <div class="thead">
@@ -504,9 +506,9 @@
 
             <div class="sx-body">
               <div class="param param-wide sx-pick">
-                <span class="label has-tip" data-tip="Load a library seed or one of your saved scripts into the editor. A dirty editor asks before it is overwritten.">Template</span>
+                <span class="label has-tip" data-tip="Load one of the bundled examples or one of your saved scripts into the editor. A dirty editor asks before it is overwritten.">Examples</span>
                 <span class="field">
-                  <select id="sx-template" aria-label="Script template">
+                  <select id="sx-template" aria-label="Example scripts">
                     <option value="">LOADING…</option>
                   </select>
                 </span>
@@ -522,12 +524,19 @@
               </div>
 
               <!-- The editor: a line-number gutter synced to a plain textarea.
-                   No wrapping (wrap="off"), so one logical line is one gutter row. -->
+                   The textarea SOFT-wraps (wrap="soft"), so a long line is fully
+                   readable without a horizontal scrollbar and one logical line can
+                   occupy several visual rows. The gutter therefore paints one row
+                   PER LOGICAL LINE, each given the height that line actually
+                   renders at — measured by #sx-mirror, a hidden element carrying
+                   the textarea's exact font, width, padding and wrapping rules
+                   (scripts.js measureLines). -->
               <div class="sx-editor" id="sx-editor">
-                <div class="sx-gutter" id="sx-gutter" aria-hidden="true">1</div>
-                <textarea id="sx-code" class="sx-code" wrap="off" spellcheck="false"
+                <div class="sx-gutter" id="sx-gutter" aria-hidden="true"></div>
+                <textarea id="sx-code" class="sx-code" wrap="soft" spellcheck="false"
                           autocomplete="off" autocapitalize="off" autocorrect="off"
-                          aria-label="Script source" placeholder="// pick a template, upload a .csx, or write C# here"></textarea>
+                          aria-label="Script source" placeholder="// pick an example, upload a .csx, or write C# here"></textarea>
+                <div class="sx-mirror" id="sx-mirror" aria-hidden="true"></div>
               </div>
 
               <div class="sx-bar">
@@ -543,7 +552,7 @@
             </div>
 
             <div class="tool-foot sx-foot">
-              <button type="button" class="btn btn-block sx-run has-tip" id="sx-run" data-tip="Compile and run this script on the server (Ctrl+Enter). Anything it builds arrives as normal parts in the canvas." disabled>RUN</button>
+              <button type="button" class="btn btn-block sx-run has-tip" id="sx-run" data-tip="Compile and run this script on the server (Ctrl+Enter). Anything it builds arrives in the canvas as a finished solid part." disabled>RUN</button>
               <div class="sx-acts">
                 <button type="button" class="btn tool-mini has-tip" id="sx-save" data-tip="Save the editor contents into your scripts library under a name you choose.">SAVE</button>
                 <button type="button" class="btn tool-mini has-tip" id="sx-upload" data-tip="Load a .csx, .cs or .txt file from disk into the editor.">UPLOAD</button>

@@ -336,8 +336,21 @@ function pollOpJob(jobId, onProgress) {
     }, 500);
   });
 }
-// Register a freshly-created derived part into app state + the viewer (role Part,
-// translucent orange ghost). Flash the new row.
+/** Which parts draw with the SOLID material (opaque, RESULT-gray unless tinted)
+ *  rather than the translucent role-coloured ghost:
+ *    · a baked LATTICE (isResult) — it is the finished object;
+ *    · a SCRIPT output — the script BUILT that model, so it reads as a finished
+ *      part, not as a ghost of something still to be made.
+ *  A script part that becomes a lattice SOURCE gives the solid look back for as
+ *  long as it belongs to that lattice: the unit is then the lattice, and its
+ *  sources are its shell. */
+function rendersSolid(rec) {
+  return !!rec && (!!rec.isResult || (rec.derived?.op === 'script' && !rec.ghosted));
+}
+
+// Register a freshly-created derived part into app state + the viewer (role Part;
+// a script output lands solid, every other op lands as a translucent ghost).
+// Flash the new row.
 async function addOpPart(part) {
   const rec = {
     id: part.id, name: part.name, triangles: part.triangles,
@@ -349,7 +362,7 @@ async function addOpPart(part) {
   refreshParts();
   ui.flashPartRow(rec.id);
   try {
-    await viewer.addPart(part.id, rec.stlUrl, rec.role);
+    await viewer.addPart(part.id, rec.stlUrl, rec.role, { solid: rendersSolid(rec), lattice: false });
     syncViewerRoles();
     updateDims();
     updateOrbitPivot();   // new geometry shifts the centre of mass
@@ -364,7 +377,7 @@ async function addOpPart(part) {
 // already populated st.parts (registered before the job flips to done), so we
 // add each through the normal derived-part flow. Returns the added parts.
 // The SOURCE now comes from the editor, not from a library id: the view owns the
-// text, so the same flow serves a template, an upload and a hand-written script.
+// text, so the same flow serves an example, an upload and a hand-written script.
 // `onJob` hands the jobId back the moment it exists so the view's CANCEL button
 // has something to cancel.
 async function runScriptFlow(code, name, onProgress, onJob) {
@@ -786,7 +799,7 @@ function snapshotPart(id) {
     index: state.parts.findIndex((p) => p.id === id),
     rec: cloneJson(rec),   // carries trs · role · colorHex · visibility verbatim
     stlUrl: rec.stlUrl || api.partMeshUrl(id),
-    solid: !!rec.isResult,
+    solid: rendersSolid(rec),   // a lattice, or an un-latticed script output
     wasLattice: state.latticePartId === id,
     // lattice host: which sources it currently holds as ghosts
     ghostIds: rec.isResult ? (rec.sourceIds || []).filter((sid) => partById(sid)?.ghosted) : [],
@@ -803,7 +816,7 @@ async function restorePart(snap) {
     // the part's own colour override (if any) applied at load, so a restored
     // part is the SAME colour it was, not its role's.
     await viewer.addPart(snap.id, snap.stlUrl, rec.role, {
-      solid: snap.solid, colorHex: rec.colorHex || null,
+      solid: snap.solid, lattice: !!rec.isResult, colorHex: rec.colorHex || null,
     });
   } catch (err) {
     ui.toast(`Could not restore "${rec.name}": ${err.message}`, 'error', 9000);
@@ -815,7 +828,12 @@ async function restorePart(snap) {
 
   if (snap.wasLattice) state.latticePartId = snap.id;
   if (rec.isResult) {                              // lattice: re-ghost + re-link
-    for (const sid of snap.ghostIds) { const s = partById(sid); if (s) s.ghosted = true; }
+    for (const sid of snap.ghostIds) {
+      const s = partById(sid);
+      if (!s) continue;
+      s.ghosted = true;
+      viewer.setPartSolid(sid, false);   // a solid script source is a shell again
+    }
     viewer.linkGhosts(snap.id, snap.ghostIds);
     viewer.dimUploaded();
     // …and the row that owns it takes it back, so the pair reads as one object
@@ -1059,7 +1077,11 @@ async function rebuildFromProject(doc) {
     state.parts.push(rec);
     newIdByRow.push(rec.id);
     try {
-      await viewer.addPart(rec.id, rec.stlUrl, rec.role, { colorHex: rec.colorHex });
+      // A saved script output comes back solid; pass 2 turns it into a ghost
+      // shell again if the row it belongs to is latticed.
+      await viewer.addPart(rec.id, rec.stlUrl, rec.role, {
+        solid: rendersSolid(rec), lattice: false, colorHex: rec.colorHex,
+      });
       if (rec.trs) viewer.setPartTransform(rec.id, cloneTrs(rec.trs), { fit: false });
       if (rec.visible === false) viewer.setPartVisible(rec.id, false);
     } catch (err) {
@@ -1098,7 +1120,12 @@ async function rebuildFromProject(doc) {
     state.parts.push(lrec);
     state.latticePartId = lrec.id;
     host.latticePartId = lrec.id;
-    for (const gid of ghostIds) { const g = partById(gid); if (g) g.ghosted = true; }
+    for (const gid of ghostIds) {
+      const g = partById(gid);
+      if (!g) continue;
+      g.ghosted = true;
+      viewer.setPartSolid(gid, false);   // a solid script source reverts to a shell
+    }
 
     try {
       await viewer.addPart(lrec.id, lrec.stlUrl, lrec.role, { solid: true, colorHex: lrec.colorHex });
@@ -1612,6 +1639,9 @@ async function adoptLatticePart(part) {
     const src = partById(sid);
     if (!src || src.isResult) continue;
     src.ghosted = true;
+    // A SCRIPT source was drawing solid — as a lattice source it is the shell
+    // around the unit now, so it hands the solid look to the lattice.
+    viewer.setPartSolid(sid, false);
     ghostIds.push(sid);
   }
 
@@ -1637,7 +1667,9 @@ async function adoptLatticePart(part) {
 function releaseLattice(rec) {
   for (const sid of rec.sourceIds || []) {
     const src = partById(sid);
-    if (src) src.ghosted = false;
+    if (!src) continue;
+    src.ghosted = false;
+    viewer.setPartSolid(sid, rendersSolid(src));   // a script source is solid again
   }
   const host = rec.hostPartId ? partById(rec.hostPartId) : null;
   if (host && host.latticePartId === rec.id) host.latticePartId = null;
@@ -2179,7 +2211,7 @@ ui.els.pattern?.addEventListener('change', refreshParts);
 // generation-param change (Fix 1 / Fix 6). input/change bubble from every
 // stepper input and select; the SHEET/SKELETAL + X/Y/Z toggles fire click.
 // The SCRIPTS view shares the panel but owns NO generation parameter — typing
-// code (or picking a template) must not un-freshen a result, so its events are
+// code (or picking an example) must not un-freshen a result, so its events are
 // filtered out before either handler sees them.
 const notScripts = (fn) => (e) => { if (e.target?.closest?.('#view-scripts')) return; fn(e); };
 ui.els.panelLeft?.addEventListener('input', notScripts(markParamsDirty));

@@ -1390,6 +1390,10 @@ export function setLeftView(view) {
   els.leftFoot?.classList.toggle('hidden', !home);
   els.viewTool?.classList.toggle('hidden', _leftView !== 'tool');
   els.viewScripts?.classList.toggle('hidden', _leftView !== 'scripts');
+  // SCRIPTS is the one view that reads CODE, so the panel widens for it
+  // (--panel-w-wide) and returns to the standard width on the way out. Collapse
+  // still wins: .panel.collapsed is declared after .panel-left.wide.
+  els.panelLeft?.classList.toggle('wide', _leftView === 'scripts');
   // Each toolbar button reads as the active view while the panel shows it
   // (tools.js lights its own button on the same switch).
   els.tbLattice?.classList.toggle('active', home);

@@ -7,7 +7,7 @@
 // hands the panel back to LATTICE.
 //
 // What it owns:
-//   · TEMPLATE picker  — GET /api/scripts (library seeds + user saves). Picking
+//   · EXAMPLES picker  — GET /api/scripts (library seeds + user saves). Picking
 //                        one loads its source; a dirty editor asks first.
 //   · EDITOR           — a plain <textarea> plus a line-number gutter kept in
 //                        step by scroll + input. Deliberately NO Monaco /
@@ -17,6 +17,12 @@
 //                        history stack, and every edit this module makes goes
 //                        through execCommand('insertText') so the native undo
 //                        stack survives).
+//                        The textarea SOFT-wraps, so a long line is readable
+//                        without a horizontal scrollbar and one logical line can
+//                        span several visual rows. The gutter therefore paints
+//                        one row per LOGICAL line at that line's MEASURED height
+//                        (see measureLines + #sx-mirror), which keeps every
+//                        number glued to the line it belongs to.
 //   · RUN              — POST /api/scripts/run through main.runScriptFlow, which
 //                        polls the job and lands every emitted part through the
 //                        normal derived-part flow. Compile failures come back as
@@ -48,9 +54,13 @@ let curId = null;          // the descriptor id the editor was loaded from
 let catalog = [];          // last GET /api/scripts result
 let running = null;        // { jobId } while a run is in flight
 let ask = null;            // pending "discard?" continuation
-let lineCount = 0;         // last painted gutter length
+let lineHeights = [];      // rendered px height of each LOGICAL line (soft wrap)
+let measureRaf = 0;        // pending rAF handle for measureLines
+let lastMeasure = { text: null, width: 0 };   // dirty check for measureLines
 
 const INDENT = '  ';       // Tab inserts two spaces
+const FALLBACK_LINE = 18;  // --sx-line, used only before the first measurement
+const ZWSP = String.fromCharCode(0x200B);   // gives an EMPTY mirror line its line box
 
 // ── init ──────────────────────────────────────────────────────────────
 export function initScriptsView(controller) {
@@ -61,7 +71,7 @@ export function initScriptsView(controller) {
     close: id('scripts-close'),
     template: id('sx-template'),
     ask: id('sx-ask'), askMsg: id('sx-ask-msg'), askNo: id('sx-ask-no'), askYes: id('sx-ask-yes'),
-    editor: id('sx-editor'), gutter: id('sx-gutter'), code: id('sx-code'),
+    editor: id('sx-editor'), gutter: id('sx-gutter'), code: id('sx-code'), mirror: id('sx-mirror'),
     fileName: id('sx-file-name'), dirty: id('sx-dirty'), count: id('sx-count'),
     errors: id('sx-errors'),
     run: id('sx-run'), save: id('sx-save'), upload: id('sx-upload'), docs: id('sx-docs'),
@@ -85,7 +95,7 @@ export function initScriptsView(controller) {
   });
   el.upload.addEventListener('click', () => el.file.click());
   el.file.addEventListener('change', onFilePicked);
-  el.template.addEventListener('change', onTemplatePicked);
+  el.template.addEventListener('change', onExamplePicked);
   el.askNo.addEventListener('click', () => resolveAsk(false));
   el.askYes.addEventListener('click', () => resolveAsk(true));
 
@@ -94,6 +104,18 @@ export function initScriptsView(controller) {
   el.code.addEventListener('input', onEdit);
   el.code.addEventListener('scroll', syncScroll);
   el.code.addEventListener('keydown', onEditorKey);
+
+  // Anything that changes how wide a line may be re-measures: the panel widening
+  // for this view, a window resize, a collapse. ResizeObserver covers all three
+  // (it fires per frame of the panel's width transition; the rAF debounce and
+  // the text+width dirty check keep that to one measurement per frame).
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => scheduleMeasure()).observe(el.code);
+  } else {
+    window.addEventListener('resize', () => scheduleMeasure());
+  }
+  // A late web-font swap changes the metrics without changing the box width.
+  document.fonts?.ready?.then(() => measureLines(true)).catch(() => { /* no fonts API */ });
 
   // Ctrl+Enter anywhere inside the view runs, not only from the textarea.
   el.view.addEventListener('keydown', (e) => {
@@ -125,8 +147,13 @@ export function open() {
   loadCatalog();
   syncRun();
   ctx?.onStateChange();
-  // Focus the editor so Ctrl+Enter and Tab land where the user expects.
-  requestAnimationFrame(() => el.code?.focus({ preventScroll: true }));
+  // Focus the editor so Ctrl+Enter and Tab land where the user expects, and
+  // measure now that the view has a width (a hidden view has none, so nothing
+  // could be measured while it was closed).
+  requestAnimationFrame(() => {
+    el.code?.focus({ preventScroll: true });
+    measureLines(true);
+  });
 }
 
 export function close() {
@@ -161,7 +188,7 @@ export function setDocsUrl(url) {
   else { el.docs.removeAttribute('href'); el.docs.hidden = true; }
 }
 
-// ── template catalog ──────────────────────────────────────────────────
+// ── examples catalog ──────────────────────────────────────────────────
 async function loadCatalog(selectId) {
   try { catalog = await api.listScripts(); }
   catch (err) {
@@ -172,13 +199,13 @@ async function loadCatalog(selectId) {
   sel.innerHTML = '';
   const blank = document.createElement('option');
   blank.value = '';
-  blank.textContent = catalog.length ? 'TEMPLATE…' : 'NO SCRIPTS FOUND';
+  blank.textContent = catalog.length ? 'EXAMPLES…' : 'NO SCRIPTS FOUND';
   sel.appendChild(blank);
   for (const source of ['library', 'user']) {
     const rows = catalog.filter((s) => s.source === source);
     if (!rows.length) continue;
     const og = document.createElement('optgroup');
-    og.label = source === 'library' ? 'LIBRARY' : 'SAVED';
+    og.label = source === 'library' ? 'EXAMPLES' : 'SAVED';
     for (const s of rows) {
       const o = document.createElement('option');
       o.value = s.id;
@@ -190,23 +217,23 @@ async function loadCatalog(selectId) {
   sel.value = selectId ?? (catalog.some((s) => s.id === curId) ? curId : '');
 }
 
-function onTemplatePicked() {
+function onExamplePicked() {
   const id = el.template.value;
   if (!id) return;
   const desc = catalog.find((s) => s.id === id);
   confirmOverwrite(`Load ${desc?.name || id}? Unsaved edits are lost.`, (go) => {
     if (!go) { el.template.value = curId && catalog.some((s) => s.id === curId) ? curId : ''; return; }
-    loadTemplate(id);
+    loadExample(id);
   });
 }
 
-async function loadTemplate(id) {
+async function loadExample(id) {
   setNote('Loading…', '');
   let c;
   try { c = await api.getScript(id); }
   catch (err) { setNote(`Load failed: ${err.message}`, 'err'); return; }
   setSource(c.code || '', c.name || id, c.id || id);
-  setNote(`${c.source === 'user' ? 'saved' : 'library'} · ${c.name}`, '');
+  setNote(`${c.source === 'user' ? 'saved' : 'example'} · ${c.name}`, '');
   clearErrors();
 }
 
@@ -230,22 +257,91 @@ function onEdit() {
   ctx?.onStateChange();
 }
 
-/** Gutter + dirty dot + line count + filename. Cheap enough for every keystroke:
- *  the gutter is only rebuilt when the LINE COUNT actually changes. */
+/** Dirty dot + filename now; gutter + line count on the next frame (measuring a
+ *  soft-wrapped buffer needs layout, so it is debounced to one pass per frame
+ *  however fast the typing is). */
 function paint() {
-  const n = el.code.value.split('\n').length;
-  if (n !== lineCount) {
-    lineCount = n;
-    let s = '';
-    for (let i = 1; i <= n; i++) s += `${i}\n`;
-    el.gutter.textContent = s;
-    el.gutter.style.setProperty('--sx-digits', String(Math.max(2, String(n).length)));
-    el.count.textContent = `${n} line${n === 1 ? '' : 's'}`;
-  }
   const dirty = el.code.value !== baseline;
   el.dirty.hidden = !dirty;
   el.fileName.textContent = curName;
+  scheduleMeasure();
   syncScroll();
+}
+
+// ── soft-wrap line measurement ────────────────────────────────────────
+// The textarea wraps, so "line 42" is not 42 × 18px from the top and the gutter
+// cannot be a column of fixed-height numbers. #sx-mirror is a hidden element
+// with the SAME font, width, padding, tab-size and wrapping rules as the
+// textarea; putting one <div> per logical line inside it makes each div's
+// offsetHeight exactly the height that line renders at (18px, 36px, 72px…).
+// The gutter is then one row per logical line at that height, so a number stays
+// glued to its line no matter how many visual rows the line consumes.
+//
+// Cost: one write pass + one read pass per frame — a single layout, ~500 lines
+// is comfortably inside a frame. The dirty check skips the whole thing when
+// neither the text nor the width moved (ResizeObserver fires a lot).
+function scheduleMeasure() {
+  if (measureRaf) return;
+  measureRaf = requestAnimationFrame(() => measureLines());
+}
+
+function measureLines(force) {
+  if (measureRaf) { cancelAnimationFrame(measureRaf); measureRaf = 0; }
+  const ta = el?.code, m = el?.mirror;
+  if (!ta || !m) return;
+  const width = ta.clientWidth;
+  if (width <= 0) return;   // the view is hidden — open() re-measures on the way in
+  const text = ta.value;
+  if (!force && text === lastMeasure.text && width === lastMeasure.width) return;
+  lastMeasure = { text, width };
+
+  const lines = text.split('\n');
+  const n = lines.length;
+  m.style.width = `${width}px`;   // border-box: clientWidth already drops any scrollbar
+
+  // write pass — one mirror block per logical line
+  while (m.childElementCount > n) m.removeChild(m.lastChild);
+  while (m.childElementCount < n) m.appendChild(document.createElement('div'));
+  const rows = m.children;
+  for (let i = 0; i < n; i++) {
+    // An empty line still owns a row: a zero-width space gives it a line box
+    // without changing where anything wraps.
+    const t = lines[i] === '' ? ZWSP : lines[i];
+    if (rows[i].textContent !== t) rows[i].textContent = t;
+  }
+  // read pass — every height in one go, so the browser lays out once
+  lineHeights = new Array(n);
+  for (let i = 0; i < n; i++) lineHeights[i] = rows[i].offsetHeight || FALLBACK_LINE;
+  paintGutter(n);
+}
+
+/** Paint the gutter from the measured heights: row i is the number i+1, sized to
+ *  logical line i. */
+function paintGutter(n) {
+  const g = el.gutter;
+  while (g.childElementCount > n) g.removeChild(g.lastChild);
+  while (g.childElementCount < n) {
+    const d = document.createElement('div');
+    d.className = 'sx-gut-row';
+    g.appendChild(d);
+  }
+  const rows = g.children;
+  for (let i = 0; i < n; i++) {
+    const num = String(i + 1);
+    if (rows[i].textContent !== num) rows[i].textContent = num;
+    const h = `${lineHeights[i] || FALLBACK_LINE}px`;
+    if (rows[i].style.height !== h) rows[i].style.height = h;
+  }
+  g.style.setProperty('--sx-digits', String(Math.max(2, String(n).length)));
+  el.count.textContent = `${n} line${n === 1 ? '' : 's'}`;
+  syncScroll();
+}
+
+/** Distance in px from the top of the text to the top of 1-based `line`. */
+function lineTop(line) {
+  let top = 0;
+  for (let i = 0; i < line - 1; i++) top += lineHeights[i] || FALLBACK_LINE;
+  return top;
 }
 
 function syncScroll() {
@@ -276,7 +372,10 @@ function insertText(text) {
   onEdit();
 }
 
-/** Put the caret on a 1-based line/character and scroll it into view. */
+/** Put the caret on a 1-based line/character and scroll it into view. The caret
+ *  maths is CHARACTER-based, so soft wrapping cannot move it; only the scroll
+ *  needs the measured geometry (line 42 is not 42 line-heights down once
+ *  anything above it has wrapped). */
 function focusAt(line, character) {
   const ta = el.code;
   const lines = ta.value.split('\n');
@@ -286,8 +385,9 @@ function focusAt(line, character) {
   const col = Math.max(0, Math.min((character || 1) - 1, lines[n - 1].length));
   ta.focus();
   ta.setSelectionRange(pos + col, pos + col);
-  const lh = parseFloat(getComputedStyle(ta).lineHeight) || 18;
-  ta.scrollTop = Math.max(0, (n - 1) * lh - ta.clientHeight / 2);
+  measureLines();   // dirty-checked: a no-op unless the buffer or width moved
+  const pad = parseFloat(getComputedStyle(ta).paddingTop) || 0;
+  ta.scrollTop = Math.max(0, pad + lineTop(n) - ta.clientHeight / 2);
   syncScroll();
 }
 

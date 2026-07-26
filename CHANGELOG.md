@@ -14,8 +14,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Beams` - batch beam/strut lattices in one render.** `Beams(beams)` takes
+  `(start, end, diameter at start, diameter at end)` tuples; `Beams(path, d,
+  dEnd)` chains a polyline with an optional taper; `Spheres(points, d)` does the
+  point-cloud equivalent. Each beam is rendered natively over its own tight
+  bounding box, where an implicit field is sampled once per voxel of the *whole*
+  box and has to consider every segment each time. For the 22-start helical
+  cooling circuit in the new nozzle that is the difference between three seconds
+  and several hours. A per-end diameter is free, which is what makes tapered
+  struts, graded lattices and self-supporting teardrop channel roofs cheap.
+- **`Pipe` now hands long runs to `Beams`.** Up to 16 segments it stays one
+  implicit field with an exact distance; above that the per-voxel segment scan
+  turns quadratic, so the run is rendered as a lattice instead. Same shape,
+  different cost. Documented, and asserted in `forge_smoke.csx`.
+- **`Fillet(shape, r)` - concave-only, strictly additive.** Every internal
+  corner gets a radius and nothing else moves, so a 1.5 mm rib survives a 0.6 mm
+  fillet untouched. This is the finishing pass `Smooth` could never be: `Smooth`
+  is a triple offset and it deletes anything thinner than twice its radius.
+- **`Area(shape)` - wetted surface area in mm2.** The headline number for a heat
+  exchanger or a lattice, and the way to predict a part's triangle count
+  (`Area / (0.5 * voxel^2)`) *before* `SavePart` spends the time. It meshes the
+  shape to measure it, and the docs say so.
+- **`axis: "z"` on every command that has an axis.** `Cylinder`, `Cone`, `Loft`,
+  `Torus` and `ArrayRadial` build along +Y as before by default, and along +Z
+  when asked. Nothing else in the command set has an up axis, so those five are
+  the whole story: a script can now author a part standing on the plate at
+  `z = 0` - which is what the viewer's default up axis and every build plate
+  want - with no reorientation step and no mesh round trip. For mesh primitives
+  the rotation is applied to the mesh before voxelisation, so it is exact.
+- **`compliant_wheel.csx` - a new example.** An airless O180 mm rover wheel:
+  bolted hub, three concentric bands of counter-handed logarithmic-spiral ribs
+  (12, then 24, then 48, thinning outward, so symmetry rises and thickness falls
+  as the circumference grows), a rim and a chevron tread, finished with
+  `Fillet`. The ribs are the level sets of an `IImplicit` written in the script
+  itself - about 15 lines for any rib count - which makes this the worked
+  example for the deepest thing an ANVIL script can do.
+
 ### Changed
 
+- **`rocket_nozzle.csx` is now a regeneratively-cooled engine, not a bell with
+  stubs.** It stands exit-plane-down on the plate, so radius falls monotonically
+  from the exit to the throat and the outer wall leans inward the whole way -
+  self-supporting, no supports. The hot-gas wall is graded on *radius* from
+  1.4 mm at the throat to 0.9 mm at the exit, so the convergent section picks up
+  an intermediate thickness automatically. 22 helical cooling channels wrap the
+  whole bell at constant perpendicular pitch, which means the helix angle is
+  solved rather than picked: nearly straight and tightly packed at the throat
+  where the flux peaks, wrapping harder and harder down the bell to a 298-degree
+  total wrap. Each channel grows a tapered cone radially outward per sample,
+  turning the round bore into a self-supporting teardrop. The coolant volume -
+  channels, two manifold rings, two radial ports - is built as a void, clipped
+  out of the hot-gas wall so the wall thickness is a guarantee, and the closeout
+  jacket is *grown from the coolant* rather than drawn around it. About 58 s at
+  0.3 mm, 4.9 M triangles, watertight.
+- **`heat_exchanger_core.csx` is now `heat_exchanger.csx`, and it is a real heat
+  exchanger.** A gyroid splits the core into two interpenetrating domains; each
+  is sealed against a *different* boundary (A against the cylindrical side, B
+  against the end faces) so each can only breathe one way and each gets its own
+  headers - A through coaxial trumpet plenums and axial ports, B through an
+  annular jacket blocked at mid-height so it has to travel through the core.
+  Four ports, two circuits, one printable part. The metal is *derived* as the
+  complement of the fluid inside an offset skin, so it cannot leak, and the
+  script **proves** the separation: it measures the overlap of the two circuits,
+  measures it again after growing one by 40 % of the wall thickness, and throws
+  if either is anything but zero. The header comment names Lin Kayser's public
+  scepticism of TPMS heat exchangers and answers the dead-end half of it
+  directly. Saves the metal plus, by default, both fluid volumes as separate
+  parts. About 45 s at 0.4 mm.
+- **`embossed_card.csx` is a credit card, and the emblem is the real ANVIL
+  logo.** 1.6 mm thick instead of 4, with a true 3 mm corner radius built from
+  two slabs and four corner cylinders (so the faces stay flat and the thickness
+  stays honest) plus a 0.3 mm `Smooth` edge break. `assets/emboss-sample.png` is
+  regenerated from `server/wwwroot/anvil.svg`: the path is rasterised at 4x
+  supersampling, converted to a chamfer distance ramp for a crisp silhouette
+  with a wide bevel, and crowned with a blurred copy so the top of the relief is
+  not exactly parallel to the card it sits on. A flat plateau shades identically
+  to a flat card however tall it is; that crown is what makes the emblem read.
+- **Every bundled example now stands on the plate at `z = 0`.** `manifold_block.csx`
+  and `graded_lattice_puck.csx` were the last two authored +Y-up, so they lay on
+  their side in a viewer whose default up axis is +Z. Both are now transposed
+  through the same rotation `axis: "z"` applies: the manifold's billet spans
+  `z in [0, blockHgtMM]` with its bores drilled down the +Z face and the gallery
+  turning out through -Y, and the puck stands on its own face with the radial
+  grading measured in the XY plane. Parameters, defaults and derived sizes are
+  unchanged.
+- **Script outputs are solid parts, not ghosts.** A part a script builds now
+  draws with the same opaque, light-gray material a generated lattice uses,
+  because the script already built the model - there was nothing provisional
+  about it to signal with a translucent orange shell. It stays an ordinary row
+  in every other way: selectable, movable, re-rolable, tintable from the colour
+  picker, capped at full strength by `SECTION`, and left alone by the `GHOSTS`
+  toggle and the ghost dim. Generating a lattice **on** a script part still
+  works and still reads correctly: the script part becomes the ghost shell of
+  the unit for as long as it belongs to that lattice, and gets its solid body
+  back when the lattice is reverted, undone or deleted.
+- **The SCRIPTS picker is `EXAMPLES`, not `TEMPLATE`.** The label, the empty
+  option, the library group and every tooltip say example now; the bundled
+  scripts are examples to read and adapt, not templates to fill in.
+- **The SCRIPTS editor soft-wraps, and the panel widens for it.** Long lines
+  wrap instead of running off the right edge behind a horizontal scrollbar, so
+  a whole script is readable in the sidebar, and the left panel opens at 520px
+  while the view is up (back to the standard width on the way out; collapsing
+  is unchanged). The line-number gutter now paints one row per **logical** line
+  at that line's measured height, so a line that wraps to four rows still shows
+  exactly one number, glued to it - re-measured on every edit, window resize and
+  panel-width change. Clicking a compile error still lands the caret on its
+  line.
 - **`BOOL` and `SMOOTH` now remove their sources.** A boolean result used to
   leave both inputs listed as dimmed, locked `USED · BOOL` rows that only
   deleting the result could restore. The source rows are now removed outright,

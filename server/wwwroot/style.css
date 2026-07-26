@@ -805,7 +805,13 @@ button[data-tip]:disabled, [data-tip] > button:disabled,
    below reuses the existing tile/field/btn chamfer language — no new visual
    vocabulary, only new structure.
    ═══════════════════════════════════════════════════════════════════════ */
-:root { --panel-w:356px; --rail-w:30px; }
+:root {
+  --panel-w:356px; --rail-w:30px;
+  /* The SCRIPTS view reads code, not parameters, so the left panel widens while
+     it is open (ui.setLeftView puts .wide on .panel-left). min() keeps it sane
+     on the narrow layout, where the panel overlays the viewport. */
+  --panel-w-wide:min(520px,86vw);
+}
 
 /* overflow:hidden clips the oversized WebGL canvas + the collapsed rail labels
    (a few sub-pixels past the edge) without hiding the outward chevron tabs,
@@ -878,6 +884,11 @@ button[data-tip]:disabled, [data-tip] > button:disabled,
 }
 .panel-left  { border-right:1px solid var(--line); }
 .panel-right { border-left:1px solid var(--line); }
+/* Wider while the SCRIPTS editor owns the panel — same transition the collapse
+   uses, and the viewport just flexes into what is left. Declared BEFORE
+   .panel.collapsed on purpose: the two selectors weigh the same, so the later
+   rule wins and a collapsed panel is still a rail whatever view it holds. */
+.panel-left.wide { flex-basis:var(--panel-w-wide); width:var(--panel-w-wide); }
 .panel-inner { display:flex; flex-direction:column; height:100%; min-height:0; }
 .panel-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; padding:13px; display:flex; flex-direction:column; gap:12px; }
 .panel-foot {
@@ -1665,12 +1676,17 @@ button.hdr-link {
 .sx-pick { flex:none; }
 
 /* ── the editor: gutter + textarea, one scrolling unit ────────────────
-   The textarea does NOT wrap (wrap="off" in the markup), so one logical line is
-   exactly one gutter row and the numbers can never drift from the code. Both
-   sides share the same font metrics and top padding; a scroll listener locks
-   the gutter's scrollTop to the textarea's. */
+   The textarea SOFT-wraps (wrap="soft" in the markup): a long line stays fully
+   readable in a narrow panel and there is no horizontal scrollbar. That breaks
+   the old "one logical line == one 18px gutter row" identity, so the gutter is
+   built as one ROW PER LOGICAL LINE whose height is the height that line
+   actually renders at — measured off .sx-mirror, a hidden copy of the textarea's
+   text box (same font, width, padding and wrapping rules). See scripts.js
+   measureLines(). Both sides still share the same top padding, and a scroll
+   listener locks the gutter's scrollTop to the textarea's. */
 .sx-editor {
   --sx-line:18px;
+  position:relative;
   flex:1 1 auto; min-height:190px; display:flex; align-items:stretch; overflow:hidden;
   background:var(--card); box-shadow:inset 0 0 0 1px var(--line);
   transition:box-shadow .15s;
@@ -1681,16 +1697,33 @@ button.hdr-link {
   padding:9px 8px 40px 0; overflow:hidden; text-align:right; user-select:none;
   background:var(--muted); color:var(--dim);
   font-family:var(--font-mono); font-size:12px; line-height:var(--sx-line);
-  font-variant-numeric:tabular-nums; white-space:pre; text-shadow:none;
+  font-variant-numeric:tabular-nums; text-shadow:none;
 }
+/* One row per LOGICAL line. Its inline height comes from the mirror, so a line
+   that wraps to four visual rows gets one number sitting on its FIRST row and
+   four rows' worth of height under it. */
+.sx-gut-row { display:block; height:var(--sx-line); overflow:hidden; }
 .sx-code {
   flex:1 1 auto; min-width:0; display:block; resize:none;
   padding:9px 11px 40px; border:0; outline:none; background:transparent; color:var(--fg);
   font-family:var(--font-mono); font-size:12px; line-height:var(--sx-line);
-  white-space:pre; overflow:auto; tab-size:2; text-shadow:none;
+  white-space:pre-wrap; overflow-wrap:break-word; word-break:normal;
+  overflow-x:hidden; overflow-y:auto; tab-size:2; text-shadow:none;
   caret-color:var(--primary);
 }
 .sx-code::placeholder { color:var(--dim); opacity:.7; }
+/* The measuring mirror. Never painted and never hit-tested; it only has to LAY
+   OUT identically to .sx-code, so every property that can change where a line
+   breaks is repeated here verbatim (scripts.js sets its width from the
+   textarea's own clientWidth on every measure). */
+.sx-mirror {
+  position:absolute; top:0; left:-99999px; z-index:-1;
+  visibility:hidden; pointer-events:none; user-select:none;
+  box-sizing:border-box; padding:9px 11px 40px;
+  font-family:var(--font-mono); font-size:12px; line-height:var(--sx-line);
+  white-space:pre-wrap; overflow-wrap:break-word; word-break:normal;
+  tab-size:2; border:0;
+}
 
 /* status strip under the editor: filename · dirty dot · line count */
 .sx-bar { flex:none; display:flex; align-items:center; gap:7px; }

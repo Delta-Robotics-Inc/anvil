@@ -544,37 +544,29 @@ export class Viewer {
   // opts.solid → the SOLID result look (light gray, opaque, sheen) instead of the
   // translucent role-coloured ghost. A generated lattice is a normal part in every
   // other respect: selectable, gizmo-drivable, section-capped, COM-weighted.
+  // A SCRIPT output takes the same solid material — it is a finished model, not a
+  // ghost — but it is NOT a lattice, hence opts.lattice.
+  // opts.lattice → this solid IS a baked lattice, so the live preview (which
+  // stands in for it) hides it. Defaults to opts.solid so every historical
+  // "{solid:true}" call still means "a lattice"; a script part passes false.
   // opts.colorHex → an explicit per-part colour (see setPartColor); null means
   // "use the role colour", and a restore hands the stored override straight back.
   addPart(id, url, role, opts = {}) {
     const solid = !!opts.solid;
+    const lattice = opts.lattice === undefined ? solid : !!opts.lattice;
     const colorHex = opts.colorHex || null;
     const tint = colorHex ? hexInt(colorHex) : (solid ? RESULT_COLOR : roleColorInt(role));
     return new Promise((resolve, reject) => {
       this._loader.load(url, (geometry) => {
         geometry.computeVertexNormals();
-        const mat = solid
-          ? new THREE.MeshStandardMaterial({
-              color: tint,
-              metalness: 0.35,   // slight metallic look
-              roughness: 0.45,
-              side: THREE.DoubleSide,
-            })
-          : new THREE.MeshStandardMaterial({
-              color: tint,
-              metalness: 0.05,
-              roughness: 0.65,
-              transparent: true,
-              opacity: this._dimmed ? DIM_OPACITY : UP_OPACITY,
-              depthWrite: false,
-              side: THREE.DoubleSide,
-            });
+        const mat = this._partMaterial(solid, tint, id);
         const mesh = new THREE.Mesh(geometry, mat);   // no transform — world coords preserved
         mesh.renderOrder = solid ? RO_SOLID : 1;      // provisional; _resortTranslucents finalizes
         mesh.userData._solid = solid;   // the cap builder reads this for full-strength hatch
         if (this._ghostsHidden && !solid) mesh.visible = false;
+        if (this._resultHidden && solid && lattice) mesh.visible = false;
         this.scene.add(mesh);
-        this.parts.set(id, { id, mesh, role, visible: true, solid, colorHex });
+        this.parts.set(id, { id, mesh, role, visible: true, solid, lattice, colorHex });
         this._resortTranslucents();
         // Selected before its mesh finished loading (row appears first): the
         // gizmo had nothing to sit on, so seat it now.
@@ -584,6 +576,57 @@ export class Viewer {
         resolve();
       }, undefined, (err) => reject(err instanceof Error ? err : new Error('STL load failed')));
     });
+  }
+
+  /** The two part looks, in one place so addPart and setPartSolid can never
+   *  drift: SOLID = opaque light-gray-or-tint with a slight metallic sheen;
+   *  GHOST = translucent role colour, no depth write. `forId` is only used to
+   *  answer "is this the part the live preview is standing in for", which holds
+   *  a ghost at DIM opacity regardless of the scene-wide dim mode. */
+  _partMaterial(solid, tint, forId) {
+    if (solid) {
+      return new THREE.MeshStandardMaterial({
+        color: tint,
+        metalness: 0.35,   // slight metallic look
+        roughness: 0.45,
+        side: THREE.DoubleSide,
+      });
+    }
+    const dim = this._dimmed || (forId && this._previewDimId === forId);
+    return new THREE.MeshStandardMaterial({
+      color: tint,
+      metalness: 0.05,
+      roughness: 0.65,
+      transparent: true,
+      opacity: dim ? DIM_OPACITY : UP_OPACITY,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+  }
+
+  /** Flip an EXISTING part between the solid and the ghost look, keeping its
+   *  geometry, pose, links, selection and colour override. The lattice-unity flow
+   *  drives this: a solid SCRIPT part that becomes a lattice source turns back
+   *  into a ghost shell for as long as it belongs to that lattice, and gets its
+   *  solid body back when the lattice is dropped. */
+  setPartSolid(id, on) {
+    const p = this.parts.get(id);
+    if (!p || !!p.solid === !!on) return;
+    const solid = !!on;
+    const tint = p.colorHex ? hexInt(p.colorHex) : (solid ? RESULT_COLOR : roleColorInt(p.role));
+    const old = p.mesh.material;
+    p.mesh.material = this._partMaterial(solid, tint, id);
+    old.dispose();
+    p.solid = solid;
+    p.mesh.userData._solid = solid;
+    p.mesh.renderOrder = solid ? RO_SOLID : 1;   // _resortTranslucents finalizes
+    p._emiSaved = null;                          // the saved emissive belonged to the old material
+    // Visibility answers to whichever bulk toggle owns this look now.
+    if (solid) p.mesh.visible = (this._resultHidden && p.lattice) ? false : p.visible;
+    else p.mesh.visible = this._ghostsHidden ? false : p.visible;
+    if (this._selection.includes(id)) this._applySelTint(p);
+    this._resortTranslucents();
+    this._sectionDirty();   // the cap builder reads _solid for full-strength hatch
   }
 
   setPartRole(id, role) {
@@ -984,25 +1027,32 @@ export class Viewer {
   //    the preview turns off — a baked lattice and its preview are the same
   //    object at two fidelities and must never be drawn together.
 
-  /** Hold one part's ghost at DIM opacity (null clears the previous holder). */
+  /** Hold one part's ghost at DIM opacity (null clears the previous holder).
+   *  A SOLID target (a script output GENERATE is aimed at) has no opacity to
+   *  give: it steps aside entirely while the preview stands in for it, and comes
+   *  straight back when the preview releases it. */
   setPreviewDim(id) {
     const next = id || null;
     if (next === this._previewDimId) return;
     const prev = this._previewDimId ? this.parts.get(this._previewDimId) : null;
     if (prev && !prev.solid) prev.mesh.material.opacity = this._dimmed ? DIM_OPACITY : UP_OPACITY;
+    else if (prev) prev.mesh.visible = (this._resultHidden && prev.lattice) ? false : prev.visible;
     this._previewDimId = next;
     const cur = next ? this.parts.get(next) : null;
     if (cur && !cur.solid) cur.mesh.material.opacity = DIM_OPACITY;
+    else if (cur) cur.mesh.visible = false;
     this._syncCapOpacity();
   }
 
-  /** Hide/show every SOLID lattice mesh (registered part or legacy result). */
+  /** Hide/show every baked LATTICE mesh (registered part or legacy result).
+   *  A solid SCRIPT part is not a lattice and is not the preview's other
+   *  fidelity, so it stays on screen. */
   setResultHidden(hidden) {
     const on = !!hidden;
     if (on === !!this._resultHidden) return;
     this._resultHidden = on;
     for (const p of this.parts.values()) {
-      if (!p.solid) continue;
+      if (!p.solid || !p.lattice) continue;
       p.mesh.visible = on ? false : p.visible;
     }
     if (this.result) this.result.visible = !on;

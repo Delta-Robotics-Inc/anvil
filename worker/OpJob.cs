@@ -85,9 +85,9 @@ namespace Anvil.Worker
                 case "transform": RunTransformBake(job);   break;
                 case "mirror":    RunMirror(job);          break;
                 // ---- voxel ----
-                case "boolean":   RunBoolean(job);         break;
-                case "merge":     RunMerge(job);           break;
-                case "shell":     RunShell(job);           break;
+                case "boolean":   RunBoolean(job, voxel);  break;
+                case "merge":     RunMerge(job, voxel);    break;
+                case "shell":     RunShell(job, voxel);    break;
                 case "offset":    RunOffset(job, voxel);   break;
                 default:
                     throw new ArgumentException(
@@ -191,7 +191,7 @@ namespace Anvil.Worker
 
         // ---- voxel ops -----------------------------------------------------
 
-        static void RunBoolean(JobRequest job)
+        static void RunBoolean(JobRequest job, float voxel)
         {
             MeshRef a = Input(job, 0, "boolean");
             MeshRef b = Input(job, 1, "boolean");
@@ -215,10 +215,23 @@ namespace Anvil.Worker
                     $"unknown booleanKind: '{job.booleanKind}' (union|difference|intersection)"),
             };
 
-            FinishVoxelOp(job, vox);
+            // An intersection of non-overlapping inputs, or a difference where B
+            // fully consumes A, leaves NOTHING. Without this guard the empty
+            // result is meshed to a 0-triangle STL and registered as a real part
+            // — and BOOL consumes its inputs, so the user silently loses both.
+            // Fail loudly instead (same spirit as RunOffset's collapse guard).
+            vox.CalculateProperties(out float fVol, out _);
+            float fVoxelVol = voxel * voxel * voxel;
+            if (fVol < fVoxelVol)
+                throw new Exception(
+                    $"boolean {bk} produced an empty result (volume {fVol:0.####} mm³ < one " +
+                    $"voxel-volume {fVoxelVol:0.######} mm³) — the inputs do not overlap, or B " +
+                    $"fully consumes A.");
+
+            FinishVoxelOp(job, vox, fVol);
         }
 
-        static void RunMerge(JobRequest job)
+        static void RunMerge(JobRequest job, float voxel)
         {
             MeshRef a = Input(job, 0, "merge");
             MeshRef b = Input(job, 1, "merge");
@@ -236,10 +249,20 @@ namespace Anvil.Worker
             if (job.filletMM > 0f)
                 vox = vox.voxFillet(job.filletMM); // smooth union (fallback: voxSmoothen)
 
-            FinishVoxelOp(job, vox);
+            // A union can only empty out if BOTH inputs are sub-voxel; SMOOTH also
+            // consumes its inputs, so guard it the same way rather than registering
+            // a 0-triangle part.
+            vox.CalculateProperties(out float fVol, out _);
+            float fVoxelVol = voxel * voxel * voxel;
+            if (fVol < fVoxelVol)
+                throw new Exception(
+                    $"merge produced an empty result (volume {fVol:0.####} mm³ < one voxel-volume " +
+                    $"{fVoxelVol:0.######} mm³) — both inputs are smaller than one voxel.");
+
+            FinishVoxelOp(job, vox, fVol);
         }
 
-        static void RunShell(JobRequest job)
+        static void RunShell(JobRequest job, float voxel)
         {
             MeshRef a = Input(job, 0, "shell");
             float t = job.shellThicknessMM;
@@ -264,7 +287,30 @@ namespace Anvil.Worker
                     $"unknown shellDirection: '{job.shellDirection}' (inside|outside|centered)"),
             };
 
-            FinishVoxelOp(job, shell);
+            shell.CalculateProperties(out float fShellVol, out _);
+            float fVoxelVol = voxel * voxel * voxel;
+            if (fShellVol < fVoxelVol)
+                throw new Exception(
+                    $"shell {t:0.###} mm ({dir}) collapsed the part (result volume {fShellVol:0.####} mm³ " +
+                    $"< one voxel-volume {fVoxelVol:0.######} mm³)");
+
+            // A wall thicker than the part itself is a silent NO-OP: the inward
+            // offset vanishes, so `solid − nothing` returns the WHOLE solid rather
+            // than a shell. The API-side check only compares the thickness to the
+            // voxel size, so this is the only place the part's real thickness is
+            // known. (An OUTSIDE shell always grows past the solid, so it cannot
+            // degenerate this way.)
+            if (dir != "outside")
+            {
+                vox.CalculateProperties(out float fSolidVol, out _);
+                if (fShellVol >= fSolidVol - fVoxelVol)
+                    throw new Exception(
+                        $"shell {t:0.###} mm ({dir}) is thicker than the part itself — the inward " +
+                        $"offset vanished, so the result would be the whole solid ({fShellVol:0.##} mm³), " +
+                        $"not a wall. Use a smaller shellThicknessMM.");
+            }
+
+            FinishVoxelOp(job, shell, fShellVol);
         }
 
         static void RunOffset(JobRequest job, float voxel)

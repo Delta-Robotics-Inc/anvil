@@ -2,16 +2,21 @@
 // tools.js — Wave-1 "Objects & Ops" contextual tool panel.
 //
 // Renders a HyDesign-style contextual panel into the #sec-tool tile at the top
-// of the left panel: pickers + params + CONFIRM + inline progress. Each tool
-// declares how it renders, validates, and builds its /api/ops (or transform
-// bake) request. main.js owns app state + the viewer and passes a small `ctx`
-// controller; this module never touches app state directly.
+// of the left panel: a live selection header + params + CONFIRM + inline
+// progress. Each tool declares how it renders, validates, and builds its
+// /api/ops (or transform bake) request. main.js owns app state + the viewer and
+// passes a small `ctx` controller; this module never touches app state directly.
+//
+// Wave-7: NO tool has a part dropdown. What an op runs on is what is selected in
+// the canvas or the objects list, in pick order.
 //
 //   ctx = {
-//     listParts()        -> [{ id, name, role }]  (current parts, for pickers)
-//     selection()        -> [id]                  (ordered; XFORM binds to it)
+//     selection()        -> [id]                  (ordered by pick; EVERY op binds to it)
 //     primaryId()        -> id | null             (last picked = the bound part)
 //     partName(id)       -> string
+//     partColor(id)      -> '#rrggbb' | null      (effective colour, for the bind dot)
+//     rowId(id)          -> id                    (a unit id → the ROW that owns it)
+//     unitId(id)         -> id                    (a row id → the mesh an op must read)
 //     selectionBox()     -> { center, size } | null (combined world bbox)
 //     unionCenter()      -> {x,y,z} | null        (visible-union bbox centre)
 //     voxelDefault()     -> number                (current TPMS voxel size)
@@ -52,29 +57,6 @@ function paramBlock(labelHtml, controlEl, { wide = true, tip } = {}) {
   const wrap = el('div', 'param' + (wide ? ' param-wide' : ''));
   wrap.append(labelEl(labelHtml, tip), controlEl);
   return wrap;
-}
-
-// A HUD-styled part picker (reuses the .field base-select). `onChange` fires
-// with the chosen part id. Returns { el, get }.
-function pickerControl(value, onChange) {
-  const field = el('span', 'field');
-  const sel = el('select');
-  sel.name = `tool-pick-${++fieldSeq}`;
-  const parts = ctx.listParts();
-  if (!parts.length) {
-    const o = el('option'); o.value = ''; o.textContent = '— no parts —'; o.disabled = true; o.selected = true;
-    sel.appendChild(o); sel.disabled = true;
-  } else {
-    let chosen = parts.some((p) => p.id === value) ? value : parts[0].id;
-    for (const p of parts) {
-      const o = el('option'); o.value = p.id; o.textContent = p.name;
-      if (p.id === chosen) o.selected = true;
-      sel.appendChild(o);
-    }
-  }
-  sel.addEventListener('change', () => onChange(sel.value));
-  field.appendChild(sel);
-  return { el: field, get: () => sel.value };
 }
 
 function segControl(options, value, onChange) {
@@ -132,6 +114,99 @@ function tripletStepper(labelHtml, unit, vals, step, tip) {
   }
   sub.append(trip);
   return { el: sub, inp };
+}
+
+// ── Wave-7 · the SELECTION is the picker ──────────────────────────────
+// No op carries a part dropdown any more. Every tool that needs a part BINDS to
+// the app selection the way XFORM always has: the panel opens on a live readout
+// of what it is pointed at, and tools.onSelectionChanged repaints it in place,
+// so picking in the canvas or the objects list while the tool is open rebinds it
+// instantly. Pick order carries meaning — BOOLEAN's A is the first part picked.
+const EMPTY_ONE = 'Select a part in the canvas or the objects list';
+const EMPTY_TWO = 'Select two parts in the canvas or the objects list';
+
+// One bound-object row: the part's colour dot, its role key (PART / A / B) and
+// its name. `set(id)` repaints it; `set(null)` takes it off screen.
+function bindRow(key) {
+  const row = el('div', 'xf-bind tool-bind');
+  const dot = el('i', 'tool-bind-dot'); dot.setAttribute('aria-hidden', 'true');
+  const k = el('span', 'tool-bind-k regmark', key);
+  const name = el('span', 'tool-bind-n');
+  row.append(dot, k, name);
+  return {
+    el: row,
+    set(id) {
+      row.hidden = !id;
+      if (!id) return;
+      const nm = ctx.partName(id) || '—';
+      row.style.setProperty('--role-color', ctx.partColor(id) || 'var(--dim)');
+      name.textContent = nm;
+      row.title = `${key}: ${nm}`;
+    },
+  };
+}
+
+// The two bind headers. Both return a read accessor and install `cur._sync`, so
+// a selection change repaints the header without re-rendering the parameters
+// (a field being typed in keeps its value and its caret).
+
+/** `PART: <name>` — bound to the PRIMARY (last picked) part. → () => id|null */
+function bindPrimary(host) {
+  const row = bindRow('PART');
+  const empty = el('div', 'xf-bind empty', EMPTY_ONE);
+  const note = el('span', 'regmark tool-bind-note');
+  host.append(row.el, empty, note);
+  const bound = () => (ctx.selection().length ? ctx.primaryId() : null);
+  const sync = () => {
+    const n = ctx.selection().length;
+    const id = bound();
+    row.set(id);
+    empty.hidden = !!id;
+    note.hidden = n < 2;
+    note.textContent = n > 1 ? `using the primary of ${n} selected` : '';
+  };
+  cur._sync = sync;
+  sync();
+  return bound;
+}
+
+/** `A: <name>` / `B: <name>` + ⇄ SWAP — bound to the first two parts picked.
+ *  → () => [aId, bId] (either may be undefined). */
+function bindPair(host) {
+  const rowA = bindRow('A'), rowB = bindRow('B');
+  const swapWrap = el('div', 'tool-actions tool-swap');
+  const swap = el('button', 'btn tool-mini');
+  swap.type = 'button'; swap.textContent = '⇄ SWAP';
+  swap.setAttribute('data-tip', 'Exchange A and B. Order matters: A − B is not B − A.');
+  swapWrap.appendChild(swap);
+  const empty = el('div', 'xf-bind empty', EMPTY_TWO);
+  const note = el('span', 'regmark tool-bind-note');
+  host.append(rowA.el, rowB.el, swapWrap, empty, note);
+
+  let flip = false, key = '';
+  // Two parts or nothing: one part is not a boolean, so it reads as the empty
+  // state rather than as a half-filled form.
+  const pair = () => {
+    const s = ctx.selection().slice(0, 2);
+    if (s.length < 2) return [];
+    return flip ? [s[1], s[0]] : s;
+  };
+  const sync = () => {
+    const n = ctx.selection().length;
+    // A fresh pair drops the flip: A is the first part picked until asked otherwise.
+    const k = ctx.selection().slice(0, 2).join('|');
+    if (k !== key) { key = k; flip = false; }
+    const [a, b] = pair();
+    rowA.set(a); rowB.set(b);
+    swapWrap.hidden = n < 2;
+    empty.hidden = n >= 2;
+    note.hidden = n <= 2;
+    note.textContent = n > 2 ? `using the first 2 of ${n} selected` : '';
+  };
+  swap.addEventListener('click', () => { flip = !flip; sync(); onChange(); });
+  cur._sync = sync;
+  sync();
+  return pair;
 }
 
 // ── request helpers ───────────────────────────────────────────────────
@@ -320,12 +395,11 @@ const TOOLS = {
   // lost — the whole op is one history command, so a single undo brings both
   // sources back and takes the result away.
   boolean: {
-    title: 'BOOLEAN', jp: '論理', confirm: 'CONFIRM', usesParts: true,
+    title: 'BOOLEAN', jp: '論理', confirm: 'CONFIRM',
     render(host) {
-      const parts = ctx.listParts();
-      const a = parts[0]?.id, b = parts[1]?.id ?? parts[0]?.id;
-      const main = pickerControl(a, () => onChange());
-      const sec = pickerControl(b, () => onChange());
+      // A and B come off the SELECTION in pick order — first picked is A. ⇄ SWAP
+      // exchanges them, because A − B is the one thing here that is not symmetric.
+      const pair = bindPair(host);
       const seg = segControl(
         [{ val: 'union', label: 'UNION' }, { val: 'difference', label: 'DIFFERENCE' },
          { val: 'intersection', label: 'INTERSECT' }, { val: 'smooth', label: 'SMOOTH' }],
@@ -334,12 +408,9 @@ const TOOLS = {
       const blend = stepper({ value: 1, min: 0, step: 0.1 });
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
       host.append(
-        paramBlock('Main', main.el,
-          { tip: 'Primary part — consumed by the result (the row is removed; undo restores it).' }),
-        paramBlock('Secondary', sec.el,
-          { tip: 'Second part — consumed by the result (the row is removed; undo restores it).' }),
         paramBlock('Operation', seg.el,
-          { tip: 'Union (A+B), difference (A−B), intersect (A∩B), or smooth — a filleted union that blends the seam.' }),
+          { tip: 'Union (A+B), difference (A−B), intersect (A∩B), or smooth — a filleted union that blends the seam. '
+            + 'Runs on your selection: A is the first part you picked, B the second.' }),
       );
       const segWrap = host.lastChild; segWrap.appendChild(hint);
       const blendBlock = paramBlock('Blend radius <em>mm</em>', blend.el,
@@ -347,25 +418,27 @@ const TOOLS = {
       host.append(blendBlock, paramBlock('Resolution <em>voxel mm</em>', vox.el,
         { tip: 'Voxel size for this operation.' }));
       blend.inp.addEventListener('input', () => onChange());
-      const read = () => ({ main: main.get(), secondary: sec.get(), kind: seg.get(),
-        blend: num(blend.inp, 1), voxel: num(vox.inp, 0.3) });
+      const read = () => {
+        const [a, b] = pair();
+        return { main: a || null, secondary: b || null, count: ctx.selection().length,
+          kind: seg.get(), blend: num(blend.inp, 1), voxel: num(vox.inp, 0.3) };
+      };
       function updateHint() {
         const v = read();
         // The blend radius belongs to SMOOTH alone — hidden in the other modes.
         blendBlock.classList.toggle('param-off', v.kind !== 'smooth');
         hint.textContent =
-          v.kind === 'difference'   ? 'MAIN − SECONDARY' :
-          v.kind === 'intersection' ? 'MAIN ∩ SECONDARY' :
+          v.kind === 'difference'   ? 'A − B' :
+          v.kind === 'intersection' ? 'A ∩ B' :
           v.kind === 'smooth'       ? `filleted union — blends the seam by ${round(v.blend)} mm` :
-                                      'MAIN + SECONDARY';
+                                      'A + B';
       }
       updateHint();
       cur._hint = updateHint;
       return read;
     },
     validate(v) {
-      if (!v.main || !v.secondary) return { ok: false, note: 'Pick two parts', noteKind: 'err' };
-      if (v.main === v.secondary) return { ok: false, note: 'Main and Secondary must differ', noteKind: 'err' };
+      if (!v.main || !v.secondary) return { ok: false, note: EMPTY_TWO, noteKind: '' };
       if (v.kind === 'smooth' && v.blend < 0)
         return { ok: false, note: 'Blend radius must be ≥ 0', noteKind: 'err' };
       return { ok: true, note: 'consumes its inputs - undo restores them' };
@@ -376,16 +449,19 @@ const TOOLS = {
         ? { op: 'merge',   voxelSizeMM: v.voxel, filletMM: v.blend, inputs }
         : { op: 'boolean', voxelSizeMM: v.voxel, booleanKind: v.kind, inputs };
     },
+    // The selection speaks in UNIT ids (a latticed row is its lattice mesh);
+    // consuming works on ROWS, and takes the whole unit with it.
     afterConfirm(v, part) {
-      ctx.consumeSources([v.main, v.secondary], part.id, v.kind === 'smooth' ? 'SMOOTH' : 'BOOL');
+      ctx.consumeSources([ctx.rowId(v.main), ctx.rowId(v.secondary)], part.id,
+        v.kind === 'smooth' ? 'SMOOTH' : 'BOOL');
     },
   },
 
   // ── SHELL ────────────────────────────────────────────────────────────
   shell: {
-    title: 'SHELL', jp: '殻', confirm: 'CONFIRM', usesParts: true,
+    title: 'SHELL', jp: '殻', confirm: 'CONFIRM',
     render(host) {
-      const part = pickerControl(ctx.listParts()[0]?.id, () => onChange());
+      const part = bindPrimary(host);
       const seg = segControl(
         [{ val: 'inside', label: 'INSIDE' }, { val: 'outside', label: 'OUTSIDE' },
          { val: 'centered', label: 'CENTERED' }],
@@ -394,7 +470,6 @@ const TOOLS = {
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
       const hint = el('span', 'regmark tool-hint');
       host.append(
-        paramBlock('Part', part.el, { tip: 'Source part.' }),
         paramBlock('Direction', seg.el, { tip: 'Grow the wall inward, outward, or centred on the surface.' }),
         paramBlock('Thickness <em>mm</em>', th.el, { tip: 'Wall thickness of the shell.' }),
       );
@@ -406,10 +481,10 @@ const TOOLS = {
         hint.textContent = `min wall ${(min).toFixed(2)} mm (1.5 × voxel)`;
       };
       cur._hint();
-      return () => ({ part: part.get(), dir: seg.get(), thickness: num(th.inp, 2), voxel: num(vox.inp, 0.3) });
+      return () => ({ part: part(), dir: seg.get(), thickness: num(th.inp, 2), voxel: num(vox.inp, 0.3) });
     },
     validate(v) {
-      if (!v.part) return { ok: false, note: 'Pick a part', noteKind: 'err' };
+      if (!v.part) return { ok: false, note: EMPTY_ONE, noteKind: '' };
       const min = 1.5 * v.voxel;
       if (v.thickness <= min) return { ok: false, note: `Thickness must exceed ${min.toFixed(2)} mm`, noteKind: 'warn' };
       return { ok: true, note: '' };
@@ -422,14 +497,13 @@ const TOOLS = {
 
   // ── OFFSET ───────────────────────────────────────────────────────────
   offset: {
-    title: 'OFFSET', jp: '膨張', confirm: 'CONFIRM', usesParts: true,
+    title: 'OFFSET', jp: '膨張', confirm: 'CONFIRM',
     render(host) {
-      const part = pickerControl(ctx.listParts()[0]?.id, () => onChange());
+      const part = bindPrimary(host);
       const dist = stepper({ value: 1, step: 0.1 });
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
       const hint = el('span', 'regmark tool-hint');
       host.append(
-        paramBlock('Part', part.el, { tip: 'Source part.' }),
         paramBlock('Distance <em>signed mm</em>', dist.el,
           { tip: 'Grow (+) or shrink (−) the part surface. Small offsets erode fine detail.' }),
       );
@@ -443,10 +517,10 @@ const TOOLS = {
           : `signed offset · min |d| ${(1.5 * num(vox.inp, 0.3)).toFixed(2)} mm`;
       };
       cur._hint();
-      return () => ({ part: part.get(), dist: num(dist.inp, 0), voxel: num(vox.inp, 0.3) });
+      return () => ({ part: part(), dist: num(dist.inp, 0), voxel: num(vox.inp, 0.3) });
     },
     validate(v) {
-      if (!v.part) return { ok: false, note: 'Pick a part', noteKind: 'err' };
+      if (!v.part) return { ok: false, note: EMPTY_ONE, noteKind: '' };
       const min = 1.5 * v.voxel;
       if (Math.abs(v.dist) <= min) return { ok: false, note: `|distance| must exceed ${min.toFixed(2)} mm`, noteKind: 'warn' };
       return { ok: true, note: '' };
@@ -533,7 +607,7 @@ const TOOLS = {
         readout.hidden = n === 0;
         if (n === 0) {
           bind.className = 'xf-bind empty';
-          bind.textContent = 'select a part in the canvas or the objects list';
+          bind.textContent = EMPTY_ONE;
         } else if (n > 1) {
           bind.className = 'xf-bind multi';
           bind.textContent = `${n} parts selected - gizmo moves the group; numeric entry needs a single part`;
@@ -587,7 +661,7 @@ const TOOLS = {
       return () => ({ part: ctx.selection().length === 1 ? boundId() : null, count: ctx.selection().length, trs: readTrs() });
     },
     validate(v) {
-      if (!v.count) return { ok: false, note: 'select a part in the canvas or the objects list', noteKind: '' };
+      if (!v.count) return { ok: false, note: EMPTY_ONE, noteKind: '' };
       if (v.count > 1) return { ok: false, note: 'APPLY bakes one part at a time', noteKind: '' };
       if (!trsNonIdentity(v.trs)) return { ok: false, note: 'Move, rotate or scale, then APPLY to bake', noteKind: '' };
       return { ok: true, note: 'APPLY bakes a new part; source returns to origin' };
@@ -601,23 +675,22 @@ const TOOLS = {
 
   // ── MIRROR ───────────────────────────────────────────────────────────
   mirror: {
-    title: 'MIRROR', jp: '鏡像', confirm: 'CONFIRM', usesParts: true,
+    title: 'MIRROR', jp: '鏡像', confirm: 'CONFIRM',
     render(host) {
-      const part = pickerControl(ctx.listParts()[0]?.id, () => onChange());
+      const part = bindPrimary(host);
       const seg = segControl(
         [{ val: 'xy', label: 'XY' }, { val: 'yz', label: 'YZ' }, { val: 'xz', label: 'XZ' }],
         'yz', () => onChange());
       const off = stepper({ value: 0, step: 1 });
       host.append(
-        paramBlock('Part', part.el, { tip: 'Source part.' }),
-        paramBlock('Plane', seg.el, { tip: 'Reflection plane (winding-corrected).' }),
+        paramBlock('Plane', seg.el, { tip: 'Reflection plane (winding-corrected). Runs on the selected part.' }),
         paramBlock('Plane offset <em>mm</em>', off.el,
           { tip: 'Distance of the mirror plane from the origin along its normal.' }),
       );
-      return () => ({ part: part.get(), plane: seg.get(), offset: num(off.inp, 0) });
+      return () => ({ part: part(), plane: seg.get(), offset: num(off.inp, 0) });
     },
     validate(v) {
-      if (!v.part) return { ok: false, note: 'Pick a part', noteKind: 'err' };
+      if (!v.part) return { ok: false, note: EMPTY_ONE, noteKind: '' };
       return { ok: true, note: `mirror across ${v.plane.toUpperCase()}` };
     },
     build(v) {
@@ -629,16 +702,18 @@ const TOOLS = {
   },
 
   // ── DUPLICATE (instant, synchronous) ─────────────────────────────────
+  // ONE copy of the selected part, in place. N copies of a whole selection stay
+  // with the right-click DUPLICATE… popover, which owns the count and the
+  // offset-per-copy walk (and wraps the batch in one history transaction).
   duplicate: {
-    title: 'DUPLICATE', jp: '複製', confirm: 'DUPLICATE', usesParts: true,
+    title: 'DUPLICATE', jp: '複製', confirm: 'DUPLICATE',
     render(host) {
-      const part = pickerControl(ctx.listParts()[0]?.id, () => onChange());
-      host.append(paramBlock('Part', part.el, { tip: 'Part to copy (independent, instant).' }));
-      return () => ({ part: part.get() });
+      const part = bindPrimary(host);
+      return () => ({ part: part() });
     },
     validate(v) {
-      if (!v.part) return { ok: false, note: 'Pick a part', noteKind: 'err' };
-      return { ok: true, note: 'instant independent copy' };
+      if (!v.part) return { ok: false, note: EMPTY_ONE, noteKind: '' };
+      return { ok: true, note: 'instant independent copy - right-click for N copies' };
     },
     build(v) { return { op: 'duplicate', inputs: [{ partId: ctx.unitId ? ctx.unitId(v.part) : v.part }] }; },
   },
@@ -711,20 +786,18 @@ export function toggle(id) { (cur && cur.id === id) ? close() : openTool(id); }
 export function isOpen() { return !!cur; }
 export function isValid() { return !!(cur && cur.valid); }
 
-// re-render an open picker-tool after the parts set changes (preserve selections
-// where the ids still exist; primitive/transform-in-flight are left untouched).
-export function onPartsChanged() {
-  if (cur && TOOLS[cur.id]?.usesParts && !cur.running) openTool(cur.id);
-  syncBound();
-}
+// The parts set changed. Nothing to re-render any more — no tool holds a list of
+// parts — but a bound part may have just left the scene, so the header repaints
+// (main.js drops departed parts from the selection first).
+export function onPartsChanged() { syncBound(); }
 
-// ── Wave-6 · selection binding ────────────────────────────────────────
-// The XFORM tool has no part picker: it BINDS to the app's selection. main.js
-// calls these whenever the selection or a part's TRS changes, and the tool
-// repaints in place — no re-render, so a field being typed in keeps its caret.
+// ── Wave-6/7 · selection binding ──────────────────────────────────────
+// No tool has a part picker: they all BIND to the app's selection. main.js calls
+// these whenever the selection or a part's TRS changes, and the tool repaints in
+// place — no re-render, so a field being typed in keeps its value and its caret.
 function syncBound() {
-  if (!cur || !cur._sync) return;
-  cur._sync();
+  if (!cur) return;
+  cur._sync?.();
   revalidate();
 }
 /** The selection changed (or a TRS committed) — rebind and repaint. */
@@ -775,7 +848,7 @@ async function confirmTool() {
   if (part) {
     t.afterConfirm?.(vals, part);
     ctx.toast(`${t.title} → ${part.name}`, 'success', 3500);
-    // picker tools re-render (fresh part now selectable); transform re-prefills
+    // the parts set moved under the tool — repaint what it is bound to
     onPartsChanged();
   }
   revalidate();

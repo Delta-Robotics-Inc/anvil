@@ -155,7 +155,13 @@
           <div class="tile" id="sec-tpms">
             <div class="thead">
               <span class="lbls"><span class="label">LATTICE</span><span class="jp label">格子</span></span>
-              <span class="tag">TPMS</span>
+              <!-- The home view gets the same ESC ✕ control every other panel view
+                   carries. There is no view "behind" LATTICE, so its close action is
+                   to collapse the whole left panel (same as a second LATTICE click). -->
+              <span class="thead-tail">
+                <span class="tag">TPMS</span>
+                <button type="button" class="tool-close" id="lattice-close" title="Collapse the parameters panel" aria-label="Collapse parameters">ESC ✕</button>
+              </span>
             </div>
             <div class="param-grid grid grid-cols-2 gap-[10px]">
               <label class="param param-wide">
@@ -540,18 +546,20 @@
             <div class="regmark cleanup-note hidden" id="cleanup-note"></div>
           </div>
 
-          <!-- FLOW metrics -->
+        </div>
+
+        <!-- ── FLOW view — the open-area profile and its derived metrics get the
+             whole panel (Wave-7). Reading order is the graph FIRST (it is the
+             measurement), then the headline stats it summarises, then the
+             secondary metric list and any advisories. ────────────────────── -->
+        <div class="panel-scroll hidden" id="view-flow">
           <div class="tile flow-card hidden" id="flow-card">
             <div class="thead">
               <span class="lbls"><span class="label">FLOW</span><span class="jp label">流量</span></span>
-              <span class="tag">GEOMETRIC</span>
-            </div>
-
-            <div class="flow-stats grid grid-cols-2 gap-2">
-              <div class="stat"><div class="stat-val num" id="fl-porosity">&mdash;</div><div class="stat-label label has-tip" data-tip="Open share of the lattice region's volume.">Porosity <em>%</em></div></div>
-              <div class="stat"><div class="stat-val num" id="fl-freevol">&mdash;</div><div class="stat-label label has-tip" data-tip="Total air volume inside the lattice region.">Free vol <em>cm&sup3;</em></div></div>
-              <div class="stat"><div class="stat-val num" id="fl-choke">&mdash;</div><div class="stat-label label has-tip" data-tip="Smallest open cross-section along the flow axis — the bottleneck.">Choke <em>mm&sup2;</em></div><div class="stat-sub regmark" id="fl-chokeratio">&mdash;</div></div>
-              <div class="stat"><div class="stat-val num" id="fl-dh">&mdash;</div><div class="stat-label label has-tip" data-tip="Effective channel diameter: 4·porosity ÷ specific surface.">D<sub>h</sub> <em>mm</em></div></div>
+              <span class="thead-tail">
+                <span class="tag">GEOMETRIC</span>
+                <button type="button" class="tool-close" id="flow-close" title="Close flow (Esc)" aria-label="Close flow">ESC ✕</button>
+              </span>
             </div>
 
             <div class="flow-spark-head">
@@ -572,6 +580,13 @@
               <span class="fl-key has-tip" data-tip="Tightest open slice — the flow bottleneck. The label above shows its area and position."><i class="fl-sw fl-sw-choke"></i>Choke</span>
             </div>
 
+            <div class="flow-stats grid grid-cols-2 gap-2">
+              <div class="stat"><div class="stat-val num" id="fl-porosity">&mdash;</div><div class="stat-label label has-tip" data-tip="Open share of the lattice region's volume.">Porosity <em>%</em></div></div>
+              <div class="stat"><div class="stat-val num" id="fl-freevol">&mdash;</div><div class="stat-label label has-tip" data-tip="Total air volume inside the lattice region.">Free vol <em>cm&sup3;</em></div></div>
+              <div class="stat"><div class="stat-val num" id="fl-choke">&mdash;</div><div class="stat-label label has-tip" data-tip="Smallest open cross-section along the flow axis — the bottleneck.">Choke <em>mm&sup2;</em></div><div class="stat-sub regmark" id="fl-chokeratio">&mdash;</div></div>
+              <div class="stat"><div class="stat-val num" id="fl-dh">&mdash;</div><div class="stat-label label has-tip" data-tip="Effective channel diameter: 4·porosity ÷ specific surface.">D<sub>h</sub> <em>mm</em></div></div>
+            </div>
+
             <div class="flow-metrics" id="fl-metrics">
               <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Lattice surface area per unit volume.">S/V</span><span class="fl-met-v"><span class="num" id="fl-sv">&mdash;</span> <em>mm&#8315;&sup1;</em></span></div>
               <div class="fl-met"><span class="fl-met-k regmark has-tip" data-tip="Total lattice surface area.">Surface</span><span class="fl-met-v"><span class="num" id="fl-surface">&mdash;</span> <em>cm&sup2;</em></span></div>
@@ -582,7 +597,6 @@
 
             <div class="flow-warnings" id="fl-warnings"></div>
           </div>
-
         </div>
 
         <!-- ── EXPORT view — one tile owns every export: which objects, which
@@ -598,6 +612,9 @@
             <div class="ex-block">
               <span class="label has-tip" data-tip="Tick everything you want in this export — any mix of loaded parts and the generated result. Parts export exactly where you placed them.">Objects</span>
               <div class="ex-sources" id="ex-sources"></div>
+              <!-- live sum of the TICKED sources — a multi-select's real weight in
+                   one line, so the triangle budget never has to be added by hand. -->
+              <div class="ex-total regmark" id="ex-total" hidden></div>
             </div>
 
             <div class="ex-block">

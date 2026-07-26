@@ -81,7 +81,7 @@ body::after {
 }
 .chip {
   display:inline-block; padding:2px 9px; font-size:11px; font-weight:700; letter-spacing:.12em; color:currentColor;
-  background:color-mix(in oklch,currentColor 15%,var(--bg));
+  background:color-mix(in oklab,currentColor 15%,var(--bg));
   clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px));
 }
 
@@ -101,6 +101,9 @@ body::after {
 }
 .thead { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:11px; }
 .thead .lbls { display:flex; align-items:baseline; gap:8px; min-width:0; }
+/* right-hand cluster of a tile head: its tag plus the view's ESC ✕ control, kept
+   as ONE flex child so space-between still puts the title hard left. */
+.thead-tail { display:flex; align-items:center; gap:10px; flex:none; }
 
 /* ── Chamfered buttons (two-layer rim) ────────────────────────────────── */
 .btn {
@@ -245,7 +248,7 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
   color:var(--primary);
   filter:drop-shadow(0 0 14px color-mix(in oklch,var(--primary) 34%,transparent));
 }
-.dropzone.dragover::after { background:color-mix(in oklch,var(--primary) 14%,var(--card)); }
+.dropzone.dragover::after { background:color-mix(in oklab,var(--primary) 14%,var(--card)); }
 .dropzone svg { stroke:currentColor; }
 .dropzone-title { font-size:11px; color:inherit; }
 .dropzone-hint { font-size:10px; color:var(--dim); }
@@ -391,7 +394,7 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
    lighting up. */
 .part-row.flash::after { animation:part-flash .6s ease-out 1; }
 @keyframes part-flash {
-  0%   { background:color-mix(in oklch,var(--primary) 40%,var(--muted));
+  0%   { background:color-mix(in oklab,var(--primary) 40%,var(--muted));
          box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--primary) 60%,transparent); }
   100% { background:var(--row-fill,var(--muted)); box-shadow:none; }
 }
@@ -688,12 +691,16 @@ input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
 .step-hit { position:absolute; inset:-4px -3px; content:""; }
 .step-group.compact .step-hit { inset:-5px -3px; }
 
-/* ── Flow metrics tile ─────────────────────────────────────────────────── */
+/* ── Flow metrics tile (#view-flow — its own right-panel view since Wave-7) ──
+   Reading order is graph → headline stats → metric list → advisories, so the
+   sparkline block leads the tile and the stat grid picks up the top margin the
+   spark head used to carry. */
 .flow-card.hidden { display:none; }
+.flow-stats { margin-top:13px; }
 .flow-stats .stat { display:flex; flex-direction:column; justify-content:center; }
 .stat-sub { margin-top:3px; color:var(--dim); }
 
-.flow-spark-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:13px; margin-bottom:7px; }
+.flow-spark-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:7px; }
 .flow-spark-wrap { position:relative; width:100%; }
 #fl-spark { display:block; width:100%; height:120px; }
 .flow-spark-axis { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:5px; }
@@ -952,7 +959,7 @@ body.drag-active .viewport::after { opacity:1; }
   transition:color .14s, background .14s;
 }
 .sec-chip:hover:not(.active) { color:var(--fg); }
-.sec-chip.active { color:var(--primary); background:color-mix(in oklch,var(--primary) 16%,var(--muted)); }
+.sec-chip.active { color:var(--primary); background:color-mix(in oklab,var(--primary) 16%,var(--muted)); }
 .sec-chip:focus-visible { outline:none; color:var(--primary); filter:drop-shadow(0 0 4px color-mix(in oklch,var(--primary) 42%,transparent)); }
 .sec-invert { font-size:12px; line-height:1; }
 .sec-invert.active { color:var(--primary); }
@@ -1151,33 +1158,56 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
    sits in the design language without reading as a button.
    .ok → --green "WATERTIGHT ✓"; .warn → --primary "N OPEN EDGES" (the accent
    flags "look at this", and it is an outline chip so the solid fill is safe).
-   Vertical rhythm: 8px clear above (stats grid ships mb-3 = 12px, so -4px
-   trims it to 8) and 8px clear below to the cleanup regmark. */
-.result-chips { display:flex; flex-wrap:wrap; gap:6px; margin:-4px 0 8px; }
+   Vertical rhythm — 9px above the chip, 9px below it to the cleanup regmark,
+   which starts at the SAME left edge. The spacing is carried by the FOLLOWING
+   element's margin-top (never a trailing margin-bottom), so the rhythm holds in
+   all four combinations of chip/note present-or-absent and nothing is left
+   padding the bottom of the tile when the card ends at the stats grid.
+   It is stated here in CSS on purpose: the markup carries Tailwind's `mb-3` on
+   the stats grid, and `mb-3` does NOT compile in this browser-build Tailwind
+   (grid/grid-cols-N/gap-N do; margin utilities do not — same trap as the app
+   bar's py-[..], see index.html). The old `margin:-4px 0 8px` was written to
+   trim a 12px mb-3 that was never there, so the chip actually OVERLAPPED the
+   stats grid by 4px. Do not reintroduce a negative margin here. */
+.result-card .stats-grid { margin-bottom:0; }
+.result-chips { display:flex; flex-wrap:wrap; gap:6px; margin:9px 0 0; }
 .result-chips[hidden] { display:none; }
 .wt-chip {
   position:relative; isolation:isolate;
-  display:inline-flex; align-items:center; padding:4px 10px;
+  display:inline-flex; align-items:center; padding:5px 12px;
   font-size:10.5px; font-weight:700; line-height:1.35; letter-spacing:.08em;
   text-transform:uppercase; color:var(--dim); background:transparent;
 }
 /* two-layer chamfer: ::before = 1px rim at 35% currentColor, ::after = the 7%
    currentColor wash over the tile's own --card fill (visually identical to a
-   translucent wash, but it lets the rim layer stay a clean hairline). */
+   translucent wash, but it lets the rim layer stay a clean hairline).
+
+   BOTH layers mix in oklab, NOT oklch. --card is achromatic (oklch(0.2435 0 0)),
+   so its hue channel is literally 0; oklch is POLAR and interpolates that hue,
+   dragging 7% of --green's 150° down to 10.5° — oklch(0.278 0.0119 10.5), a
+   maroon wash under a green chip. oklab interpolates the rectangular a/b axes
+   instead, so mixing toward an achromatic colour only drops CHROMA and the hue
+   survives: oklab(0.278 -0.0103 0.006) is the same lightness at hue 150.
+   Same trap as the .tool-tile rim; the rule is: any mix with --card / --bg /
+   --muted / --line / --dim / --fg goes `in oklab` (or toward `transparent`,
+   which is hue-safe in either space because it is an alpha blend). */
 .wt-chip::before {
   content:""; position:absolute; inset:0; z-index:-2;
-  background:color-mix(in oklch,currentColor 35%,transparent);
+  background:color-mix(in oklab,currentColor 35%,transparent);
   clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,0 100%);
 }
 .wt-chip::after {
   content:""; position:absolute; inset:1px; z-index:-1;
-  background:color-mix(in oklch,currentColor 7%,var(--card));
+  background:color-mix(in oklab,currentColor 7%,var(--card));
   clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,0 100%);
 }
 .wt-chip:empty { display:none; }
 .wt-chip.ok   { color:var(--green); }
 .wt-chip.warn { color:var(--primary); }
-.cleanup-note { margin:0 0 10px; color:color-mix(in oklch,var(--dim) 78%,var(--fg)); }
+/* last child of the result card — carries its own 9px lead-in (which also holds
+   when the chip row is absent) and no trailing margin, so the tile's own 13px
+   padding closes the card out. */
+.cleanup-note { margin:9px 0 0; color:color-mix(in oklab,var(--dim) 78%,var(--fg)); }
 .cleanup-note.hidden { display:none; }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -1360,13 +1390,25 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 /* the generate result reads as its own class of thing, not another part */
 .ex-src-result .ex-src-name { color:var(--primary); letter-spacing:.06em; }
 
+/* ── TOTAL — the ticked sources summed, directly under the list ────────────
+   A regmark row in the same gutter as the source rows, separated by a hairline
+   so it reads as the list's foot rather than a fourth row. Numbers step up to
+   --fg; the copy stays --dim. No fill: the accent budget is untouched. */
+.ex-total {
+  display:flex; align-items:baseline; gap:4px; padding:7px 10px 0;
+  border-top:1px solid var(--line); letter-spacing:.14em; text-transform:uppercase;
+}
+.ex-total[hidden] { display:none; }
+.ex-total b { font-weight:700; color:var(--fg); letter-spacing:.06em; }
+.ex-total-sep { opacity:.55; }
+
 /* ── FORMAT / OUTPUT segments — the sub-labels stay quiet ─────────────── */
 #ex-output .seg-btn { letter-spacing:.1em; }
 #ex-output .seg-btn em {
   font-style:normal; font-weight:400; letter-spacing:.04em; text-transform:none;
   color:color-mix(in oklch,var(--dim) 70%,var(--bg));
 }
-#ex-output .seg-btn.active em { color:color-mix(in oklch,var(--primary) 62%,var(--dim)); }
+#ex-output .seg-btn.active em { color:color-mix(in oklab,var(--primary) 62%,var(--dim)); }
 
 /* ── Filename field + the live output regmark ─────────────────────────── */
 .ex-name-field > input {
@@ -1572,3 +1614,23 @@ button.hdr-link {
 .xf-head .xf-ax { text-align:right; color:var(--dim); }
 .xf-k { color:var(--dim); white-space:nowrap; }
 .xf-v { text-align:right; font-size:10.5px; color:color-mix(in oklch,var(--fg) 88%,var(--bg)); }
+
+/* ── Wave-7 · TOOL SELECTION ──────────────────────────────────────────
+   Every op tool now binds to the selection the way XFORM does, so its header is
+   one bound row per input: the part's colour dot, its role key (PART / A / B)
+   and its name, in the same chamfered .xf-bind block. No new fills — the dot
+   carries the part's own colour and nothing else changes ink. */
+.tool-bind { display:flex; align-items:center; gap:8px; }
+.tool-bind[hidden], .tool-actions[hidden] { display:none; }
+.tool-bind-dot {
+  display:block; width:7px; height:7px; flex:none; background:var(--role-color,var(--dim));
+  box-shadow:0 0 6px color-mix(in oklch,var(--role-color,var(--dim)) 55%,transparent);
+}
+.tool-bind-k { flex:none; color:var(--dim); }
+.tool-bind-n { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* "using the first 2 of 3 selected" / "using the primary of 2 selected" */
+.tool-bind-note { display:block; margin-top:-4px; color:var(--dim); text-transform:none; letter-spacing:.04em; }
+.tool-bind-note[hidden] { display:none; }
+/* ⇄ SWAP sits under BOOL's A/B rows and stays SMALL — it is a nudge, not an action. */
+.tool-actions.tool-swap { margin-top:-4px; }
+.tool-actions.tool-swap .btn { flex:0 0 auto; padding:5px 12px; }

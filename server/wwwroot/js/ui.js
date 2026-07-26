@@ -97,6 +97,7 @@ export const els = {
   exName:        document.getElementById('ex-name'),
   exOut:         document.getElementById('ex-out'),
   exStepBlock:   document.getElementById('ex-step-block'),
+  exTotal:       document.getElementById('ex-total'),      // live TOTAL of the ticked sources
   exportBtn:  document.getElementById('export-btn'),        // KEEPS the accent-budget contract
   exportSpinner: document.getElementById('step-spinner'),
   exportStatus:  document.getElementById('step-status'),
@@ -148,9 +149,12 @@ export const els = {
   viewLattice:  document.getElementById('view-lattice'),
   viewTool:     document.getElementById('view-tool'),
   leftFoot:     document.getElementById('left-foot'),   // GENERATE — rides the LATTICE view
-  // Right panel = a single-view host too: OBJECTS (default) or EXPORT.
+  latticeClose: document.getElementById('lattice-close'),  // ESC ✕ on the home view → collapse
+  // Right panel = a single-view host too: OBJECTS (default), FLOW or EXPORT.
   viewObjects:  document.getElementById('view-objects'),
+  viewFlow:     document.getElementById('view-flow'),
   viewExport:   document.getElementById('view-export'),
+  flowClose:    document.getElementById('flow-close'),
   exportClose:  document.getElementById('export-close'),
   secTpms:      document.getElementById('sec-tpms'),
   secPosition:  document.getElementById('sec-position'),
@@ -780,6 +784,9 @@ function hideFlow() {
   flowState = null;
   flowHover = null;
   els.flowCard.classList.add('hidden');
+  // FLOW owns a whole right-panel view now: with no profile to show, standing in
+  // it would mean staring at an empty panel — fall back to OBJECTS.
+  if (_rightView === 'flow') setRightView('objects');
 }
 
 // chokeRatio may arrive as a fraction (0–1) or an already-scaled percent;
@@ -1060,6 +1067,21 @@ export function renderExportSources(items, checked, onToggle) {
   }
 }
 
+/**
+ * The live TOTAL line under the source list: `TOTAL · N parts · X,XXX,XXX tris`.
+ * Per-row triangle counts stay where they are — this only answers the question
+ * a multi-select creates, which is what the whole export weighs. Hidden when
+ * nothing is ticked (the "→ nothing selected" hint already says so).
+ */
+export function setExportTotal(parts, triangles) {
+  const el = els.exTotal;
+  if (!el) return;
+  if (!parts) { el.hidden = true; el.textContent = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `TOTAL <span class="ex-total-sep">·</span> <b class="num">${parts}</b> part${parts === 1 ? '' : 's'} `
+    + `<span class="ex-total-sep">·</span> <b class="num">${fmtInt(triangles)}</b> tris`;
+}
+
 /** Wire the FORMAT / OUTPUT segmented controls (onChange fires for both). */
 export function initExportControls(onChange) {
   wireSeg(els.exFormat, () => onChange());
@@ -1212,12 +1234,8 @@ export function initPanels() {
   els.rightChevron?.addEventListener('click', () =>
     setPanelCollapsed('right', !els.panelRight.classList.contains('collapsed')));
 
-  // Toolbar active-section highlight (button lit while its section scrolls into
-  // view). The LEFT panel no longer needs one — it shows a single view at a
-  // time and setLeftView lights the matching toolbar button directly.
-  observeActiveSection(els.panelRight?.querySelector('.panel-scroll'), [
-    { sec: els.flowCard,  btn: els.tbFlow },
-  ]);
+  // No scroll-spy anywhere any more: BOTH panels are single-view hosts, so
+  // setLeftView / setRightView light the matching toolbar button directly.
 }
 
 // ── Left panel · single-view host ─────────────────────────────────────
@@ -1243,25 +1261,37 @@ export function setLeftView(view) {
 export function getLeftView() { return _leftView; }
 
 // ── Right panel · single-view host ────────────────────────────────────
-// Same pattern as the left: 'objects' = the default stack (objects tree +
-// RESULT + FLOW), 'export' = the EXPORT tile alone, full height. The toolbar
-// EXPORT button switches; ✕ / ESC / pressing EXPORT again come back.
+// Same pattern as the left, three views wide now: 'objects' = the default stack
+// (objects tree + RESULT), 'flow' = the open-area profile and its metrics alone,
+// 'export' = the EXPORT tile alone. The toolbar FLOW / EXPORT buttons switch;
+// ✕ / ESC / pressing the same button again come back.
+const RIGHT_VIEWS = ['objects', 'flow', 'export'];
 let _rightView = 'objects';
 export function setRightView(view) {
-  const exp = view === 'export';
-  _rightView = exp ? 'export' : 'objects';
-  els.viewObjects?.classList.toggle('hidden', exp);
-  els.viewExport?.classList.toggle('hidden', !exp);
-  // The toolbar button reads as the active view while the panel shows it (lit,
+  _rightView = RIGHT_VIEWS.includes(view) ? view : 'objects';
+  els.viewObjects?.classList.toggle('hidden', _rightView !== 'objects');
+  els.viewFlow?.classList.toggle('hidden', _rightView !== 'flow');
+  els.viewExport?.classList.toggle('hidden', _rightView !== 'export');
+  // The toolbar buttons read as the active view while the panel shows it (lit,
   // not filled — the accent machine decides separately who carries the fill).
-  els.tbExport?.classList.toggle('active', exp);
-  const shown = exp ? els.viewExport : els.viewObjects;
+  els.tbFlow?.classList.toggle('active', _rightView === 'flow');
+  els.tbExport?.classList.toggle('active', _rightView === 'export');
+  const shown = _rightView === 'export' ? els.viewExport
+    : _rightView === 'flow' ? els.viewFlow : els.viewObjects;
   if (shown) shown.scrollTop = 0;
-  // Opening EXPORT into a collapsed panel would show nothing at all.
-  if (exp && els.panelRight?.classList.contains('collapsed')) setPanelCollapsed('right', false);
+  // Switching INTO a collapsed panel would show nothing at all.
+  if (els.panelRight?.classList.contains('collapsed')) setPanelCollapsed('right', false);
+  // The sparkline is sized from its clientWidth, which is 0 while the view is
+  // hidden — repaint once the new view has been laid out.
+  if (_rightView === 'flow') requestAnimationFrame(() => drawFlowSpark());
 }
-/** Which view the right panel is showing: 'objects' | 'export'. */
+/** Which view the right panel is showing: 'objects' | 'flow' | 'export'. */
 export function getRightView() { return _rightView; }
+/** Is a panel collapsed? The toolbar's toggle semantics are built on this. */
+export function isPanelCollapsed(side) {
+  const panel = side === 'left' ? els.panelLeft : els.panelRight;
+  return !!panel?.classList.contains('collapsed');
+}
 /** True only when the EXPORT view is actually ON SCREEN — the view is selected
  *  AND the right panel is expanded. The accent machine asks this, not
  *  getRightView(), because a solid fill inside a collapsed panel is a fill the
@@ -1270,35 +1300,17 @@ export function isExportViewVisible() {
   return _rightView === 'export' && !els.panelRight?.classList.contains('collapsed');
 }
 
-// Highlight the toolbar button whose panel section is most in view.
-function observeActiveSection(root, entries) {
-  if (!root || !window.IntersectionObserver) return;
-  const list = entries.filter((e) => e.sec && e.btn);
-  if (!list.length) return;
-  const ratio = new Map();
-  const io = new IntersectionObserver((records) => {
-    for (const r of records) ratio.set(r.target, r.isIntersecting ? r.intersectionRatio : 0);
-    let best = null, bestR = 0;
-    for (const { sec } of list) { const v = ratio.get(sec) || 0; if (v > bestR) { bestR = v; best = sec; } }
-    for (const { sec, btn } of list) btn.classList.toggle('active', sec === best && bestR > 0.05);
-  }, { root, threshold: [0, 0.15, 0.35, 0.6, 0.9] });
-  for (const { sec } of list) io.observe(sec);
-}
-
 // Scroll a panel section into view, flash it, expanding the panel as needed.
-// LATTICE and EXPORT are whole VIEWS now (setLeftView / setRightView) rather
-// than scroll targets; only FLOW is still a scroll-to inside a view.
+// LATTICE, FLOW and EXPORT are all whole VIEWS now (setLeftView / setRightView)
+// rather than scroll targets; this is left for the in-view flash only.
 export function focusSection(name) {
   const MAP = {
-    lattice: { sec: els.secTpms,  side: 'left'  },
-    flow:   { sec: els.flowCard,  side: 'right' },
+    lattice: { sec: els.secTpms, side: 'left' },
   };
   const t = MAP[name];
   if (!t || !t.sec) return;
   const panel = t.side === 'left' ? els.panelLeft : els.panelRight;
   if (panel?.classList.contains('collapsed')) setPanelCollapsed(t.side, false);
-  // FLOW lives in the OBJECTS view — scrolling to it means being in that view.
-  if (t.side === 'right') setRightView('objects');
   // Next frame: let the expand relayout settle before scrolling + flashing.
   requestAnimationFrame(() => {
     t.sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });

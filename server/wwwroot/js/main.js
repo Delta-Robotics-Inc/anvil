@@ -8,7 +8,7 @@ import * as tools from './tools.js';
 import * as scriptsPanel from './scripts.js';
 import * as history from './history.js';
 import { Viewer, UP_AXIS_DEFAULT, UP_AXIS_KEYS } from './viewer.js';
-import { isBaseRole, isZoneRole } from './roles.js';
+import { isBaseRole, isZoneRole, effectiveColorHex } from './roles.js';
 
 // ── State ─────────────────────────────────────────────────────────────
 const state = {
@@ -390,15 +390,17 @@ scriptsPanel.initScripts({ runScript: runScriptFlow, toast: (m, k, ms) => ui.toa
 
 // ── Tool controller (passed to tools.initTools) ───────────────────────
 const toolCtx = {
-  // Pickers list ROWS (app objects). A latticed row appears once, under its own
-  // name; `unitId` resolves it to the mesh an op must actually read.
-  listParts: () => rowParts().map((p) => ({ id: p.id, name: p.name, role: p.role })),
+  // The selection speaks in UNIT ids (a latticed row IS its lattice mesh).
+  // `unitId` resolves a row id to the mesh an op must read; `rowId` goes back the
+  // other way, to the app object a consume/delete has to take with it.
   unitId: (id) => unitIdOf(id),
-  // Wave-6 — the XFORM tool has no part dropdown any more: it BINDS to the live
-  // selection (primary part for numbers, combined bbox for the readout).
+  rowId: (id) => rowIdOf(id),
+  // Wave-6/7 — NO tool has a part dropdown: they all BIND to the live selection
+  // (pick order for BOOLEAN's A/B, the primary for everything else).
   selection: () => state.selection.slice(),
   primaryId: () => state.selectedPartId,
   partName: (id) => partById(id)?.name || '',
+  partColor: (id) => { const p = partById(id); return p ? effectiveColorHex(p.colorHex, p.role) : null; },
   selectionBox: () => viewer.selectionBoxInfo(),
   unionCenter: () => viewer.getVisibleCenter(),
   // Where a fresh primitive of the given display height must be AUTHORED so it
@@ -1389,11 +1391,13 @@ function exportItems() {
       id: lat.id, kind: 'part', role: p.role, colorHex: p.colorHex || null,
       name: `${p.name} · ${patternLabelOf(lat)}`,
       meta: `${(lat.triangles ?? 0).toLocaleString('en-US')} tris`,
+      tris: lat.triangles ?? 0,
       stem: latticeStem(lat),
     };
     return {
       id: p.id, kind: 'part', role: p.role, colorHex: p.colorHex || null, name: p.name,
       meta: `${(p.triangles ?? 0).toLocaleString('en-US')} tris`,
+      tris: p.triangles ?? 0,
       stem: p.isResult ? latticeStem(p) : nameStem(p.name),
     };
   });
@@ -1404,6 +1408,7 @@ function exportItems() {
       id: `job:${state.job.id}`, kind: 'job', jobId: state.job.id, role: null,
       name: `RESULT · ${patt}`,
       meta: tris != null ? `${tris.toLocaleString('en-US')} tris` : 'lattice result',
+      tris: tris ?? 0,
       stem: `${baseStem()}_${patt.toLowerCase().replace(/[^a-z0-9]+/g, '')}`,
     });
   }
@@ -1458,6 +1463,9 @@ function refreshExport() {
     exportUi.dirty.set(id, on);
     refreshExport();
   });
+  // TOTAL line — the sum of the TICKED sources, live on every tick/untick.
+  const picked = items.filter((i) => checked.has(i.id));
+  ui.setExportTotal(picked.length, picked.reduce((n, i) => n + (i.tris || 0), 0));
   const format = ui.getExportFormat();
   ui.setExportOutputVisible(checked.size > 1);
   ui.setExportStepVisible(format === 'step');   // the STEP target stepper lives in that row
@@ -1653,41 +1661,112 @@ function updateOrbitPivot() {
 ui.initPanels();
 
 // Grouped pipeline toolbar (ADD PART · tools · LATTICE · FLOW · EXPORT).
-// Every tool button switches the LEFT PANEL to that tool's view; LATTICE
-// switches it back to the home view. FLOW/EXPORT jump the right panel.
+//
+// ── Panel-button toggle contract (Wave-7) ──────────────────────────────
+// Every button that OWNS a panel view behaves like a real toggle, so one button
+// is both the way in and the way out and the panel never has to be chased with
+// the chevron:
+//   · panel COLLAPSED           → expand it AND show that button's view
+//   · panel open, view SHOWING  → leave the view (home view) AND collapse
+//   · anything else             → just switch to that view
+// The chevrons still work on their own, and the ESC ✕ inside each view is the
+// explicit "close this view" control (a sub-view returns to its home view; the
+// HOME view's ✕ collapses, because there is nothing behind it).
 ui.els.tbImport?.addEventListener('click', () => ui.els.fileInput.click());
-// Wave-1 tool buttons open/close their contextual panel (js/tools.js).
-ui.els.tbPrim?.addEventListener('click', () => tools.toggle('primitive'));
+
+// Which tool is on screen. tools.js owns the open/close lifecycle and lights the
+// matching toolbar button on every switch, so the lit button IS the answer — no
+// second copy of that state lives here.
+const TOOL_BUTTONS = [
+  ['primitive', 'tbPrim'], ['boolean', 'tbBool'], ['shell', 'tbShell'],
+  ['offset', 'tbOffset'], ['transform', 'tbXform'], ['mirror', 'tbMirror'],
+  ['duplicate', 'tbDupe'],
+];
+function openToolId() {
+  if (!tools.isOpen()) return null;
+  for (const [id, key] of TOOL_BUTTONS) {
+    if (ui.els[key]?.classList.contains('active')) return id;
+  }
+  return null;
+}
+
+// A left-panel TOOL button (PRIM · BOOL · SHELL · OFFSET · XFORM · MIRROR · DUPE).
+function toolButton(id) {
+  const showing = ui.getLeftView() === 'tool' && openToolId() === id;
+  if (ui.isPanelCollapsed('left')) {
+    ui.setPanelCollapsed('left', false);
+    if (!showing) tools.openTool(id);
+    return;
+  }
+  if (showing) { tools.close(); ui.setPanelCollapsed('left', true); return; }
+  tools.openTool(id);
+}
+ui.els.tbPrim?.addEventListener('click', () => toolButton('primitive'));
 // BOOL carries all four combine modes (union/difference/intersect/smooth) — the
 // old MERGE button was the same tool with the fillet exposed, so it is gone.
-ui.els.tbBool?.addEventListener('click', () => tools.toggle('boolean'));
-ui.els.tbShell?.addEventListener('click', () => tools.toggle('shell'));
-ui.els.tbOffset?.addEventListener('click', () => tools.toggle('offset'));
-ui.els.tbXform?.addEventListener('click', () => tools.toggle('transform'));
-ui.els.tbMirror?.addEventListener('click', () => tools.toggle('mirror'));
-ui.els.tbDupe?.addEventListener('click', () => tools.toggle('duplicate'));
+ui.els.tbBool?.addEventListener('click', () => toolButton('boolean'));
+ui.els.tbShell?.addEventListener('click', () => toolButton('shell'));
+ui.els.tbOffset?.addEventListener('click', () => toolButton('offset'));
+ui.els.tbXform?.addEventListener('click', () => toolButton('transform'));
+ui.els.tbMirror?.addEventListener('click', () => toolButton('mirror'));
+ui.els.tbDupe?.addEventListener('click', () => toolButton('duplicate'));
+
 // LATTICE is the HOME view: it closes whatever tool owns the panel and brings
-// the lattice parameters (and GENERATE) back.
-ui.els.tbLattice?.addEventListener('click', () => {
+// the lattice parameters (and GENERATE) back — and, being the home view, its
+// second click collapses the panel rather than switching anywhere.
+function showLatticeView(flash) {
   tools.close();
   ui.setLeftView('lattice');
-  ui.focusSection('lattice');
+  if (flash) ui.focusSection('lattice');
+}
+ui.els.tbLattice?.addEventListener('click', () => {
+  if (ui.isPanelCollapsed('left')) {
+    ui.setPanelCollapsed('left', false);
+    showLatticeView(false);
+    return;
+  }
+  if (ui.getLeftView() === 'lattice') { ui.setPanelCollapsed('left', true); return; }
+  showLatticeView(true);
 });
+// ESC ✕ on the LATTICE view — the same explicit close every other view carries.
+// There is no view behind the home view, so closing it collapses the panel.
+ui.els.latticeClose?.addEventListener('click', () => ui.setPanelCollapsed('left', true));
+
 ui.els.tbGenerate?.addEventListener('click', () => { if (ui.isGenerating()) onCancel(); else onGenerate(); });
-ui.els.tbFlow?.addEventListener('click', () => ui.focusSection('flow'));
-// EXPORT is parts-gated (not result-gated) and is a whole right-panel VIEW: the
-// button TOGGLES it, exactly like a left-panel tool button. Opening resets the
-// filename back to auto-tracking, as it always did when the tile was revealed.
-ui.els.tbExport?.addEventListener('click', () => {
-  if (ui.getRightView() === 'export') { closeExportView(); return; }
+
+// FLOW and EXPORT are whole right-panel VIEWS on the same toggle contract.
+// Leaving either one lands back on OBJECTS, which is the right panel's home.
+function rightViewButton(view, onOpen) {
+  const showing = ui.getRightView() === view;
+  if (ui.isPanelCollapsed('right')) {
+    ui.setPanelCollapsed('right', false);
+    if (!showing) { onOpen?.(); ui.setRightView(view); }
+    updateAccents();
+    return;
+  }
+  if (showing) {
+    ui.setRightView('objects');
+    ui.setPanelCollapsed('right', true);
+    updateAccents();
+    return;
+  }
+  onOpen?.();
+  ui.setRightView(view);
+  updateAccents();   // the export fill hands over between tb-export and #export-btn
+}
+// FLOW stays result-gated (the button is disabled until a result exists) and is
+// never auto-opened: a fresh result lights it, the user walks in deliberately.
+ui.els.tbFlow?.addEventListener('click', () => rightViewButton('flow'));
+ui.els.flowClose?.addEventListener('click', () => { ui.setRightView('objects'); updateAccents(); });
+// EXPORT is parts-gated (not result-gated). Opening resets the filename back to
+// auto-tracking, as it always did when the tile was revealed.
+ui.els.tbExport?.addEventListener('click', () => rightViewButton('export', () => {
   exportUi.nameDirty = false;
   refreshExport();
-  ui.setRightView('export');
-  updateAccents();   // the fill hands over from the toolbar button to #export-btn
-});
+}));
 function closeExportView() {
   ui.setRightView('objects');
-  updateAccents();   // …and back again
+  updateAccents();   // …and the fill hands back to the toolbar button
 }
 ui.els.exportClose?.addEventListener('click', closeExportView);
 // Collapsing/expanding the right panel changes whether the in-panel EXPORT
@@ -1889,6 +1968,16 @@ function normalizeSelection(ids, opts = {}) {
 // The single selection funnel. Selecting ALWAYS arms MOVE: a selection is in
 // transform mode, with the arrows sitting on the body itself (the viewer pivots
 // the gizmo on the COMBINED unit bbox centre).
+// Bring the OBJECTS view back on screen: expand the right panel if it is
+// collapsed, and leave whichever sub-view (EXPORT / FLOW) is showing. Cheap and
+// idempotent — a no-op when OBJECTS is already up.
+function revealObjects() {
+  if (!ui.isPanelCollapsed('right') && ui.getRightView() === 'objects') return;
+  ui.setRightView('objects');            // auto-expands a collapsed panel
+  ui.setPanelCollapsed('right', false);
+  updateAccents();                       // who holds the export fill just changed
+}
+
 function setSelection(ids, opts = {}) {
   const next = normalizeSelection(ids);
   if (next.join('|') === state.selection.join('|')) { syncSelToolbar(); return; }
@@ -1910,6 +1999,11 @@ function setSelection(ids, opts = {}) {
   // free; double-click (focusPart) is what frames. refreshParts below still
   // republishes the volume hint, which is all the viewer needed from this path.
   syncSelToolbar();
+  // Picking something makes OBJECTS the panel worth looking at — it is where the
+  // part you just clicked lives, and where "how many are in this scene" is
+  // answered. Only ever on a real CHANGE to a non-empty set (the guard above
+  // already returned for a no-op), so it can never fight a user mid-export.
+  if (next.length) revealObjects();
   refreshParts();       // re-derive the `.selected`/`.primary` row classes from state
   tools.onSelectionChanged();   // the XFORM tool binds to the primary, live
   // A canvas pick moves the primary — bring its row into view in the objects list.
@@ -2058,7 +2152,10 @@ viewer.onLayFlat = (id, trs) => {                           // one-shot face pic
 // closes before an armed lay-flat or the selection is touched.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || tools.isOpen() || modalOpen()) return;
-  if (ui.getRightView() === 'export') { closeExportView(); return; }
+  // A right-panel sub-view (EXPORT or FLOW) closes back to OBJECTS first. The
+  // LATTICE home view is deliberately NOT on this ladder: Escape never collapses
+  // a panel, that is what its ESC ✕ button and the chevron are for.
+  if (ui.getRightView() !== 'objects') { closeExportView(); return; }
   if (state.layFlatArmed) { cancelLayFlat(); return; }
   if (state.selectedPartId) clearSelection();
 });

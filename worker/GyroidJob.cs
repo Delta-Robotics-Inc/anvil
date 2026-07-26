@@ -17,6 +17,11 @@ using PicoGK;
 namespace Anvil.Worker
 {
     // ---- Job model (JobRequest schema from the plan) ----
+    /// <summary>
+    /// A point / offset in millimetres. Doubles as the JSON DTO on the job
+    /// contract and as the point type of the Forge scripting API, where scripts
+    /// build one with the V(x, y, z) helper.
+    /// </summary>
     public class Vec3
     {
         public float x { get; set; }
@@ -25,6 +30,30 @@ namespace Anvil.Worker
         public Vec3() { }
         public Vec3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
         public Vector3 ToVector3() => new(x, y, z);
+
+        /// <summary>Use a Vec3 anywhere a System.Numerics Vector3 is expected.</summary>
+        public static implicit operator Vector3(Vec3 v) => v is null ? Vector3.Zero : new Vector3(v.x, v.y, v.z);
+
+        /// <summary>Use a System.Numerics Vector3 anywhere a Vec3 is expected.</summary>
+        public static implicit operator Vec3(Vector3 v) => new Vec3(v.X, v.Y, v.Z);
+
+        /// <summary>Component-wise sum (mm).</summary>
+        public static Vec3 operator +(Vec3 a, Vec3 b) => new Vec3(a.x + b.x, a.y + b.y, a.z + b.z);
+
+        /// <summary>Component-wise difference (mm).</summary>
+        public static Vec3 operator -(Vec3 a, Vec3 b) => new Vec3(a.x - b.x, a.y - b.y, a.z - b.z);
+
+        /// <summary>Scale every component by a factor.</summary>
+        public static Vec3 operator *(Vec3 a, double f) => new Vec3((float)(a.x * f), (float)(a.y * f), (float)(a.z * f));
+
+        /// <summary>Scale every component by a factor.</summary>
+        public static Vec3 operator *(double f, Vec3 a) => a * f;
+
+        /// <summary>Length of the vector (mm).</summary>
+        public double Length => Math.Sqrt((double)x * x + (double)y * y + (double)z * z);
+
+        public override string ToString()
+            => $"({x:0.###}, {y:0.###}, {z:0.###})";
     }
 
     class JobRequest

@@ -17,6 +17,13 @@
           (box 30^3 off-origin) -> boolean_op difference with a 2nd primitive ->
           generate_infill (coarse: voxel 1.0, cell 10) -> run_script
           (graded_lattice_puck) -> each must return a terminal SUCCESS payload.
+      (e) the Forge API self-test: POST /api/scripts/run with forge_smoke.csx,
+          which exercises EVERY Forge command and checks each result against the
+          analytic answer. The harness parses its FORGE-ASSERT log lines and
+          fails if any assertion failed.
+      (f) Forge.Emboss: the bundled anvil depth map baked onto a plate both ways
+          -> raise ADDS volume, cut REMOVES volume, neither grows a skirt past
+          the plate footprint, and both exported STLs are watertight.
 
     Builds ONLY worker + server(scratch) (never the .sln, never server\bin — so a
     dev server on 5238 keeps running). Kills only the 5239 instance it starts.
@@ -63,6 +70,8 @@ $WorkerExe    = Join-Path $RepoRoot 'worker\bin\Debug\net9.0\AnvilWorker.exe'
 $LibDir       = Join-Path $RepoRoot 'scripts-library'
 $HxCsx        = Join-Path $LibDir 'heat_exchanger_core.csx'
 $PuckCsx      = Join-Path $LibDir 'graded_lattice_puck.csx'
+$ForgeCsx     = Join-Path $LibDir 'forge_smoke.csx'
+$EmbossPng    = Join-Path $LibDir 'assets\emboss-sample.png'
 
 $WorkTmp  = Join-Path $env:TEMP ('anvil_test_scripts_' + [guid]::NewGuid().ToString('N').Substring(0,8))
 $BuildDir = Join-Path $WorkTmp 'srvbuild'
@@ -83,8 +92,10 @@ Write-Host "  repo:    $RepoRoot"
 Write-Host "  workdir: $WorkTmp"
 Write-Host "  port:    $Port"
 
-if (-not (Test-Path $HxCsx))   { Write-Host "missing seed: $HxCsx" -ForegroundColor Red; exit 1 }
-if (-not (Test-Path $PuckCsx)) { Write-Host "missing seed: $PuckCsx" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $HxCsx))    { Write-Host "missing seed: $HxCsx" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $PuckCsx))  { Write-Host "missing seed: $PuckCsx" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $ForgeCsx)) { Write-Host "missing seed: $ForgeCsx" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $EmbossPng)) { Write-Host "missing asset: $EmbossPng" -ForegroundColor Red; exit 1 }
 
 # --- Result collector --------------------------------------------------------
 $script:Results = New-Object System.Collections.Generic.List[object]
@@ -382,6 +393,106 @@ try {
     Add-Result '(d) list_scripts includes seeds' `
         (($names -contains 'heat_exchanger_core') -and ($names -contains 'graded_lattice_puck')) `
         ("scripts={0}" -f ($names -join ','))
+
+    # =========================================================================
+    # (e) Forge API: forge_smoke.csx self-test through the real pipeline
+    # =========================================================================
+    Write-Host "`n== (e) Forge API smoke (forge_smoke.csx) ==" -ForegroundColor Cyan
+
+    $forgeCode = Get-Content $ForgeCsx -Raw
+    $fResp = Http-PostJson "$Base/api/scripts/run" @{
+        code = $forgeCode; name = 'forge_smoke'; voxelSizeMM = 0.5
+    }
+    $fAcc = ($fResp.status -eq 202) -and $fResp.obj.jobId
+    Add-Result '(e) POST forge_smoke -> 202 {jobId}' $fAcc ("status={0} jobId={1}" -f $fResp.status, $fResp.obj.jobId)
+
+    if ($fAcc) {
+        $fj = Wait-Job $fResp.obj.jobId 900
+        if ($null -eq $fj) {
+            Add-Result '(e) forge_smoke completes' $false 'timeout (900s)'
+        } else {
+            Add-Result '(e) forge_smoke state=done' ($fj.state -eq 'done') ("state={0} err={1}" -f $fj.state, $fj.error)
+
+            # Every Forge command asserts its own result; parse those log lines.
+            $fLog     = @($fj.log)
+            $fAsserts = @($fLog | Where-Object { "$_" -like 'FORGE-ASSERT *' })
+            $fFails   = @($fLog | Where-Object { "$_" -like 'FORGE-ASSERT FAIL*' })
+            Add-Result '(e) Forge assertions all pass' `
+                (($fAsserts.Count -ge 50) -and ($fFails.Count -eq 0)) `
+                ("asserts={0} failed={1}{2}" -f $fAsserts.Count, $fFails.Count,
+                    $(if ($fFails.Count -gt 0) { ' :: ' + ($fFails -join ' | ') } else { '' }))
+
+            $sumOk = $false; $sumTxt = '(no FORGE-SMOKE line)'
+            foreach ($ln in $fLog) {
+                if ("$ln" -match 'FORGE-SMOKE total=(\d+) pass=(\d+) fail=(\d+)') {
+                    $sumTxt = $Matches[0]
+                    $sumOk  = ([int]$Matches[3] -eq 0) -and ([int]$Matches[2] -ge 50)
+                }
+            }
+            Add-Result '(e) FORGE-SMOKE summary fail=0' $sumOk $sumTxt
+
+            $fParts = @(@($fj.parts) | Where-Object { $null -ne $_ })
+            Add-Result '(e) forge_smoke saved parts (>=2)' ($fParts.Count -ge 2) ("parts={0}" -f $fParts.Count)
+        }
+    }
+
+    # =========================================================================
+    # (f) Forge Emboss: the bundled depth map, raised AND cut
+    # =========================================================================
+    Write-Host "`n== (f) Forge Emboss raise + cut ==" -ForegroundColor Cyan
+
+    $embCode = @'
+Shape plate = Box(30, 4, 30);
+Log($"EMBOSS-BASE {Volume(plate):0.####}");
+Shape up = Emboss(plate, "emboss-sample.png", face: "+y", depth: 1.2, mode: "raise", marginMM: 2);
+Log($"EMBOSS-RAISE {Volume(up):0.####}");
+Shape down = Emboss(plate, "emboss-sample.png", face: "+y", depth: 1.2, mode: "cut", marginMM: 2);
+Log($"EMBOSS-CUT {Volume(down):0.####}");
+SavePart("emboss_raise", up);
+SavePart("emboss_cut", down);
+'@
+    $eResp = Http-PostJson "$Base/api/scripts/run" @{ code = $embCode; name = 'emboss_check'; voxelSizeMM = 0.4 }
+    $eAcc = ($eResp.status -eq 202) -and $eResp.obj.jobId
+    Add-Result '(f) POST emboss script -> 202 {jobId}' $eAcc ("status={0}" -f $eResp.status)
+
+    if ($eAcc) {
+        $ej = Wait-Job $eResp.obj.jobId 600
+        if ($null -eq $ej) {
+            Add-Result '(f) emboss job completes' $false 'timeout (600s)'
+        } else {
+            Add-Result '(f) emboss job state=done' ($ej.state -eq 'done') ("state={0} err={1}" -f $ej.state, $ej.error)
+
+            $vBase = $null; $vUp = $null; $vDown = $null
+            foreach ($ln in @($ej.log)) {
+                if ("$ln" -match '^EMBOSS-BASE ([0-9.]+)')  { $vBase = [double]$Matches[1] }
+                if ("$ln" -match '^EMBOSS-RAISE ([0-9.]+)') { $vUp   = [double]$Matches[1] }
+                if ("$ln" -match '^EMBOSS-CUT ([0-9.]+)')   { $vDown = [double]$Matches[1] }
+            }
+            Add-Result '(f) raise ADDS material vs the base plate' `
+                (($null -ne $vUp) -and ($null -ne $vBase) -and ($vUp -gt $vBase)) `
+                ("base={0:0.##} raise={1:0.##} delta=+{2:0.##}" -f $vBase, $vUp, ($vUp - $vBase))
+            Add-Result '(f) cut REMOVES material vs the base plate' `
+                (($null -ne $vDown) -and ($null -ne $vBase) -and ($vDown -lt $vBase)) `
+                ("base={0:0.##} cut={1:0.##} delta={2:0.##}" -f $vBase, $vDown, ($vDown - $vBase))
+
+            # The emboss must not grow a skirt past the plate's own footprint.
+            $eParts = @(@($ej.parts) | Where-Object { $null -ne $_ })
+            Add-Result '(f) emboss saved both parts' ($eParts.Count -eq 2) ("parts={0}" -f $eParts.Count)
+            foreach ($ep in $eParts) {
+                $spanX = [double]$ep.bbox.max[0] - [double]$ep.bbox.min[0]
+                Add-Result ("(f) {0}: no skirt (bbox X == 30)" -f $ep.derived.label) `
+                    ([math]::Abs($spanX - 30) -lt 0.8) ("bboxX={0:0.###}" -f $spanX)
+                $epStl = Join-Path $DataDir ("parts\{0}\mesh.stl" -f $ep.id)
+                if (Test-Path $epStl) {
+                    $w = [StlTool5]::Watertight($epStl)
+                    Add-Result ("(f) {0}: STL directed-edge watertight" -f $ep.derived.label) `
+                        ([int]$w[0] -eq 1) ("openEdges={0} tris={1}" -f [int]$w[1], [int]$w[2])
+                } else {
+                    Add-Result ("(f) {0}: STL on disk" -f $ep.derived.label) $false "missing: $epStl"
+                }
+            }
+        }
+    }
 }
 finally {
     if ($serverProc -and -not $serverProc.HasExited) {

@@ -7,6 +7,13 @@
     <Nullable>enable</Nullable>
     <AssemblyName>AnvilWorker</AssemblyName>
     <RootNamespace>Anvil.Worker</RootNamespace>
+
+    <!-- Emit AnvilWorker.xml so the Forge command reference (units, defaults and
+         meaning of every modifier) is machine-readable for doc generation.
+         CS1591 is silenced: only the Forge scripting surface is documented, not
+         every internal DTO property. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +28,11 @@
          and runs user .csx against the PicoGK + Anvil.Worker APIs in a per-job
          process. Worker-ONLY (the server never references Roslyn or PicoGK). -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.14.0" />
+
+    <!-- Raster decoding for Forge.Emboss (PNG/JPG/BMP depth maps). GDI+, so
+         Windows-only, which Anvil already is; the two call sites in ForgeSdf.cs
+         are wrapped in #pragma warning disable CA1416. -->
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
   </ItemGroup>
 
   <ItemGroup>

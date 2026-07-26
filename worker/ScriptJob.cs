@@ -144,6 +144,16 @@ namespace Anvil.Worker
         }
 
         /// <summary>
+        /// Save a Forge <see cref="Shape"/> as a result part — identical to the
+        /// Voxels overload (mesh, clean, watertight check, write, append).
+        /// </summary>
+        public void SavePart(string name, Shape shape)
+        {
+            if (shape is null) throw new ArgumentException($"SavePart('{name}'): shape is null");
+            SavePart(name, shape.Voxels);
+        }
+
+        /// <summary>
         /// Save an already-built mesh as a result part: watertight CHECK only (no
         /// island removal — the caller owns the mesh topology), write, append.
         /// </summary>
@@ -229,8 +239,10 @@ namespace Anvil.Worker
             Progress.Report("compile", 0.1);
 
             // References by ASSEMBLY (never path strings): PicoGK, the worker itself
-            // (MeshUtil/TPMSWall/MeshClean), and System.Numerics. Imports pull the
-            // common namespaces + a static Math import so scripts read cleanly.
+            // (Forge/MeshUtil/TPMSWall/MeshClean), and System.Numerics. Imports pull
+            // the common namespaces plus two STATIC imports — System.Math and
+            // Anvil.Worker.Forge — so a script writes Sqrt(2) and Box(10,10,10)
+            // bare, with no qualification.
             var options = ScriptOptions.Default
                 .WithReferences(
                     typeof(PicoGK.Library).Assembly,
@@ -239,7 +251,8 @@ namespace Anvil.Worker
                 .WithImports(
                     "PicoGK", "Anvil.Worker",
                     "System", "System.Numerics", "System.Collections.Generic",
-                    "System.Math");
+                    "System.Linq", "System.IO",
+                    "System.Math", "Anvil.Worker.Forge");
 
             Script<object> script = CSharpScript.Create<object>(code, options, typeof(ScriptGlobals));
 
@@ -249,6 +262,12 @@ namespace Anvil.Worker
                 throw ScriptCompilationException.From(diags);
 
             var globals = new ScriptGlobals(job.outputDir!, voxel, BuildParams(job.scriptParams));
+
+            // Bind the Forge command layer to THIS job: its voxel size, and the
+            // folders a bare filename (Forge.FromFile / Forge.Emboss) resolves
+            // against — the job's own output folder first, then the bundled
+            // scripts-library assets, then the library and repo root.
+            Forge.Configure(voxel, AssetSearchDirs(job.outputDir!));
 
             Progress.Report("script", 0.3);
             using (var lib = new PicoGK.Library(voxel)) // headless, per-job voxel size
@@ -267,6 +286,39 @@ namespace Anvil.Worker
 
             Progress.Report("saving", 0.95);
             DoneStats(globals);
+        }
+
+        /// <summary>
+        /// Ordered folders a bare asset filename resolves against, most specific
+        /// first: the job's own output folder, the bundled scripts-library assets,
+        /// the scripts-library itself, the repo root, then the process CWD. The
+        /// repo root is found by walking up from the worker executable looking for
+        /// Anvil.sln (dev tree) or a scripts-library folder (deployed tree).
+        /// </summary>
+        private static IEnumerable<string> AssetSearchDirs(string outputDir)
+        {
+            var dirs = new List<string> { outputDir };
+
+            string? root = null;
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            for (int i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
+            {
+                if (File.Exists(Path.Combine(dir.FullName, "Anvil.sln")) ||
+                    Directory.Exists(Path.Combine(dir.FullName, "scripts-library")))
+                {
+                    root = dir.FullName;
+                    break;
+                }
+            }
+
+            if (root is not null)
+            {
+                dirs.Add(Path.Combine(root, "scripts-library", "assets"));
+                dirs.Add(Path.Combine(root, "scripts-library"));
+                dirs.Add(root);
+            }
+            dirs.Add(Directory.GetCurrentDirectory());
+            return dirs;
         }
 
         /// <summary>Emit the script done-line: {parts:[…manifest], logCount}.</summary>

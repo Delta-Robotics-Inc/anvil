@@ -342,7 +342,13 @@ public sealed class AnvilTools
     // ---- Scripting ---------------------------------------------------------
 
     [McpServerTool(Name = "run_script"), Description(
-        "Compile and run C# geometry code (LEAP71-style code-to-geometry) in a worker. The script talks to the app via globals: Params, VoxelSizeMM, SavePart(name, Voxels|Mesh), Log(msg), plus helpers ParamF/ParamS/ParamB. Available APIs: PicoGK (Voxels, Mesh, IImplicit, BBox3) and Anvil.Worker (MeshUtil primitives, TPMSWall). Polls to completion; returns registered parts + log, or a scriptError on compile failure. SECURITY: runs arbitrary code with your privileges, no sandbox.")]
+        "Compile and run C# geometry code (LEAP71-style code-to-geometry) in a worker. Scripts are written against the FORGE API, a flat command set auto-imported into every script: builders Box/Cylinder/Cone/Sphere/Capsule/Torus/Loft/Pipe/FromFile, combinators Union/Subtract/Intersect/SmoothUnion, modifiers Move/RotateX/RotateY/RotateZ/Scale/Mirror/Shell/Offset/Smooth/ArrayLinear/ArrayRadial/Lattice/Emboss, info Volume/BBox/Center, and V(x,y,z) for points. " +
+        "Units are mm, angles degrees, +Y is up, and every builder's 'at' is the shape's CENTRE and defaults to the origin. For example: " +
+        "Shape body = SmoothUnion(Box(60,4,40), Cylinder(d:12, h:8, at:V(0,6,0)), radius:2); " +
+        "Shape holes = ArrayRadial(Cylinder(d:4, h:20), count:6, radius:20); " +
+        "SavePart(\"bracket\", Subtract(body, holes)); " +
+        "CALL get_forge_reference FIRST for the full command reference with every modifier, unit and default. " +
+        "The script also talks to the app via globals: Params, VoxelSizeMM, SavePart(name, Shape|Voxels|Mesh), Log(msg), plus helpers ParamF/ParamS/ParamB. Raw PicoGK (Voxels, Mesh, IImplicit, BBox3) and Anvil.Worker (MeshUtil, TPMSWall) are in scope too and mix freely with Forge. Polls to completion; returns registered parts + log, or a scriptError on compile failure. SECURITY: runs arbitrary code with your privileges, no sandbox.")]
     public async Task<string> RunScript(
         [Description("The C# script (.csx) source.")] string code,
         [Description("Optional display name for the SCRIPT · label.")] string? name = null,
@@ -373,13 +379,63 @@ public sealed class AnvilTools
     }
 
     [McpServerTool(Name = "save_script"), Description(
-        "Save a C# script to the user library (name is slugified to a filename). Returns the saved descriptor.")]
+        "Save a C# script to the user library (name is slugified to a filename). It then shows up in the app's SCRIPTS template picker and in list_scripts. Write it against the FORGE API, the same command set run_script uses, for example: " +
+        "Shape tube = Shell(Cylinder(d:20, h:40, at:V(0,20,0)), wall:2); " +
+        "Shape ported = Subtract(tube, ArrayRadial(Cylinder(d:4, h:30), count:8, radius:0)); " +
+        "SavePart(\"port_ring\", Lattice(ported, cell:6, wall:1)); " +
+        "Call get_forge_reference first if you have not already. Returns the saved descriptor.")]
     public string SaveScript(
         [Description("Script name (slugified to a filename).")] string name,
-        [Description("The C# script source.")] string code)
+        [Description("The C# script source, written against the Forge API (see get_forge_reference).")] string code)
     {
         try { return Json(_scripts.Save(name, code)); }
         catch (ArgumentException ex) { return Err(ex.Message); }
+    }
+
+    [McpServerTool(Name = "get_forge_reference"), Description(
+        "The Forge API reference: every geometry command available inside an Anvil C# script, with its signature, a one-line description, and a table of modifiers giving units, defaults and meaning, plus the script globals, the coordinate conventions and the voxel-size rule. " +
+        "CALL THIS BEFORE WRITING OR EDITING A SCRIPT for run_script or save_script: it is the authoritative vocabulary, and guessing at command names or argument order wastes a compile round trip. " +
+        "Returns GitHub-flavored markdown read from docs/scripting.md in the repo. By default the worked example and the example-script table are trimmed; pass full=true for the whole document.")]
+    public string GetForgeReference(
+        [Description("Return the entire document, including the worked example and the example-script table (default false).")] bool full = false)
+    {
+        string? path = FindForgeReference();
+        if (path is null)
+            return Err($"Forge reference not found: expected docs\\scripting.md under the repo root ({_paths.RepoRoot}).");
+
+        string text;
+        try { text = File.ReadAllText(path); }
+        catch (Exception ex) { return Err($"could not read {path}: {ex.Message}"); }
+
+        if (!full)
+        {
+            int worked = text.IndexOf("\n## Worked example", StringComparison.Ordinal);
+            int gotchas = text.IndexOf("\n## Gotchas", StringComparison.Ordinal);
+            if (worked > 0 && gotchas > worked)
+                text = text[..worked]
+                     + "\n\n> The worked example and the example-script table were trimmed here. "
+                     + "Call get_forge_reference with full=true for the whole document.\n"
+                     + text[gotchas..];
+        }
+        return text;
+    }
+
+    /// <summary>
+    /// Locate docs\scripting.md: the resolved repo root first, then a walk up
+    /// from the server executable (so a relocated build still finds the doc).
+    /// </summary>
+    private string? FindForgeReference()
+    {
+        string primary = Path.Combine(_paths.RepoRoot, "docs", "scripting.md");
+        if (File.Exists(primary)) return primary;
+
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        for (int i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
+        {
+            string candidate = Path.Combine(dir.FullName, "docs", "scripting.md");
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     // ---- shared op run + polling ------------------------------------------

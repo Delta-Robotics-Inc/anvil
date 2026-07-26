@@ -27,7 +27,7 @@
     <!-- In-app C# scripting (LEAP71-style code-to-geometry): the worker compiles
          and runs user .csx against the PicoGK + Anvil.Worker APIs in a per-job
          process. Worker-ONLY (the server never references Roslyn or PicoGK). -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.14.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="5.6.0" />
 
     <!-- Raster decoding for Forge.Emboss (PNG/JPG/BMP depth maps). GDI+, so
          Windows-only, which Anvil already is; the two call sites in ForgeSdf.cs

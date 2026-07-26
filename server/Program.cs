@@ -112,8 +112,27 @@ app.Logger.LogInformation("  sidecar    : {Sidecar}", sidecarScript);
 app.Logger.LogInformation("  maxJobs    : {Max}", maxConcurrent);
 
 // ---- Pipeline --------------------------------------------------------------
-app.UseDefaultFiles();
-app.UseStaticFiles();
+// Static frontend. The browser MUST revalidate every hand-authored asset:
+// ANVIL ships as one HTML shell + a handful of ES modules with no content
+// hashing, so a cached js/main.js paired with freshly-served markup produces a
+// half-wired page that reads as a hung/crashed server (it is neither). A plain
+// `no-cache` still allows 304s via the ETag Kestrel already emits, so this costs
+// a conditional request per asset, not a re-download.
+//
+// Scope is deliberately the STATIC FILE middleware only — /api/parts/{id}/mesh
+// and the export artefact streams are minimal-API endpoints and never pass
+// through here, so their caching is untouched.
+app.UseDefaultFiles();   // rewrites "/" → "/index.html", so the shell is covered below
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        if (!IsNoCacheAsset(ctx.File.Name)) return;
+        var headers = ctx.Context.Response.Headers;
+        headers.CacheControl = "no-cache";
+        headers.Pragma = "no-cache";
+    },
+});
 
 app.MapGet("/api/health", () => Results.Ok(new
 {
@@ -136,6 +155,15 @@ app.MapMcp("/mcp");
 app.Run();
 
 // ---------------------------------------------------------------------------
+// Hand-authored frontend assets — no content hashing, so they must revalidate.
+// Fonts / images / anything else static keeps the default (no header at all).
+static bool IsNoCacheAsset(string fileName)
+{
+    foreach (string ext in new[] { ".html", ".js", ".css", ".svg" })
+        if (fileName.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) return true;
+    return false;
+}
+
 static string FindRepoRoot(string start)
 {
     var dir = new DirectoryInfo(start);

@@ -82,7 +82,7 @@
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="combine">
-      <button type="button" class="tb-btn" id="tb-bool" data-tip="Boolean — combine two parts: UNION (A+B), DIFFERENCE (A−B), INTERSECT (A∩B) or SMOOTH (filleted union that blends the seam). Both sources are consumed by the result.">
+      <button type="button" class="tb-btn" id="tb-bool" data-tip="Boolean — combine two parts: UNION (A+B), DIFFERENCE (A−B), INTERSECT (A∩B) or SMOOTH (filleted union that blends the seam). Consumes its inputs - undo restores them.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg>
         <span class="tb-label">BOOL</span>
       </button>
@@ -115,13 +115,9 @@
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="lattice">
-      <button type="button" class="tb-btn" id="tb-tpms" data-tip="Jump to the TPMS parameters (pattern, type, cell, wall, resolution).">
+      <button type="button" class="tb-btn" id="tb-lattice" data-tip="Lattice — the home panel: pattern, type, cell, wall, resolution, POSITION and GENERATE.">
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg>
-        <span class="tb-label">TPMS</span>
-      </button>
-      <button type="button" class="tb-btn" id="tb-orient" data-tip="Jump to the LATTICE 格子 advanced controls (rotation, phase, per-axis cell).">
-        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
-        <span class="tb-label">ORIENT</span>
+        <span class="tb-label">LATTICE</span>
       </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
@@ -146,30 +142,20 @@
     <!-- ── Region 3 — left panel: contextual parameters ───────────────── -->
     <aside class="panel panel-left" id="panel-left">
       <div class="panel-inner">
-        <div class="panel-scroll">
 
-          <!-- Contextual TOOL panel (populated by js/tools.js; hidden when idle) -->
-          <div class="tile tool-tile hidden" id="sec-tool">
-            <div class="thead">
-              <span class="lbls"><span class="label" id="tool-title">TOOL</span><span class="jp label" id="tool-title-jp"></span></span>
-              <button type="button" class="tool-close" id="tool-cancel" title="Close tool (Esc)" aria-label="Close tool">ESC ✕</button>
-            </div>
-            <div class="tool-body" id="tool-body"></div>
-            <div class="tool-foot">
-              <button type="button" class="btn btn-block tool-confirm" id="tool-confirm">CONFIRM</button>
-              <div class="tool-note" id="tool-note"></div>
-              <div class="tool-progress hidden" id="tool-progress">
-                <span class="spinner" aria-hidden="true"></span>
-                <span class="tool-prog-stage" id="tool-prog-stage">Working…</span>
-              </div>
-            </div>
-          </div>
+        <!-- ── LATTICE view (home) ──────────────────────────────────────────
+             The left panel is a SINGLE-VIEW host: exactly one of #view-lattice
+             (with its pinned GENERATE foot) and #view-tool is on screen at any
+             moment, so an open tool can never scroll into the lattice
+             parameters. ui.setLeftView owns the switch; tools.js calls it on
+             open/close and the toolbar buttons drive it from there. -->
+        <div class="panel-scroll" id="view-lattice">
 
-          <!-- TPMS parameters -->
+          <!-- LATTICE — TPMS field parameters -->
           <div class="tile" id="sec-tpms">
             <div class="thead">
-              <span class="lbls"><span class="label">TPMS</span><span class="jp label">設定</span></span>
-              <span class="tag">FIELD</span>
+              <span class="lbls"><span class="label">LATTICE</span><span class="jp label">格子</span></span>
+              <span class="tag">TPMS</span>
             </div>
             <div class="param-grid grid grid-cols-2 gap-[10px]">
               <label class="param param-wide">
@@ -296,13 +282,16 @@
             </div>
           </div>
 
-          <!-- ORIENT — LATTICE 格子 advanced disclosure -->
-          <div class="tile" id="sec-orient">
+          <!-- POSITION — where the field sits INSIDE the part: rotation, phase,
+               per-axis cell, reference flow. Collapsed by default; it is part of
+               the LATTICE view (the old ORIENT tile and its toolbar button are
+               gone — this is the same content under its real name). -->
+          <div class="tile" id="sec-position">
             <div class="param param-wide adv" id="lattice-adv">
               <button type="button" class="disc-head" id="lattice-adv-toggle" aria-expanded="false" aria-controls="lattice-adv-body">
                 <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-                <span class="label">LATTICE</span><span class="jp label">格子</span>
-                <span class="regmark disc-tail">ORIENT · 詳細</span>
+                <span class="label">POSITION</span><span class="jp label">位置</span>
+                <span class="regmark disc-tail">ROTATION · PHASE · CELL</span>
               </button>
               <div class="disc-body" id="lattice-adv-body" hidden>
 
@@ -395,25 +384,10 @@
             </div>
           </div>
 
-          <!-- STEP export target -->
-          <div class="tile" id="sec-export">
-            <div class="thead">
-              <span class="lbls"><span class="label">STEP</span><span class="jp label">出力</span></span>
-              <span class="tag">CAD</span>
-            </div>
-            <label class="param param-wide" for="p-steptris">
-              <span class="label has-tip" data-tip="Triangle budget for STEP export. The mesh is coarsened to fit — smaller = lighter CAD file, less detail.">STEP target <em>triangles</em></span>
-              <span class="step-group">
-                <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease STEP target">−</button>
-                <span class="field"><input id="p-steptris" type="number" value="60000" min="5000" step="5000" /></span>
-                <button type="button" class="btn step-btn" data-step="1" aria-label="Increase STEP target">＋</button>
-              </span>
-            </label>
-          </div>
-
         </div>
 
-        <!-- pinned GENERATE footer (HyDesign "Confirm" pattern) -->
+        <!-- pinned GENERATE footer — belongs to the LATTICE view and is shown
+             and hidden with it, so an open tool has no GENERATE anywhere. -->
         <div class="panel-foot" id="left-foot">
           <div class="thead">
             <span class="lbls"><span class="label">GENERATE</span><span class="jp label">生成</span></span>
@@ -427,6 +401,27 @@
               <button id="cancel-btn" class="btn cancel-btn" type="button">Cancel</button>
             </div>
             <div class="bar"><i id="progress-fill" class="progress-fill"></i></div>
+          </div>
+        </div>
+
+        <!-- ── TOOL view ────────────────────────────────────────────────────
+             One tool owns the whole panel while it is open (js/tools.js renders
+             into #tool-body). ESC / ✕ returns to the LATTICE view. -->
+        <div class="panel-scroll hidden" id="view-tool">
+          <div class="tile tool-tile" id="sec-tool">
+            <div class="thead">
+              <span class="lbls"><span class="label" id="tool-title">TOOL</span><span class="jp label" id="tool-title-jp"></span></span>
+              <button type="button" class="tool-close" id="tool-cancel" title="Close tool (Esc)" aria-label="Close tool">ESC ✕</button>
+            </div>
+            <div class="tool-body" id="tool-body"></div>
+            <div class="tool-foot">
+              <button type="button" class="btn btn-block tool-confirm" id="tool-confirm">CONFIRM</button>
+              <div class="tool-note" id="tool-note"></div>
+              <div class="tool-progress hidden" id="tool-progress">
+                <span class="spinner" aria-hidden="true"></span>
+                <span class="tool-prog-stage" id="tool-prog-stage">Working…</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -480,13 +475,13 @@
         <!-- MODEL UP — which world direction reads screen-up. Display only:
              no geometry is moved and exports are identical in every mode. -->
         <div class="vstrip-up" id="vp-up" role="group" aria-label="Model up axis"
-             data-tip="Model up — which world axis reads UP on screen, and where the build plate draws. Display convention only: your file's frame is never modified and exports are identical in every mode. Default −Y.">
+             data-tip="Model up — which world axis reads UP on screen, and where the build plate draws. Display convention only: your file's frame is never modified and exports are identical in every mode. Default +Z.">
           <span class="vstrip-label label">UP</span>
           <div class="up-axis">
-            <button type="button" class="sec-chip up-chip" data-up="+y" aria-pressed="false">+Y</button>
-            <button type="button" class="sec-chip up-chip" data-up="-y" aria-pressed="false">&minus;Y</button>
             <button type="button" class="sec-chip up-chip" data-up="+z" aria-pressed="false">+Z</button>
             <button type="button" class="sec-chip up-chip" data-up="-z" aria-pressed="false">&minus;Z</button>
+            <button type="button" class="sec-chip up-chip" data-up="+y" aria-pressed="false">+Y</button>
+            <button type="button" class="sec-chip up-chip" data-up="-y" aria-pressed="false">&minus;Y</button>
           </div>
         </div>
       </div>
@@ -506,7 +501,11 @@
       <div class="rail-label"><span class="label">OBJECTS</span><span class="jp label">部品</span></div>
 
       <div class="panel-inner">
-        <div class="panel-scroll">
+        <!-- The RIGHT panel is a SINGLE-VIEW host too (mirrors the left):
+             #view-objects is the default (objects tree + RESULT + FLOW) and
+             #view-export is the EXPORT tile on its own, full height. The
+             toolbar EXPORT button swaps between them; ✕ / ESC come back. -->
+        <div class="panel-scroll" id="view-objects">
 
           <!-- OBJECTS tree -->
           <div class="tile" id="sec-objects">
@@ -539,55 +538,6 @@
               <span class="wt-chip" id="wt-chip"></span>
             </div>
             <div class="regmark cleanup-note hidden" id="cleanup-note"></div>
-          </div>
-
-          <!-- EXPORT — one tile owns every export: which objects, which format,
-               separate vs combined, and the filename. (Wave-3) -->
-          <div class="tile export-tile" id="sec-export-panel">
-            <div class="thead">
-              <span class="lbls"><span class="label">EXPORT</span><span class="jp label">出力</span></span>
-              <span class="tag">STL · STEP</span>
-            </div>
-
-            <div class="ex-block">
-              <span class="label has-tip" data-tip="Tick everything you want in this export — any mix of loaded parts and the generated result. Parts export exactly where you placed them.">Objects</span>
-              <div class="ex-sources" id="ex-sources"></div>
-            </div>
-
-            <div class="ex-block">
-              <span class="label has-tip" data-tip="STL = triangle mesh for slicers. STEP = faceted B-rep for CAD — heavier, and conversion takes time.">Format</span>
-              <div class="seg" id="ex-format" role="group" aria-label="Export format">
-                <button type="button" class="seg-btn active" data-val="stl" aria-pressed="true">STL</button>
-                <button type="button" class="seg-btn" data-val="step" aria-pressed="false">STEP</button>
-              </div>
-            </div>
-
-            <div class="ex-block" id="ex-output-block" hidden>
-              <span class="label has-tip" data-tip="Separate keeps one file per object (delivered as a zip). Combined welds them into a single file in shared coordinates.">Output</span>
-              <div class="seg" id="ex-output" role="group" aria-label="Output layout">
-                <button type="button" class="seg-btn active" data-val="separate" aria-pressed="true">SEPARATE<em> ·zip</em></button>
-                <button type="button" class="seg-btn" data-val="combined" aria-pressed="false">COMBINED<em> ·one file</em></button>
-              </div>
-            </div>
-
-            <div class="ex-block">
-              <span class="label has-tip" data-tip="Names the download. Left alone it tracks your selection; type once and it stays yours until the panel reopens.">Filename</span>
-              <span class="field ex-name-field">
-                <input id="ex-name" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Export filename" />
-              </span>
-              <div class="regmark ex-out" id="ex-out">&rarr; anvil_export.stl</div>
-            </div>
-
-            <div class="ex-block ex-step-block" id="ex-step-block" hidden>
-              <div class="regmark">STEP TARGET · <span class="num" id="ex-step-tris">60,000</span> TRIS <em>&mdash; set in STEP 出力</em></div>
-              <div class="regmark ex-warn">faceted B-rep &middot; heavy over ~150k tris</div>
-            </div>
-
-            <button id="export-btn" class="btn btn-block ex-go" type="button" disabled>
-              <span class="btn-label">Export</span>
-              <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
-            </button>
-            <div id="step-status" class="step-status hidden"></div>
           </div>
 
           <!-- FLOW metrics -->
@@ -633,6 +583,67 @@
             <div class="flow-warnings" id="fl-warnings"></div>
           </div>
 
+        </div>
+
+        <!-- ── EXPORT view — one tile owns every export: which objects, which
+             format, separate vs combined, and the filename. (Wave-3, promoted to
+             its own right-panel view in Wave-7.) ─────────────────────────── -->
+        <div class="panel-scroll hidden" id="view-export">
+          <div class="tile export-tile" id="sec-export-panel">
+            <div class="thead">
+              <span class="lbls"><span class="label">EXPORT</span><span class="jp label">出力</span></span>
+              <button type="button" class="tool-close" id="export-close" title="Close export (Esc)" aria-label="Close export">ESC ✕</button>
+            </div>
+
+            <div class="ex-block">
+              <span class="label has-tip" data-tip="Tick everything you want in this export — any mix of loaded parts and the generated result. Parts export exactly where you placed them.">Objects</span>
+              <div class="ex-sources" id="ex-sources"></div>
+            </div>
+
+            <div class="ex-block">
+              <span class="label has-tip" data-tip="STL = triangle mesh for slicers. STEP = faceted B-rep for CAD — heavier, and conversion takes time.">Format</span>
+              <div class="seg" id="ex-format" role="group" aria-label="Export format">
+                <button type="button" class="seg-btn active" data-val="stl" aria-pressed="true">STL</button>
+                <button type="button" class="seg-btn" data-val="step" aria-pressed="false">STEP</button>
+              </div>
+            </div>
+
+            <div class="ex-block" id="ex-output-block" hidden>
+              <span class="label has-tip" data-tip="Separate keeps one file per object (delivered as a zip). Combined welds them into a single file in shared coordinates.">Output</span>
+              <div class="seg" id="ex-output" role="group" aria-label="Output layout">
+                <button type="button" class="seg-btn active" data-val="separate" aria-pressed="true">SEPARATE<em> ·zip</em></button>
+                <button type="button" class="seg-btn" data-val="combined" aria-pressed="false">COMBINED<em> ·one file</em></button>
+              </div>
+            </div>
+
+            <div class="ex-block">
+              <span class="label has-tip" data-tip="Names the download. Left alone it tracks your selection; type once and it stays yours until the panel reopens.">Filename</span>
+              <span class="field ex-name-field">
+                <input id="ex-name" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Export filename" />
+              </span>
+              <div class="regmark ex-out" id="ex-out">&rarr; anvil_export.stl</div>
+            </div>
+
+            <!-- STEP options — only meaningful for a STEP export, so the whole
+                 block (target-triangle budget included) rides the format seg. -->
+            <div class="ex-block ex-step-block" id="ex-step-block" hidden>
+              <label class="param param-wide" for="p-steptris">
+                <span class="label has-tip" data-tip="Triangle budget for STEP export. The mesh is coarsened to fit — smaller = lighter CAD file, less detail.">STEP target <em>triangles</em></span>
+                <span class="step-group">
+                  <button type="button" class="btn flip step-btn" data-step="-1" aria-label="Decrease STEP target">−</button>
+                  <span class="field"><input id="p-steptris" type="number" value="60000" min="5000" step="5000" /></span>
+                  <button type="button" class="btn step-btn" data-step="1" aria-label="Increase STEP target">＋</button>
+                </span>
+              </label>
+              <div class="regmark ex-warn">faceted B-rep &middot; heavy over ~150k tris</div>
+            </div>
+
+            <button id="export-btn" class="btn btn-block ex-go" type="button" disabled>
+              <span class="btn-label">Export</span>
+              <span class="spinner hidden" id="step-spinner" aria-hidden="true"></span>
+            </button>
+            <div id="step-status" class="step-status hidden"></div>
+          </div>
         </div>
       </div>
     </aside>

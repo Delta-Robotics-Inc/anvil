@@ -9,6 +9,10 @@
 //
 //   ctx = {
 //     listParts()        -> [{ id, name, role }]  (current parts, for pickers)
+//     selection()        -> [id]                  (ordered; XFORM binds to it)
+//     primaryId()        -> id | null             (last picked = the bound part)
+//     partName(id)       -> string
+//     selectionBox()     -> { center, size } | null (combined world bbox)
 //     unionCenter()      -> {x,y,z} | null        (visible-union bbox centre)
 //     voxelDefault()     -> number                (current TPMS voxel size)
 //     getPartTrs(id)     -> trs | null            (a part's non-destructive TRS)
@@ -16,7 +20,7 @@
 //     setPartTransform(id, trs)                   (live preview + persist)
 //     clearPartTransform(id)                      (APPLY bake → reset source TRS)
 //     runOp(body, onProgress) -> Promise<part|null>
-//     consumeSources(ids, resultId, kind)         (BOOL/SMOOTH: sources → USED)
+//     consumeSources(ids, resultId, kind)         (BOOL/SMOOTH: sources REMOVED)
 //     onStateChange()                             (→ main.updateAccents)
 //     toast(msg, kind, ms)
 //   }
@@ -149,9 +153,12 @@ function trsNonIdentity(trs) {
 }
 // One op input: { partId } plus the part's current non-identity TRS (folded in
 // server-side into the mesh load, so voxel/mesh ops see the transformed part).
+// A picked ROW resolves to the mesh it currently IS: for a latticed part that is
+// the lattice, not the source shell it was generated from.
 function inputRef(id) {
-  const t = trsNonIdentity(ctx.getPartTrs(id));
-  return t ? { partId: id, transform: t } : { partId: id };
+  const uid = ctx.unitId ? ctx.unitId(id) : id;
+  const t = trsNonIdentity(ctx.getPartTrs(uid));
+  return t ? { partId: uid, transform: t } : { partId: uid };
 }
 
 // Primitive kinds with a distinguished height axis: the worker authors them
@@ -307,9 +314,11 @@ const TOOLS = {
   // ── BOOLEAN (union · difference · intersect · smooth) ────────────────
   // ONE combining tool. The first three submit `op:"boolean"`; SMOOTH is the old
   // MERGE tool folded in — a filleted union, `op:"merge"` + filletMM. Whichever
-  // mode runs, the two sources are CONSUMED by the result (main.consumeSources):
-  // they stay listed for undo but leave the viewport and the mode logic, so the
-  // combined part is immediately a valid single base for GENERATE.
+  // mode runs, the result CONSUMES its two inputs (main.consumeSources): the
+  // source rows are REMOVED, so two parts in leaves exactly one part out and the
+  // combined part is immediately a valid single base for GENERATE. Nothing is
+  // lost — the whole op is one history command, so a single undo brings both
+  // sources back and takes the result away.
   boolean: {
     title: 'BOOLEAN', jp: '論理', confirm: 'CONFIRM', usesParts: true,
     render(host) {
@@ -325,8 +334,10 @@ const TOOLS = {
       const blend = stepper({ value: 1, min: 0, step: 0.1 });
       const vox = stepper({ value: round(ctx.voxelDefault()), min: 0.05, step: 0.05 });
       host.append(
-        paramBlock('Main', main.el, { tip: 'Primary part — consumed by the result.' }),
-        paramBlock('Secondary', sec.el, { tip: 'Second part — consumed by the result.' }),
+        paramBlock('Main', main.el,
+          { tip: 'Primary part — consumed by the result (the row is removed; undo restores it).' }),
+        paramBlock('Secondary', sec.el,
+          { tip: 'Second part — consumed by the result (the row is removed; undo restores it).' }),
         paramBlock('Operation', seg.el,
           { tip: 'Union (A+B), difference (A−B), intersect (A∩B), or smooth — a filleted union that blends the seam.' }),
       );
@@ -357,7 +368,7 @@ const TOOLS = {
       if (v.main === v.secondary) return { ok: false, note: 'Main and Secondary must differ', noteKind: 'err' };
       if (v.kind === 'smooth' && v.blend < 0)
         return { ok: false, note: 'Blend radius must be ≥ 0', noteKind: 'err' };
-      return { ok: true, note: 'both sources are consumed — delete the result to restore them' };
+      return { ok: true, note: 'consumes its inputs - undo restores them' };
     },
     build(v) {
       const inputs = [inputRef(v.main), inputRef(v.secondary)];
@@ -445,22 +456,23 @@ const TOOLS = {
     },
   },
 
-  // ── TRANSFORM (live preview; APPLY bakes) ────────────────────────────
+  // ── TRANSFORM · XFORM (live selection readout; APPLY bakes) ──────────
+  // Wave-6: the part dropdown is GONE. The tool binds to whatever is selected in
+  // the canvas or the objects list — that IS the picker, and it is the same one
+  // the gizmo uses, so the panel can never disagree with the viewport. Numbers
+  // flow both ways: typing commits through setPartTransform (undoable), and a
+  // gizmo/plate drag ticks the fields live through onTransformLive.
   transform: {
-    title: 'TRANSFORM', jp: '変換', confirm: 'APPLY', usesParts: true, live: true,
+    title: 'TRANSFORM', jp: '変換', confirm: 'APPLY', live: true,
     render(host) {
-      const parts = ctx.listParts();
-      const startId = parts[0]?.id;
-      const cur0 = ctx.getPartTrs(startId) || {};
-      const t0 = cur0.translateMM || { x: 0, y: 0, z: 0 };
-      const r0 = cur0.rotateDeg   || { x: 0, y: 0, z: 0 };
-      const s0 = cur0.scale       || { x: 1, y: 1, z: 1 };
-      const part = pickerControl(startId, (id) => { prefill(id); onLive(); });
-      const tr = tripletStepper('Translate', 'mm', { x: t0.x, y: t0.y, z: t0.z }, 1,
-        'Moves the part. Non-destructive — travels with the part into GENERATE.');
-      const rot = tripletStepper('Rotate', 'deg', { x: r0.x, y: r0.y, z: r0.z }, 15,
-        'Rotates the part about its origin (X then Y then Z).');
-      const scl = tripletStepper('Scale', '×', { x: s0.x, y: s0.y, z: s0.z }, 0.05,
+      // Bound-part line: the name, the multi-selection note, or the empty note.
+      const bind = el('div', 'xf-bind');
+      const fields = el('div', 'xf-fields');
+      const tr = tripletStepper('Position', 'mm', { x: 0, y: 0, z: 0 }, 1,
+        'World position of the selected part. Non-destructive — travels with the part into GENERATE.');
+      const rot = tripletStepper('Rotation', 'deg', { x: 0, y: 0, z: 0 }, 15,
+        'Rotation about the part origin (X then Y then Z).');
+      const scl = tripletStepper('Scale', '×', { x: 1, y: 1, z: 1 }, 0.05,
         'Per-axis scale factor (1 = original). Applied before rotation; travels with the part.');
       for (const ax of ['x', 'y', 'z']) { scl.inp[ax].min = '0.01'; }
       const center = el('button', 'btn tool-mini'); center.type = 'button'; center.textContent = 'CENTER';
@@ -470,31 +482,90 @@ const TOOLS = {
         'Reset this part to identity — no translate, no rotate, scale 1. An import never '
         + 'carries one, so this only ever removes transforms you (or a tool) applied.');
       const actions = el('div', 'tool-actions'); actions.append(center, clear);
-      host.append(paramBlock('Part', part.el, { tip: 'Source part.' }), tr.el, rot.el, scl.el,
+      fields.append(tr.el, rot.el, scl.el,
         paramBlock('Preset', actions, { tip: 'One-tap placement presets.' }));
 
+      // Read-only world regmarks — where the selection actually SITS and how big
+      // it is, combined bbox for a multi-selection. Live through every drag.
+      const readout = el('div', 'xf-readout');
+      const mk = (name) => {
+        const row = el('div', 'xf-row');
+        row.appendChild(el('span', 'xf-k regmark', name));
+        const v = {};
+        for (const ax of ['x', 'y', 'z']) {
+          const cell = el('span', 'xf-v num');
+          cell.textContent = '—';
+          v[ax] = cell;
+          row.appendChild(cell);
+        }
+        readout.appendChild(row);
+        return v;
+      };
+      const head = el('div', 'xf-row xf-head');
+      head.appendChild(el('span', 'xf-k regmark', 'WORLD'));
+      for (const ax of ['X', 'Y', 'Z']) head.appendChild(el('span', 'xf-ax regmark', ax));
+      readout.appendChild(head);
+      const cenOut = mk('BBOX CENTER');
+      const sizeOut = mk('SIZE');
+
+      host.append(bind, fields, readout);
+
       const readScale = () => { const s = xyz(scl.inp); return { x: s.x || 1, y: s.y || 1, z: s.z || 1 }; };
-      function readTrs() {
-        return { translateMM: xyz(tr.inp), rotateDeg: xyz(rot.inp), scale: readScale() };
-      }
-      function prefill(id) {
-        const t = ctx.getPartTrs(id) || {};
-        const tt = t.translateMM || { x: 0, y: 0, z: 0 }, rr = t.rotateDeg || { x: 0, y: 0, z: 0 };
-        const ss = t.scale || { x: 1, y: 1, z: 1 };
-        tr.inp.x.value = tt.x; tr.inp.y.value = tt.y; tr.inp.z.value = tt.z;
-        rot.inp.x.value = rr.x; rot.inp.y.value = rr.y; rot.inp.z.value = rr.z;
-        scl.inp.x.value = ss.x ?? 1; scl.inp.y.value = ss.y ?? 1; scl.inp.z.value = ss.z ?? 1;
+      const readTrs = () => ({ translateMM: xyz(tr.inp), rotateDeg: xyz(rot.inp), scale: readScale() });
+      const boundId = () => ctx.primaryId();
+
+      // Write a value WITHOUT stealing the caret: the field the user is typing
+      // in is left alone (this runs on every live drag frame and every commit).
+      const put = (inp, val) => {
+        if (document.activeElement === inp) return;
+        const s = String(round(val));
+        if (inp.value !== s) inp.value = s;
+      };
+      // `liveTrs` is the in-flight pose of the bound part straight off a gizmo /
+      // plate drag: app state only takes the TRS on COMMIT, so mid-drag the
+      // fields have to read the drag's own numbers or they would sit still while
+      // the part visibly moves.
+      function sync(liveTrs) {
+        const sel = ctx.selection();
+        const id = boundId();
+        const n = sel.length;
+        fields.hidden = n !== 1;
+        readout.hidden = n === 0;
+        if (n === 0) {
+          bind.className = 'xf-bind empty';
+          bind.textContent = 'select a part in the canvas or the objects list';
+        } else if (n > 1) {
+          bind.className = 'xf-bind multi';
+          bind.textContent = `${n} parts selected - gizmo moves the group; numeric entry needs a single part`;
+        } else {
+          bind.className = 'xf-bind';
+          bind.textContent = ctx.partName(id);
+          const t = liveTrs || ctx.getPartTrs(id) || {};
+          const tt = t.translateMM || { x: 0, y: 0, z: 0 }, rr = t.rotateDeg || { x: 0, y: 0, z: 0 };
+          const ss = t.scale || { x: 1, y: 1, z: 1 };
+          for (const ax of ['x', 'y', 'z']) {
+            put(tr.inp[ax], tt[ax] || 0);
+            put(rot.inp[ax], rr[ax] || 0);
+            put(scl.inp[ax], ss[ax] ?? 1);
+          }
+        }
+        const box = n ? ctx.selectionBox() : null;
+        for (const ax of ['x', 'y', 'z']) {
+          cenOut[ax].textContent = box ? round(box.center[ax]).toFixed(2) : '—';
+          sizeOut[ax].textContent = box ? round(box.size[ax]).toFixed(2) : '—';
+        }
       }
       function onLive() {
-        const id = part.get();
-        if (id) ctx.setPartTransform(id, readTrs());
+        const id = boundId();
+        if (id && ctx.selection().length === 1) ctx.setPartTransform(id, readTrs());
+        sync();
         onChange();   // refresh validity/accent
       }
-      // live-preview on every translate/rotate/scale edit
+      // live-preview on every position/rotation/scale edit
       for (const g of [tr.inp, rot.inp, scl.inp]) for (const ax of ['x', 'y', 'z'])
         g[ax].addEventListener('input', onLive);
       center.addEventListener('click', () => {
-        const id = part.get(); const bb = ctx.partBbox(id);
+        const id = boundId(); const bb = id ? ctx.partBbox(id) : null;
         if (!bb) return;
         tr.inp.x.value = round(-(bb.min[0] + bb.max[0]) / 2);
         tr.inp.y.value = round(-(bb.min[1] + bb.max[1]) / 2);
@@ -504,17 +575,20 @@ const TOOLS = {
       // CLEAR — drop the part's whole TRS (identity). Goes through
       // clearPartTransform so it is ONE undo entry.
       clear.addEventListener('click', () => {
-        const id = part.get();
+        const id = boundId();
         if (!id) return;
         ctx.clearPartTransform(id);
-        prefill(id);
+        sync();
         onChange();
       });
       cur._live = onLive;
-      return () => ({ part: part.get(), trs: readTrs() });
+      cur._sync = sync;
+      sync();
+      return () => ({ part: ctx.selection().length === 1 ? boundId() : null, count: ctx.selection().length, trs: readTrs() });
     },
     validate(v) {
-      if (!v.part) return { ok: false, note: 'Pick a part', noteKind: 'err' };
+      if (!v.count) return { ok: false, note: 'select a part in the canvas or the objects list', noteKind: '' };
+      if (v.count > 1) return { ok: false, note: 'APPLY bakes one part at a time', noteKind: '' };
       if (!trsNonIdentity(v.trs)) return { ok: false, note: 'Move, rotate or scale, then APPLY to bake', noteKind: '' };
       return { ok: true, note: 'APPLY bakes a new part; source returns to origin' };
     },
@@ -566,7 +640,7 @@ const TOOLS = {
       if (!v.part) return { ok: false, note: 'Pick a part', noteKind: 'err' };
       return { ok: true, note: 'instant independent copy' };
     },
-    build(v) { return { op: 'duplicate', inputs: [{ partId: v.part }] }; },
+    build(v) { return { op: 'duplicate', inputs: [{ partId: ctx.unitId ? ctx.unitId(v.part) : v.part }] }; },
   },
 };
 
@@ -616,7 +690,9 @@ export function openTool(id) {
   els().toolProgress.classList.add('hidden');
   cur.read = t.render(body, ctx);
   ui.initSteppers(body);         // wire the freshly-built −/＋ steppers
-  els().secTool.classList.remove('hidden');
+  // The tool TAKES OVER the left panel: one tool per sidebar, full height, and
+  // no GENERATE anywhere while it is open (the LATTICE view owns that).
+  ui.setLeftView('tool');
   // reflect toolbar active state
   syncToolbarActive(id);
   revalidate();
@@ -625,7 +701,7 @@ export function openTool(id) {
 export function close() {
   if (!cur) return;
   cur = null;
-  els().secTool.classList.add('hidden');
+  ui.setLeftView('lattice');   // back to the home view (LATTICE + GENERATE)
   syncToolbarActive(null);
   ui.setToolConfirmFilled(false);
   ctx.onStateChange();
@@ -639,6 +715,27 @@ export function isValid() { return !!(cur && cur.valid); }
 // where the ids still exist; primitive/transform-in-flight are left untouched).
 export function onPartsChanged() {
   if (cur && TOOLS[cur.id]?.usesParts && !cur.running) openTool(cur.id);
+  syncBound();
+}
+
+// ── Wave-6 · selection binding ────────────────────────────────────────
+// The XFORM tool has no part picker: it BINDS to the app's selection. main.js
+// calls these whenever the selection or a part's TRS changes, and the tool
+// repaints in place — no re-render, so a field being typed in keeps its caret.
+function syncBound() {
+  if (!cur || !cur._sync) return;
+  cur._sync();
+  revalidate();
+}
+/** The selection changed (or a TRS committed) — rebind and repaint. */
+export function onSelectionChanged() { syncBound(); }
+/** Mid-drag TRS frames, straight off the gizmo/plate drag. The bound part's
+ *  in-flight pose is handed to the tool so its fields tick with the drag. */
+export function onTransformLive(entries) {
+  if (!cur || !cur._sync || !entries?.length) return;
+  const id = ctx.primaryId?.();
+  const hit = id ? entries.find((e) => e.id === id) : null;
+  cur._sync(hit ? hit.trs : null);
 }
 
 function syncToolbarActive(id) {

@@ -16,10 +16,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`BOOL` and `SMOOTH` now remove their sources.** A boolean result used to
+  leave both inputs listed as dimmed, locked `USED · BOOL` rows that only
+  deleting the result could restore. The source rows are now removed outright,
+  so two parts in leaves exactly one part out. Nothing is lost: the whole
+  operation is a single history command, so one `Ctrl+Z` restores both sources
+  with their exact transforms, roles, colours and row positions and removes the
+  result, and redo consumes them again. Deleting the result no longer brings the
+  sources back - undo does.
+- **Nested translucent parts no longer vanish at some camera angles.** Ghost
+  parts draw in a fixed order derived from their role (`part` / `positive`
+  first, then `negative`, then the zone roles, with a solid lattice above all)
+  instead of being re-sorted by depth every frame. A `negative` cavity inside a
+  `positive` shell used to blink out across roughly half an orbit, because the
+  per-frame depth sort put the outer shell last and it blended over the part
+  inside it. The lane is reassigned when a part's role changes.
+- **One tool per sidebar.** The left panel is a single-view host: the `LATTICE`
+  view (the home view) or one open tool, full height, never both. Tools no
+  longer stack above the parameters, and nothing scrolls from one tool into
+  another. `Esc` or the tool's `✕` returns to `LATTICE`.
+- **`TPMS` is now `LATTICE`, and `ORIENT` is now `POSITION`.** The toolbar's
+  `TPMS` button became `LATTICE` and opens that view; the `ORIENT` button is
+  gone and its controls (rotation, phase offset, per-axis cell size, reference
+  flow) live in a collapsible `POSITION` section inside the `LATTICE` view.
+- **`GENERATE` lives only in the `LATTICE` view.** While a tool owns the panel
+  there is no generate button anywhere, and the tool's `CONFIRM` holds the
+  single accent fill.
+- **The `STEP target` stepper moved into the `EXPORT` tile**, in the STEP
+  options row it belongs to. The left panel's `STEP` tile is gone.
+- **A generated lattice no longer adds a second row.** The source object absorbs
+  it: one object, one row, keeping the source's name and carrying a
+  `LATTICE · <PATTERN>` badge where the role select was, plus the lattice's
+  triangle count and volume. The row's eye toggles the lattice mesh, a ghost
+  icon toggles the source shell behind it, and the pair moves, exports and
+  deletes as one unit. Regenerating replaces the lattice in place.
+- **The selection can target `GENERATE`.** Selecting one eligible part targets
+  it for single mode; selecting a Positive plus a Negative targets that pair
+  for fuse mode. The selection wins over the role-derived mode, zone roles
+  are ignored for targeting, and the mode note always names the target.
 - **The up axis is now selectable** from the `UP` chips in the view strip:
-  `+Y`, `-Y`, `+Z`, `-Z`, defaulting to `-Y` and remembered between sessions.
-  `LAY FLAT`, `DROP`, the plate drag, the primitive spawn pose, the view cube
-  labels and the orientation triad all follow it. This is a display change only:
+  `+Y`, `-Y`, `+Z`, `-Z`, defaulting to `+Y` and remembered between sessions.
+  `LAY FLAT`, `DROP`, the plate drag, the primitive spawn pose and the view cube
+  (labels and corner axes alike) all follow it. This is a display change only:
   no geometry is rotated or recentered, so file, world and export coordinates
   stay identical and switching modes leaves every export byte-identical.
 - **`FRONT` is the negative of the remaining world axis** - `-Z` when up is on
@@ -35,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parks a hair off the pole, tilted toward `FRONT`, instead of swapping the up
   vector, so a top view still keeps `FRONT` at the bottom of the screen and
   orbiting out of it behaves normally.
+- **The nav cube's x arrow points along `-X`.** The corner triad's hub is
+  unchanged, but the x arrow now traces the cube's bottom edge the other way
+  instead of leaving the cube outward, so all three arrows run along cube edges.
+  It re-parks with the up axis exactly as y and z do.
 - **Cylinder and cone primitives stand display-up.** They are authored along Y
   (`sizeMM.X` and `sizeMM.Z` are the diameters, `sizeMM.Y` the height) and given
   the convention rotation for the selected up axis, which shows in the `XFORM`
@@ -43,12 +85,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **The `USED · BOOL` / `USED · SMOOTH` source row is gone**, along with its
+  dimmed styling and locked role select, because a boolean no longer leaves its
+  sources behind. See the `BOOL` entry above.
 - **The import auto-lift is gone.** With a selectable up axis and an adaptive
   plate it was unnecessary, and removing it means an imported part now always
   arrives with an identity transform - nothing is ever added to your geometry.
 
 ### Added
 
+- **A per-part colour picker.** Every objects row carries a colour swatch beside
+  the eye that opens an anchored picker: ten curated colours, a `HEX` field
+  (`#rrggbb`, validated live, applied on `Enter` or blur) and `RESET`. There is
+  no gradient or rainbow control. The colour drives the part's 3D tint and
+  selection glow, its row accent bar, selection border and swatch, and its
+  `EXPORT` row marker; a latticed object colours its lattice mesh and its ghost
+  shell together. It survives a role change - only `RESET` clears it - and every
+  change is one undo entry. Colours are per session and are not persisted.
+- **`REVERT LATTICE`** on a latticed row (and in the right-click menu) drops the
+  lattice and gives the plain part back, role select and all. It is undoable,
+  and so is deleting a latticed object: one `Ctrl+Z` restores the unit with its
+  ghost linkage intact.
+- **Multi-select.** `Ctrl`+click or `Shift`+click toggles parts in and out of an
+  ordered selection, in the canvas and in the objects list alike. The gizmo
+  moves the whole group about its combined bbox centre as one undo entry, and
+  the last part picked is the primary that numeric entry binds to.
+- **A canvas context menu**: `DUPLICATE…` with a copy count, `DELETE`,
+  `HIDE` / `SHOW`, `LAY FLAT`, `DROP`, `FIT SELECTION`, `SELECT ALL`,
+  `DESELECT ALL`, plus `SHOW GHOST` / `HIDE GHOST` and `REVERT LATTICE` on a
+  latticed object. Every verb applies to the whole selection as one undo entry.
+- **The `XFORM` panel binds to the selection** instead of carrying its own part
+  dropdown, and shows a live `WORLD` readout of the selection's bbox centre and
+  size that ticks through every gizmo drag.
+- **The orientation triad merged into the nav cube.** The world axes hang off
+  the cube's front-right-bottom corner, faces, edges and corners all snap, and
+  the hovered zone lights in neutral gray so what lights up is what a click
+  takes you to.
 - **`CLEAR`** in the `XFORM` panel resets a part to an identity transform.
 - **An empty scene now shows the build plate**, framed from HOME, instead of an
   empty void. Deleting the last part restores exactly that state.

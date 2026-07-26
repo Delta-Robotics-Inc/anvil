@@ -30,9 +30,9 @@
   --font-mono:"Kode Mono",ui-monospace,monospace; --jp:"Noto Sans JP","Kode Mono",sans-serif;
 
   /* role colors — single source of truth is js/roles.js; these mirror it so
-     any CSS reference stays in step. Part = --primary orange (ghost parts read
-     orange, not blue), Positive = --green, Negative = --primary orange. */
-  --role-part:var(--primary); --role-pos:var(--green); --role-neg:var(--primary);
+     any CSS reference stays in step. Part = --primary orange, Positive =
+     --primary orange (the body), Negative = --green (the cavity interior). */
+  --role-part:var(--primary); --role-pos:var(--primary); --role-neg:var(--green);
 
   /* aliases kept so inline var(--…) references in the JS keep resolving.
      --warn/--danger are NEUTRAL on purpose: the HUD has no hazard hue at all.
@@ -257,7 +257,8 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
 .dropzone.busy::before { animation:dz-busy 1.15s ease-in-out infinite; }
 .dropzone.busy .dropzone-title { color:var(--primary); }
 @keyframes dz-busy {
-  0%,100% { background:color-mix(in oklch,var(--primary) 45%,var(--line)); }
+  /* mix with transparent, not --line: achromatic mixes drag the oklch hue toward maroon */
+  0%,100% { background:color-mix(in oklch,var(--primary) 45%,transparent); }
   50%     { background:var(--primary); }
 }
 
@@ -266,19 +267,66 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
   font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim);
   padding:8px 2px; text-align:center;
 }
+/* Two-layer chamfer-safe rim, same language as .tile: the ROW ELEMENT is the
+   backing (it already carries the 6px chamfer clip-path), and ::after is the
+   body inset 1px inside it. What shows between them is a 1px rim that follows
+   the chamfer DIAGONALS as well as the straight edges — an inset box-shadow
+   ring would be cut off at both chamfered corners.
+   --row-rim / --row-fill are the two knobs; selection recolours the rim to the
+   part's own colour (below). */
 .part-row {
-  position:relative; display:grid; grid-template-columns:1fr auto auto; align-items:center;
-  gap:8px; padding:8px 10px 8px 13px; background:var(--muted);
+  position:relative; isolation:isolate; display:grid;
+  grid-template-columns:1fr auto auto; align-items:center;
+  gap:8px; padding:8px 10px 8px 13px; background:var(--row-rim,var(--muted));
   clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
 }
+.part-row::after {
+  content:""; position:absolute; inset:1px; z-index:-1; background:var(--row-fill,var(--muted));
+  clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px));
+}
+/* the role accent bar rides ABOVE the body layer, unchanged */
 .part-row::before {
   content:""; position:absolute; left:0; top:0; bottom:0; width:3px;
   background:var(--role-color,var(--dim));
   box-shadow:0 0 8px color-mix(in oklch,var(--role-color,var(--dim)) 55%,transparent);
 }
+/* ── Selection (Wave-6 · ordered multi-set) ────────────────────────────
+   Every member of the selection reads `.selected`: a lifted --card fill, its
+   role accent bar brightened, and — the tell that survives a crowded list — a
+   rim in THE PART'S OWN COLOUR, so which rows are selected and what each of
+   them IS are one glance, not two. The PRIMARY (the last one picked — what
+   numeric entry and LAY FLAT bind to) carries that rim at FULL strength and a
+   wider bar; every other member gets the same hue at 65%.
+   65% is expressed as alpha (mix toward `transparent`), never as a mix toward
+   --line: --line is achromatic, so an oklch mix with it drags the hue toward 0
+   and turns every warm role colour red (see the .tool-tile note below).
+   NO new solid --primary fill — a role colour is not the accent budget.
+   The fill is OPAQUE (94.5 + 5.5 = 100). It used to read 82 + 6, which
+   colour-mix resolves to 88% ALPHA — harmless while it sat over the panel, but
+   it now sits over the role-coloured rim layer and would wash the whole row in
+   the role hue, turning a border into something that reads as a fill. 94.5/5.5
+   is the same lightness the old translucent value composited to (L* ≈ 0.279). */
+.part-row.selected {
+  --row-fill:color-mix(in oklch,var(--card) 94.5%,var(--fg) 5.5%);
+  --row-rim:color-mix(in oklch,var(--role-color,var(--dim)) 65%,transparent);
+}
+.part-row.selected::before { width:4px; box-shadow:0 0 11px color-mix(in oklch,var(--role-color,var(--dim)) 75%,transparent); }
+.part-row.primary {
+  --row-rim:var(--role-color,var(--dim));
+}
+.part-row.primary::before {
+  width:6px;
+  box-shadow:0 0 14px color-mix(in oklch,var(--role-color,var(--dim)) 95%,transparent);
+}
+.part-row.selected .part-name { color:var(--fg); }
+.part-row { cursor:pointer; }
+.part-row.pending { cursor:default; }
+
 .part-main { min-width:0; }
 .part-name { font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.part-meta { font-size:9px; letter-spacing:.12em; color:var(--dim); }
+/* One line, always: a row carries a name, a meta line, a role/badge column and
+   its tools, and none of them may push the others onto a second line. */
+.part-meta { font-size:9px; letter-spacing:.12em; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .part-tools { display:flex; align-items:center; gap:2px; }
 
 /* ── Generated lattice + its linked source ghosts ──────────────────────
@@ -287,6 +335,18 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
    with the role select locked while they belong to the lattice — eye + delete
    stay live so either can still be hidden or removed. */
 .lattice-tag { align-self:center; }
+/* A LATTICED row is ONE object: the source keeps its name and row, and the
+   role select is replaced by a LATTICE · <PATTERN> badge (its role is locked
+   while the lattice exists). The badge is a neutral .tag — no accent fill. */
+.lattice-cell { flex-direction:column; align-items:flex-end; gap:2px; }
+.lattice-cell .regmark { line-height:1; }
+.lattice-cell .lattice-tag { color:var(--fg); font-weight:700; }
+.part-row.latticed .part-name { color:var(--fg); }
+.part-row.latticed::before { width:4px; }
+/* Four verbs live on a latticed row (ghost · revert · eye · delete), so its
+   icons tighten to keep the name column readable. */
+.part-row.latticed .part-tools { gap:0; }
+.part-row.latticed .part-tools .icon-btn { width:22px; }
 .role-cell { display:flex; align-items:center; gap:6px; }
 .ghost-mark { color:color-mix(in oklch,var(--dim) 70%,var(--bg)); }
 .part-row.ghosted .part-name, .part-row.ghosted .part-meta { opacity:.55; }
@@ -303,7 +363,7 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
    into dead space — eye into the 8px role-select gap, delete into the row's
    right padding — so both approach 36px wide without stealing a neighbour's clicks. */
 .icon-btn::after { content:""; position:absolute; inset:-5px -1px; }
-.part-tools .icon-btn:first-child::after { inset:-5px -1px -5px -8px; } /* eye → role gap */
+.part-tools .icon-btn:first-child::after { inset:-5px -1px -5px -8px; } /* leftmost (colour) → role gap */
 .part-tools .icon-btn:last-child::after  { inset:-5px -9px -5px -1px; } /* delete → row padding */
 .icon-btn:hover { background:var(--card); color:var(--fg); }
 .icon-btn.danger:hover { background:color-mix(in oklch,var(--fg) 14%,transparent); color:var(--fg); }
@@ -325,12 +385,15 @@ header.app-bar { padding:8px 16px; }   /* explicit — the Tailwind py-[..] util
 .part-pending-state { color:var(--primary); }
 .part-row.pending .spinner { color:var(--primary); align-self:center; }
 
-/* ── Success flash — a just-landed part row pulses its accent once (~600ms) ── */
-.part-row.flash { animation:part-flash .6s ease-out 1; }
+/* ── Success flash — a just-landed part row pulses its accent once (~600ms) ──
+   Rides the BODY layer, not the row element: the row element is the 1px rim now,
+   and pulsing that alone would read as a hairline blink instead of the row
+   lighting up. */
+.part-row.flash::after { animation:part-flash .6s ease-out 1; }
 @keyframes part-flash {
   0%   { background:color-mix(in oklch,var(--primary) 40%,var(--muted));
          box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--primary) 60%,transparent); }
-  100% { background:var(--muted); box-shadow:none; }
+  100% { background:var(--row-fill,var(--muted)); box-shadow:none; }
 }
 
 /* ── Field rim (plain rectangle: 1px --line rim, --primary on focus) ────
@@ -804,6 +867,19 @@ body.drag-active .viewport::after { opacity:1; }
   flex:0 0 auto; border-top:1px solid var(--line); padding:11px 13px 13px;
   background:color-mix(in oklch,var(--bg) 45%,var(--card));
 }
+/* ── Panels are SINGLE-VIEW hosts ──────────────────────────────────────
+   LEFT:  #view-lattice (with its pinned GENERATE foot) and #view-tool.
+   RIGHT: #view-objects (objects tree + RESULT + FLOW) and #view-export.
+   ui.setLeftView / ui.setRightView show exactly one per panel, full height.
+   Scrolling INSIDE a view is fine — the rule is one view at a time, never two
+   stacked. These two-class rules beat .panel-scroll's own display whatever the
+   stylesheet order ends up being. */
+.panel-scroll.hidden, .panel-foot.hidden { display:none; }
+/* EXPORT owns its whole view, so the tile takes the full height and its GO
+   button sits at the bottom of the panel rather than floating mid-air under a
+   short form. (.export-tile is already a flex column — see the EXPORT block.) */
+#view-export .export-tile { flex:1 1 auto; }
+#view-export .ex-go { margin-top:auto; }
 .panel-foot .thead { margin-bottom:9px; }
 
 /* chevron tab at the panel's inner edge, vertically centred */
@@ -905,7 +981,15 @@ body.drag-active .viewport::after { opacity:1; }
 .sel-name {
   font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--fg);
   max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 4px;
+  /* Never ellipsize below its own content: with both panels open the strip is
+     flex-squeezed, and "3 PARTS" reading as "3 PA…" is a lie about the state. */
+  flex:0 0 auto;
 }
+/* Same reason — a shrunk strip must not wrap LAY FLAT onto two lines. */
+.sel-btn { white-space:nowrap; flex:0 0 auto; }
+/* Multi-selection: SCALE and LAY FLAT are unavailable, not missing. */
+.sel-btn:disabled { color:color-mix(in oklch,var(--dim) 55%,var(--bg)); cursor:default; }
+.sel-btn:disabled:hover::before { background:var(--line); }
 .sel-sep { width:1px; align-self:stretch; margin:2px 1px; background:var(--line); }
 .sel-btn {
   position:relative; isolation:isolate;
@@ -971,8 +1055,17 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 .tile.hidden { display:none; }
 
 /* ── Contextual tool panel (top of the left panel; HyDesign "Confirm" pattern) ── */
-/* an armed tool reads active: its rim is orange-tinted vs the neutral --line tiles */
-.tool-tile::before { background:color-mix(in oklch,var(--primary) 42%,var(--line)); }
+/* The tool tile used to carry an "orange-tinted" rim:
+     color-mix(in oklch, var(--primary) 42%, var(--line))
+   which does NOT read orange. --line is achromatic (oklch(0.329 0 0)), so its
+   hue channel is 0 and oklch mixing interpolates the HUE too: 42% of --primary's
+   40.6° lands on 17°, i.e. oklch(0.478 0.089 17) — a dim maroon. On the dark HUD
+   that reads as a red error rim around a perfectly healthy tool.
+   The tool already announces itself three other ways (its toolbar button lights,
+   it OWNS the whole left panel, and its CONFIRM holds the accent fill), so the
+   rim carries no information: it takes the same neutral --line rim as every other
+   tile via .tile::before. Do not reintroduce a --primary/--line oklch mix here —
+   any percentage of it is red. */
 .tool-tile .thead { margin-bottom:12px; }
 .tool-close {
   background:none; border:0; cursor:pointer; color:var(--dim);
@@ -1285,7 +1378,9 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 }
 
 /* ── STEP options row (reads the STEP 出力 stepper; never duplicates it) ── */
-.ex-step-block { gap:4px; }
+/* STEP options row — owns the target-triangle stepper itself (it used to live
+   in a left-panel STEP tile; the left panel is single-view now). */
+.ex-step-block { gap:8px; }
 .ex-step-block em { font-style:normal; letter-spacing:.06em; opacity:.75; }
 .ex-warn { color:var(--advisory); letter-spacing:.1em; }
 
@@ -1306,7 +1401,7 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
   padding:4px 11px; letter-spacing:.14em; text-transform:uppercase;
   color:color-mix(in oklch,var(--fg) 82%,var(--bg));
   background:color-mix(in oklch,var(--card) 82%,transparent);
-  border:1px solid color-mix(in oklch,var(--primary) 34%,var(--line));
+  border:1px solid color-mix(in oklch,var(--primary) 34%,transparent);   /* not --line: achromatic mix reddens the hue */
   clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
   backdrop-filter:blur(6px);
 }
@@ -1327,6 +1422,8 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
    These cursors are the only affordance that needs DOM chrome — everything
    else is in-canvas. Neutral: no new solid --primary fills. */
 body.plate-grab .viewport canvas { cursor:grab; }
+/* Orientation widget (view cube + axis triad) — its rect is a click target. */
+body.cube-pick .viewport canvas { cursor:pointer; }
 body.plate-dragging .viewport,
 body.plate-dragging .viewport canvas { cursor:grabbing; }
 /* LAY FLAT still owns the cursor while armed (crosshair beats grab). */
@@ -1345,9 +1442,9 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
    disabled, so the panel doesn't carry a dead control. */
 .param.param-off { display:none; }
 
-.used-mark { white-space:nowrap; }
-.part-row.consumed .part-name, .part-row.consumed .part-meta { opacity:.55; }
-.part-row.consumed .field-role > select:disabled { opacity:.55; cursor:not-allowed; }
+/* A BOOL/SMOOTH result now REMOVES its sources outright (one Ctrl+Z restores
+   them), so the dimmed "USED · BOOL" source row no longer exists and neither do
+   the styles that dressed it. */
 
 /* ── Wave-4 · UNDO ───────────────────────────────────────────────────────
    ↶ / ↷ in the header, left of SCRIPTS. Same chamfered .hdr-link chrome as
@@ -1364,3 +1461,114 @@ button.hdr-link {
 .hdr-link:disabled { opacity:.35; cursor:default; }
 .hdr-link:disabled:hover { color:var(--c); }
 .hdr-link:disabled:hover::before { background:var(--line); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   WAVE-6 — multi-selection: canvas context menu · count popover · XFORM
+   ══════════════════════════════════════════════════════════════════════
+   The menu is the dialog vocabulary at menu scale: a two-layer chamfer (--line
+   rim over a --card fill) so the corner cuts keep their hairline, Kode Mono
+   rows, hover = a --muted row tint. Everything here is NEUTRAL — no solid
+   --primary fill is created, so the app's single-fill budget is untouched. */
+.ctx-menu {
+  position:fixed; z-index:120; isolation:isolate;
+  min-width:186px; padding:5px 0;
+  display:flex; flex-direction:column;
+  font-size:11px; letter-spacing:.1em;
+  animation:ctx-in .12s ease;
+}
+.ctx-menu::before {
+  content:""; position:absolute; inset:0; z-index:-2; background:var(--line);
+  clip-path:polygon(0 0,calc(100% - 9px) 0,100% 9px,100% 100%,9px 100%,0 calc(100% - 9px));
+}
+.ctx-menu::after {
+  content:""; position:absolute; inset:1px; z-index:-1; background:var(--card);
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px));
+  box-shadow:0 8px 22px color-mix(in oklch,var(--bg) 70%,transparent);
+}
+@keyframes ctx-in { from { opacity:0; transform:translateY(-3px); } to { opacity:1; transform:none; } }
+.ctx-item {
+  appearance:none; -webkit-appearance:none; border:0; background:none; cursor:pointer;
+  display:block; width:100%; text-align:left;
+  padding:7px 14px; font-family:inherit; font-size:11px; font-weight:600;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--fg);
+  transition:background .12s,color .12s;
+}
+.ctx-item:hover, .ctx-item:focus-visible {
+  background:color-mix(in oklch,var(--fg) 10%,var(--muted)); color:var(--fg); outline:none;
+}
+.ctx-item:disabled { color:var(--dim); opacity:.45; cursor:default; background:none; }
+.ctx-sep { height:1px; margin:5px 10px; background:var(--line); }
+
+/* DUPLICATE… — an anchored prompt, not a modal: it never blocks the app. */
+.ctx-pop { min-width:212px; padding:11px 13px; gap:10px; }
+.ctx-pop-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.ctx-pop-acts { display:flex; gap:7px; }
+.ctx-pop-acts .btn { flex:1 1 0; padding:7px 10px; font-size:.6rem; letter-spacing:.14em; }
+
+/* ── Per-part colour: row swatch button + its picker popover ───────────
+   The button is a 14px chamfered square filled with the row's --role-color
+   (which IS the part's effective colour — its own override, else its role's),
+   so the dot, the accent bar and the selection rim are always the same hue by
+   construction. It sits in the .part-tools cluster, so it inherits the icon
+   button's hit-box treatment and needs only the chip.
+   NOTE the accent budget: every colour here is a PART colour painted from an
+   inline custom property, never the --primary accent slot. No new solid
+   --primary fill is created anywhere in this block. */
+.color-btn { width:22px; }
+.color-chip {
+  display:block; width:14px; height:14px;
+  background:var(--role-color,var(--dim));
+  box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--bg) 55%,transparent);
+  clip-path:polygon(0 0,calc(100% - 4px) 0,100% 4px,100% 100%,4px 100%,0 calc(100% - 4px));
+  transition:box-shadow .12s;
+}
+.color-btn:hover .color-chip, .color-btn:focus-visible .color-chip {
+  box-shadow:inset 0 0 0 1px var(--fg), 0 0 7px color-mix(in oklch,var(--role-color,var(--dim)) 60%,transparent);
+}
+/* The picker: ten swatches, one hex field, RESET. No gradient/rainbow control. */
+.ctx-color { min-width:206px; gap:9px; }
+.ctx-color-head { color:var(--dim); }
+.ctx-swatches { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
+.ctx-swatch {
+  appearance:none; -webkit-appearance:none; border:0; padding:0; cursor:pointer;
+  height:26px; background:var(--sw,var(--dim));
+  box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--bg) 45%,transparent);
+  clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,5px 100%,0 calc(100% - 5px));
+  transition:box-shadow .12s,transform .12s;
+}
+.ctx-swatch:hover, .ctx-swatch:focus-visible {
+  outline:none; transform:translateY(-1px);
+  box-shadow:inset 0 0 0 1px var(--fg), 0 0 9px color-mix(in oklch,var(--sw) 65%,transparent);
+}
+.ctx-swatch.on { box-shadow:inset 0 0 0 2px var(--fg); }
+.ctx-hex { flex:1 1 0; }
+.ctx-hex input { width:100%; text-transform:lowercase; letter-spacing:.08em; }
+/* Live rejection. No red anywhere in ANVIL, so a bad hex is called out by
+   STRUCTURE, not hue: a dashed --fg rim (every other field rim is solid) and
+   the text struck through. Visible at a glance, still inside the palette, and
+   it borrows nothing from the single --primary fill budget. */
+.ctx-hex.bad, .ctx-hex.bad:focus-within {
+  border-style:dashed; border-color:var(--fg); box-shadow:none;
+}
+.ctx-hex.bad input { color:var(--dim); text-decoration:line-through; }
+
+/* ── XFORM · live selection readout ───────────────────────────────────
+   The tool binds to the selection instead of a dropdown, so the panel opens
+   with a bound line (part name / multi note / empty note) and closes with the
+   read-only world regmarks. */
+.xf-bind {
+  font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg);
+  padding:7px 9px; background:var(--muted);
+  box-shadow:inset 0 0 0 1px var(--line);
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
+  overflow:hidden; text-overflow:ellipsis;
+}
+.xf-bind.empty, .xf-bind.multi { color:var(--dim); text-transform:none; letter-spacing:.04em; font-size:10px; line-height:1.5; }
+.xf-fields { display:flex; flex-direction:column; gap:12px; }
+.xf-fields[hidden] { display:none; }
+.xf-readout { display:flex; flex-direction:column; gap:3px; padding-top:2px; }
+.xf-readout[hidden] { display:none; }
+.xf-row { display:grid; grid-template-columns:minmax(0,1fr) repeat(3,minmax(0,58px)); gap:6px; align-items:baseline; }
+.xf-head .xf-ax { text-align:right; color:var(--dim); }
+.xf-k { color:var(--dim); white-space:nowrap; }
+.xf-v { text-align:right; font-size:10.5px; color:color-mix(in oklch,var(--fg) 88%,var(--bg)); }

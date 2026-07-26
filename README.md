@@ -8,7 +8,7 @@
 [![.NET 9](https://img.shields.io/badge/.NET-9.0-512BD4.svg)](https://dotnet.microsoft.com/)
 [![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://discord.gg/W69MdWMrhH)
 
-![The ANVIL workspace: a 20 by 20 by 40 mm cylinder converted to a skeletal gyroid lattice, standing on the build plate. The left panel holds the TPMS pattern, cell size and resolution parameters; the right panel shows flow metrics (50 percent porosity, choke area, hydraulic diameter) with the open-area graph and its legend, plus the export panel with an editable filename.](docs/assets/hero.png)
+![The ANVIL workspace: a 20 by 20 by 40 mm cylinder converted to a skeletal gyroid lattice, standing on the build plate. The left panel holds the LATTICE view with its pattern, cell size and resolution parameters; the right panel shows flow metrics (50 percent porosity, choke area, hydraulic diameter) with the open-area graph and its legend, plus the export panel with an editable filename.](docs/assets/hero.png)
 
 ## Quickstart
 
@@ -78,6 +78,8 @@ The role you assign each part decides the mode.
 | exactly one **Part** | **single** | The whole solid is latticed. |
 | one **Positive** + one **Negative** | **fuse** | The Negative's volume is latticed and voxel-boolean fused into the Positive, producing one watertight part. |
 
+**Or just select what you want latticed.** With several parts loaded, selecting **one** of them targets it for single mode, and selecting a **Positive** plus a **Negative** targets that pair for fuse mode - no role juggling needed to lattice one part out of five. The selection wins over the role-derived mode, zone roles are ignored for targeting (they always layer on), and the note under `GENERATE` always names the target it is about to lattice.
+
 For fuse mode, model the positive and the cavity negative in one shared coordinate system (as `samples\make_test_parts.py` does) and the result inherits that frame.
 
 Only base roles decide the mode. Zone roles layer on top without changing it, and you can also build parts from scratch with [the tool palette](#the-tool-palette).
@@ -133,7 +135,7 @@ A real fuse-mode job end to end: a 58 x 39 x 27 mm three-port pneumatic manifold
 | **Smoothing (mm)** | Optional triple-offset that rounds sharp lattice edges. | 0 is off and fastest. 0.1 to 0.3 softens facet ridges. |
 | **Bias (mm)** *(skeletal only)* | Shifts the field iso-level, thickening or thinning the struts. Range -5 to +5. | Negative gives thinner struts and a more open channel. Replaces wall thickness in skeletal mode. |
 | **Flow axis** | The direction the flow profile and permeability are measured along. | Pick the axis fluid or powder actually travels. Default Y, the up axis. |
-| **Rotation / phase / per-axis cell** | Re-orient or stretch the field before sampling. | Under the advanced **LATTICE** disclosure. See below. |
+| **Rotation / phase / per-axis cell** | Re-orient or stretch the field before sampling. | Under the **POSITION** section of the LATTICE panel. See below. |
 
 > [!IMPORTANT]
 > **Resolution guard.** The server rejects a job when the largest part dimension divided by the voxel size exceeds roughly **2000 voxels per axis**, and warns above roughly **2e9** total voxels. Start coarse (0.4 mm) and refine.
@@ -161,21 +163,26 @@ Instead of latticing a whole body, section off regions with generative-design-st
 
 Three offsets control it: **Skin** (inward clearance off the part surface), **Transition** (reserved for a smooth solid-to-lattice blend, accepted and stored but not yet applied) and **Keep-out grow** (outward safety margin around every void).
 
-Zone algebra runs in a fixed order: lattice region = blue zones intersected with the body, pulled `SKIN` mm inside the surface, minus green keeps. The clipped TPMS fills that region and merges back into the body. Then, **last, so void always wins**, the grown red voids are subtracted, and a self-check confirms they are clear. In fuse mode skin is ignored (zeroed with a warning), keeps inside the cavity are re-added solid, and voids may cut into the positive by design.
+Zone algebra runs in a fixed order: lattice region = blue zones intersected with the body, pulled `SKIN` mm inside the surface, minus green keeps. The clipped TPMS fills that region and merges back into the body. Then, **last, so void always wins**, the grown white voids are subtracted, and a self-check confirms they are clear. In fuse mode skin is ignored (zeroed with a warning), keeps inside the cavity are re-added solid, and voids may cut into the positive by design.
 
 With zones active, porosity and infill are measured against the **lattice region** rather than the whole bounding volume.
 
 ## The tool palette
 
-ANVIL is an object workspace, not just a converter. Seven tools, each opening a contextual panel with part pickers, parameters and a confirm button.
+ANVIL is an object workspace, not just a converter. Seven tools, each **taking over the left panel** with its own part pickers, parameters and a confirm button.
+
+**One tool per sidebar.** The left panel shows exactly one view at a time, full height: the **LATTICE** view (the home view) or a single open tool. Nothing stacks and nothing scrolls from one tool into another. A toolbar button opens its tool; `Esc` or the `✕` returns to LATTICE.
+
+- The **LATTICE** view holds the TPMS parameters (pattern, sheet/skeletal, cell, wall or bias, resolution, overlap, smoothing, cleanup, flow axis), the **ZONES** tile once any zone role exists, a collapsible **POSITION** section (rotation, phase offset, per-axis cell size, reference flow) and the pinned **GENERATE** button.
+- `GENERATE` exists **only** in the LATTICE view. While a tool is open the panel is that tool's, and its `CONFIRM` is the one filled action on screen.
 
 | Tool | What it does | Notes |
 | --- | --- | --- |
 | **PRIM** | Adds a box, cylinder, sphere or cone. | Mesh-exact. Placed at an explicit center, in file coordinates, that defaults so the part rests on the plate. Cylinders and cones are authored along Y and stood up along the selected up axis, which shows as a visible, clearable rotation in `XFORM`. |
-| **BOOL** | `UNION`, `DIFFERENCE`, `INTERSECT`, or `SMOOTH` (filleted union with a blend radius). | **Consumes both sources**: they stay listed but hidden and locked, so the result is the single active base part. |
+| **BOOL** | `UNION`, `DIFFERENCE`, `INTERSECT`, or `SMOOTH` (filleted union with a blend radius). | **Consumes its inputs**: both source rows are removed, so two parts in leaves exactly one part out and the result is the single active base part. One `Ctrl+Z` undoes the whole operation, restoring both sources with their transforms, roles and colours and removing the result. |
 | **SHELL** | Hollows a part into a wall, inward, outward or centered. | Thickness must exceed 1.5x voxel. |
 | **OFFSET** | Grows or shrinks by a signed distance. | Magnitude must exceed 1.5x voxel. |
-| **XFORM** | Non-destructive translate, rotate and scale with live preview. `APPLY` bakes a new part. | Baking is mesh-exact, zero resolution loss. |
+| **XFORM** | Non-destructive translate, rotate and scale with live preview. `APPLY` bakes a new part. | No part dropdown: it **binds to the selection**, and its `WORLD` readout tracks the bbox centre and size live through every gizmo drag. Baking is mesh-exact, zero resolution loss. |
 | **MIRROR** | Reflects across a plane, winding-corrected. | Mesh-exact. |
 | **DUPE** | Instant independent copy. | Synchronous file copy. |
 
@@ -187,21 +194,24 @@ The part store is **in memory**: uploaded and derived parts do not survive a ser
 
 ## Working in the viewport
 
-- **Pick the up axis your CAD uses.** The `UP` chips in the view strip choose which world direction reads up on screen: `+Y`, `-Y`, `+Z` or `-Z`. The default is **-Y**, the convention most exports land in with their feature faces toward -Y. The choice is remembered between sessions and can be changed at any time, with parts loaded; the scene simply re-presents itself. **It is a display convention only: no geometry is moved and exports are identical in every mode.**
+- **Pick the up axis your CAD uses.** The `UP` chips in the view strip choose which world direction reads up on screen: `+Y`, `-Y`, `+Z` or `-Z`. The default is **+Y**. The choice is remembered between sessions and can be changed at any time, with parts loaded; the scene simply re-presents itself. **It is a display convention only: no geometry is moved and exports are identical in every mode.**
 - **The build plate is adaptive.** It is the plane normal to the up axis, drawn at the resting height of everything visible, so an imported part sits on the bed without anything being added to it. A part that already stands on the origin plane reads as sitting at zero. `LAY FLAT`, `DROP`, the plate drag and the primitive spawn height all ground on that plate.
-- **View cube and triad follow the frame.** For each up axis, `FRONT` is the negative of the remaining world axis (`-Z` when up is on Y, `-Y` when up is on Z) and `RIGHT` is `cross(UP, FRONT)`, so the default HOME camera is parked on the front-right-top octant and an imported CAD part faces you the way it did in CAD. A view cube (`TOP` / `BOTTOM` / `FRONT` / `BACK` / `LEFT` / `RIGHT`) and an orientation triad sit in the viewport corners, both derived from the same three vectors. A `TOP` snap keeps `FRONT` at the bottom of the screen, and the camera up vector never changes, so orbiting out of a top view behaves normally.
+- **One nav cube, axes included.** For each up axis, `FRONT` is the negative of the remaining world axis (`-Z` when up is on Y, `-Y` when up is on Z) and `RIGHT` is `cross(UP, FRONT)`, so the default HOME camera is parked on the front-right-top octant and an imported CAD part faces you the way it did in CAD. The separate orientation triad is gone: the world axes now hang off the nav cube's own front-right-bottom corner, so orientation is read in one place. Faces, edges and corners all snap - hover lights the exact zone a click would take you to, in neutral gray - and the labels (`TOP` / `BOTTOM` / `FRONT` / `BACK` / `LEFT` / `RIGHT`) are derived from the same three vectors. A `TOP` snap keeps `FRONT` at the bottom of the screen, and the camera up vector never changes, so orbiting out of a top view behaves normally.
 - **Section view, Onshape style.** Pick an arbitrary plane from the triad, the X/Y/Z chips, or by clicking a flat face. Caps are drawn with **diagonal hatching**, so a cut reads as material and never as a hole. Drag the arrow to move the plane, or nudge it with `Alt`+wheel (`Alt`+`Shift`+wheel for fine steps). The swap chip inverts which half survives.
 - **Part-anchored gizmo** with `MOVE`, `ROTATE` and `SCALE`, plus `LAY FLAT` and `DROP`. `LAY FLAT` rests a picked face on the plate and `DROP` grounds the selection on the plate without rotating it. Grab a selected part anywhere on its surface to slide it across the plate. Rotating auto-drops the part back onto the bed as part of the same action.
-- **Undo and redo**, 50 deep: `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y`. Imports, tool ops, deletes, moves, role changes and transform edits are all reversible.
-- **Linked ghosts.** A finished lattice registers as a **first-class part**, and the sources it was built from stay visible as translucent ghosts linked to it. Move the lattice and its ghosts follow as one unit; delete it and they are released.
+- **Select several parts.** A plain click replaces the selection; `Ctrl`+click or `Shift`+click toggles a part in or out, in the canvas and in the objects list alike. The gizmo moves the whole group as one body about its combined bbox centre, and the group move is a single undo entry. The last part picked is the **primary** (a brighter accent bar on its row): numeric entry, `LAY FLAT` and the `XFORM` fields bind to it.
+- **Right-click for the verbs.** The canvas context menu carries `DUPLICATE…` (with a copy count), `DELETE`, `HIDE` / `SHOW`, `LAY FLAT`, `DROP`, `FIT SELECTION`, `SELECT ALL` and `DESELECT ALL`, applied to the whole selection as one undo entry. Right-clicking a part that is not selected selects it first, so the menu's subject is never ambiguous. On a latticed object it also offers `SHOW GHOST` / `HIDE GHOST` and `REVERT LATTICE`.
+- **Give a part its own colour.** Every row carries a colour swatch beside the eye. Clicking it opens a small picker: ten curated colours, a `HEX` field for anything else (`#rrggbb`, validated as you type, applied on `Enter`), and `RESET` to go back to the role colour. The colour drives the part's 3D tint, its row accent bar and selection border, its swatch and its `EXPORT` row, and a latticed object colours both its lattice and its ghost shell. It **survives a role change** (only `RESET` clears it) and is undoable. Colours are per session and are not saved to the part.
+- **Undo and redo**, 50 deep: `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y`. Imports, tool ops, deletes, moves, role changes, colour changes, visibility toggles and lattice reverts are all reversible.
+- **A lattice IS the part.** Generating does not add a second row: the source object absorbs its lattice and keeps its own name, now carrying a `LATTICE · <PATTERN>` badge where the role select was, and the lattice's triangle count and volume. The source stays on screen as a translucent ghost behind it, and the two move, export and delete as **one object**. The row's eye toggles the lattice mesh, the ghost icon toggles the shell behind it, and `REVERT` drops the lattice and gives the plain part back. Regenerating replaces the lattice in place.
 - **The plate is always there.** With nothing loaded the viewport still shows the build plate framed from HOME, and `ADD PART` carries the one accent fill on screen. Deleting the last part returns to exactly that state, so the scene never reads as broken.
 
 ## Export
 
-One pipeline handles everything: select any number of parts, pick a format, export.
+One pipeline handles everything: tick any number of objects in the `EXPORT` tile, pick a format, export. A latticed object exports its **lattice mesh**, listed under its own name plus the pattern.
 
 - **STL** is lossless: it *is* the result mesh.
-- **STEP** is **best-effort and faceted**. The sidecar sews the triangle mesh into a faceted-BRep solid where every triangle becomes one planar face. A true analytic B-rep of a gyroid is impossible in any CAD tool, so files are large and the triangle count is budgeted: the worker coarse-remeshes above the target (default 60,000), warns above 150,000, and refuses above 500,000. Roughly 60,000 triangles produces a 135 MB STEP file in about 20 seconds. Prefer STL for slicing; use STEP only when you must boolean-merge in CAD.
+- **STEP** is **best-effort and faceted**. The sidecar sews the triangle mesh into a faceted-BRep solid where every triangle becomes one planar face. A true analytic B-rep of a gyroid is impossible in any CAD tool, so files are large and the triangle count is budgeted: the worker coarse-remeshes above the target set by the `STEP target` stepper in the `EXPORT` tile (default 60,000), warns above 150,000, and refuses above 500,000. Roughly 60,000 triangles produces a 135 MB STEP file in about 20 seconds. Prefer STL for slicing; use STEP only when you must boolean-merge in CAD.
 - **Multiple parts** export either as a **zip** of one file each, or **combined** into a single merged file.
 - Per-part transforms are baked at export time, once, and **nothing is ever recentered**.
 
@@ -223,7 +233,7 @@ The tile also surfaces worker warnings, for example a sheet lattice's "two indep
 
 ## Coordinate preservation guarantee
 
-ANVIL lets you choose which world direction is up, from the `UP` chips in the view strip: `+Y`, `-Y` (the default), `+Z` or `-Z`. The build plate is the plane normal to that axis, drawn at the resting height of whatever is on screen. **Your file's frame is never modified. The up axis only changes how the scene is presented and where the plate draws** - so switching between all four modes leaves every export byte-identical, and nothing in the part data can tell you which one was selected.
+ANVIL lets you choose which world direction is up, from the `UP` chips in the view strip: `+Y` (the default), `-Y`, `+Z` or `-Z`. The build plate is the plane normal to that axis, drawn at the resting height of whatever is on screen. **Your file's frame is never modified. The up axis only changes how the scene is presented and where the plate draws** - so switching between all four modes leaves every export byte-identical, and nothing in the part data can tell you which one was selected.
 
 That is also why picking the right one matters: ANVIL will not silently "fix" a file exported in a different axis convention. If your CAD tool wrote the part with its feature faces toward `+Z`, choose `+Z` and it stands up. If a specific part is genuinely upside down in its own file, that belongs in an explicit `XFORM` or `LAY FLAT`, not in a hidden import correction.
 

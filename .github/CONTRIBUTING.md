@@ -218,7 +218,7 @@ sent back.
    translate, not a hidden one.
 2. **The up axis is a DISPLAY convention, never a data transform.** The user
    picks it from the `UP` chips in the view strip (`+Y`, `-Y`, `+Z`, `-Z`;
-   default `-Y`, persisted in `localStorage` under `anvil.upAxis`). `UP_AXES` in
+   default `+Y`, persisted in `localStorage` under `anvil.upAxis.v2`). `UP_AXES` in
    `viewer.js` holds the trio it drives - `UP`, `FRONT`, and `RIGHT =
    cross(UP, FRONT)` - and `_homeDir`, the view-cube labels (`_cubeFaceSpec`)
    and the pole-snap tilt (`_snapDir`) are all DERIVED from that trio, never

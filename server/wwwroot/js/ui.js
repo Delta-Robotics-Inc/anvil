@@ -4,7 +4,10 @@
 // main.js owns app state + orchestration and calls into these. This module
 // only touches the DOM; it holds no application state beyond cached elements.
 //
-import { roleColorHex, roleLabel, ROLE_GROUPS, isZoneRole } from './roles.js';
+import {
+  roleColorHex, roleLabel, ROLE_GROUPS, isZoneRole,
+  PART_SWATCHES, normalizeHex, effectiveColorHex,
+} from './roles.js';
 
 export const els = {
   viewport:     document.getElementById('viewport'),
@@ -94,7 +97,6 @@ export const els = {
   exName:        document.getElementById('ex-name'),
   exOut:         document.getElementById('ex-out'),
   exStepBlock:   document.getElementById('ex-step-block'),
-  exStepTris:    document.getElementById('ex-step-tris'),
   exportBtn:  document.getElementById('export-btn'),        // KEEPS the accent-budget contract
   exportSpinner: document.getElementById('step-spinner'),
   exportStatus:  document.getElementById('step-status'),
@@ -116,8 +118,7 @@ export const els = {
   tbXform:    document.getElementById('tb-xform'),
   tbMirror:   document.getElementById('tb-mirror'),
   tbDupe:     document.getElementById('tb-dupe'),
-  tbTpms:     document.getElementById('tb-tpms'),
-  tbOrient:   document.getElementById('tb-orient'),
+  tbLattice:  document.getElementById('tb-lattice'),   // home view (was TPMS; ORIENT is gone)
   tbGenerate: document.getElementById('tb-generate'),
   tbFlow:     document.getElementById('tb-flow'),
   tbExport:   document.getElementById('tb-export'),
@@ -143,8 +144,16 @@ export const els = {
   panelRight:   document.getElementById('panel-right'),
   leftChevron:  document.getElementById('left-chevron'),
   rightChevron: document.getElementById('right-chevron'),
+  // Left panel = a single-view host: exactly one of these is on screen.
+  viewLattice:  document.getElementById('view-lattice'),
+  viewTool:     document.getElementById('view-tool'),
+  leftFoot:     document.getElementById('left-foot'),   // GENERATE — rides the LATTICE view
+  // Right panel = a single-view host too: OBJECTS (default) or EXPORT.
+  viewObjects:  document.getElementById('view-objects'),
+  viewExport:   document.getElementById('view-export'),
+  exportClose:  document.getElementById('export-close'),
   secTpms:      document.getElementById('sec-tpms'),
-  secOrient:    document.getElementById('sec-orient'),
+  secPosition:  document.getElementById('sec-position'),
 
   vpFit:           document.getElementById('vp-fit'),
   vpGhosts:        document.getElementById('vp-ghosts'),
@@ -156,7 +165,7 @@ export const els = {
 const ROLE_TIP = 'BASE: Part = gyroidize the whole part; one Positive + one Negative = fuse. '
                + 'ZONES: Lattice (blue) / Keep-solid (green) / Void (white) regions layered on a base part.';
 const GHOST_TIP = 'source of the current lattice — delete the lattice to edit';
-const CONSUMED_TIP = 'consumed by a boolean — delete the result to restore';
+const LATTICED_TIP = 'this part IS its lattice — REVERT to get the plain part back';
 const ROLE_GROUP_LABEL = { base: 'BASE', zone: 'ZONES' };
 
 // ── Parts list ────────────────────────────────────────────────────────
@@ -177,20 +186,43 @@ export function renderParts(parts, pending, handlers) {
     return;
   }
 
+  // Wave-6 — selection is an ordered multi-set: every member row is `.selected`,
+  // and the PRIMARY (the last one picked — what numeric entry binds to) also
+  // carries `.primary` for a stronger accent bar.
+  const selected = new Set(handlers.selectedIds || (handlers.selectedId ? [handlers.selectedId] : []));
+  const primaryId = handlers.primaryId
+    ?? (handlers.selectedIds?.length ? handlers.selectedIds[handlers.selectedIds.length - 1] : handlers.selectedId)
+    ?? null;
+
   for (const p of parts) {
+    // A part's own colour (when it has one) is what the whole row reads in:
+    // accent bar, selection rim and the dot on the colour button all follow
+    // --role-color, so setting it once here recolours every one of them.
+    const partColor = effectiveColorHex(p.colorHex, p.role);
     const row = document.createElement('div');
     row.className = 'part-row'
-      + (handlers.selectedId === p.id ? ' selected' : '')
+      + (selected.has(p.id) ? ' selected' : '')
+      + (primaryId === p.id ? ' primary' : '')
       + (p.isResult ? ' is-result' : '')
-      + (p.ghosted ? ' ghosted' : '')
-      + (p.consumed ? ' consumed' : '');
+      + (p.latticed ? ' latticed' : '')
+      + (p.ghosted && !p.latticed ? ' ghosted' : '');
     row.dataset.id = p.id;
-    row.style.setProperty('--role-color', roleColorHex(p.role));
+    row.style.setProperty('--role-color', partColor);
     // Row click selects the part (state-derived `.selected` class + viewer tint).
-    // Clicks on the role select, eye/delete buttons, or the tools cluster are theirs.
+    // Ctrl (primary) and Shift both TOGGLE membership — identical semantics to a
+    // canvas click. Clicks on the role select, eye/delete buttons, or the tools
+    // cluster are theirs.
     row.addEventListener('click', (e) => {
       if (e.target.closest('button, select, .field-role, .part-tools')) return;
-      handlers.onSelect?.(p.id);
+      handlers.onSelect?.(p.id, { ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey });
+    });
+    // DOUBLE click FOCUSES — the row mirrors the canvas exactly: a single click
+    // only selects (the camera never moves), a double click frames the part.
+    // The two selects a dblclick fires first are idempotent, so they are simply
+    // let through.
+    row.addEventListener('dblclick', (e) => {
+      if (e.target.closest('button, select, .field-role, .part-tools')) return;
+      handlers.onFocus?.(p.id);
     });
 
     const main = document.createElement('div');
@@ -211,7 +243,8 @@ export function renderParts(parts, pending, handlers) {
     const roleWrap = document.createElement('span');
     roleWrap.className = 'field field-role';
     // HUD hover tooltip — a locked row explains WHY it is locked.
-    roleWrap.setAttribute('data-tip', p.consumed ? CONSUMED_TIP : p.ghosted ? GHOST_TIP : ROLE_TIP);
+    roleWrap.setAttribute('data-tip',
+      p.latticed ? LATTICED_TIP : p.ghosted ? GHOST_TIP : ROLE_TIP);
     const role = document.createElement('select');
     role.className = 'part-role';
     role.name = `role-${p.id}`;
@@ -235,29 +268,35 @@ export function renderParts(parts, pending, handlers) {
     roleWrap.appendChild(role);
 
     // Role column, four shapes:
-    //   lattice part   → a static LATTICE tag (its role is not the user's to set)
-    //   consumed source→ USED · BOOL|SMOOTH regmark + a LOCKED role select: it was
-    //                    absorbed by a boolean result and is out of the mode logic
-    //                    until that result is deleted (eye + delete stay live).
+    //   LATTICED part  → a LATTICE · <PATTERN> badge. The part IS its lattice —
+    //                    one object, one row — so the role is locked until REVERT.
+    //   lattice part   → a static LATTICE tag (only reachable through a restore)
     //   ghosted source → GHOST regmark + a LOCKED role select (it feeds the lattice)
     //   anything else  → the plain role select
+    // (There is no "consumed" shape any more: a BOOL/SMOOTH now REMOVES its
+    // sources outright, so there is no surviving row to mark USED. Undo brings
+    // the real rows back.)
     let roleSlot = roleWrap;
-    if (p.isResult) {
+    if (p.latticed) {
+      // Stacked so the badge costs no more width than the role select it
+      // replaces — the name column is worth more than one wide chip.
+      const cell = document.createElement('div');
+      cell.className = 'role-cell lattice-cell';
+      cell.title = LATTICED_TIP;
+      const mark = document.createElement('span');
+      mark.className = 'regmark';
+      mark.textContent = 'LATTICE';
+      const tag = document.createElement('span');
+      tag.className = 'tag lattice-tag';
+      tag.textContent = p.latticeLabel || 'TPMS';
+      cell.append(mark, tag);
+      roleSlot = cell;
+    } else if (p.isResult) {
       const tag = document.createElement('span');
       tag.className = 'tag lattice-tag';
       tag.textContent = 'LATTICE';
       tag.title = p.derived?.label || 'Generated lattice';
       roleSlot = tag;
-    } else if (p.consumed) {
-      role.disabled = true;
-      role.title = CONSUMED_TIP;
-      const cell = document.createElement('div');
-      cell.className = 'role-cell';
-      const mark = document.createElement('span');
-      mark.className = 'regmark ghost-mark used-mark';
-      mark.textContent = `USED · ${p.consumedKind || 'BOOL'}`;
-      cell.append(mark, roleWrap);
-      roleSlot = cell;
     } else if (p.ghosted) {
       role.disabled = true;
       role.title = GHOST_TIP;
@@ -273,10 +312,55 @@ export function renderParts(parts, pending, handlers) {
     const tools = document.createElement('div');
     tools.className = 'part-tools';
 
+    // A latticed row carries two extra verbs, because it is two meshes in one
+    // object: the GHOST toggle (the source shell drawn behind the lattice) and
+    // REVERT (drop the lattice, get the plain part back). Both are undoable.
+    if (p.latticed) {
+      const ghost = document.createElement('button');
+      ghost.type = 'button';
+      ghost.className = 'icon-btn' + (p.ghostVisible ? '' : ' off');
+      ghost.title = p.ghostVisible ? 'Hide ghost (the source shell)' : 'Show ghost (the source shell)';
+      ghost.setAttribute('aria-label', p.ghostVisible ? 'Hide ghost' : 'Show ghost');
+      ghost.innerHTML = ICON_GHOST;
+      ghost.addEventListener('click', () => handlers.onToggleGhost?.(p.id));
+
+      const revert = document.createElement('button');
+      revert.type = 'button';
+      revert.className = 'icon-btn';
+      revert.title = 'Revert lattice — back to the plain part';
+      revert.setAttribute('aria-label', 'Revert lattice');
+      revert.innerHTML = ICON_REVERT;
+      revert.addEventListener('click', () => handlers.onRevertLattice?.(p.id));
+
+      tools.append(ghost, revert);
+    }
+
+    // COLOUR — a chamfered swatch filled with the part's effective colour, left
+    // of the eye. Opens the anchored swatch/hex popover; the picked value comes
+    // back through onColorChange (null = back to the role colour).
+    const dot = document.createElement('button');
+    dot.type = 'button';
+    dot.className = 'icon-btn color-btn';
+    dot.title = p.colorHex ? `Colour ${p.colorHex} — click to change` : 'Colour — click to change';
+    dot.setAttribute('aria-label', `Colour for ${p.name}`);
+    dot.innerHTML = '<i class="color-chip" aria-hidden="true"></i>';
+    dot.addEventListener('click', (e) => {
+      const r = dot.getBoundingClientRect();
+      openColorPopover(r.left, r.bottom + 6, {
+        value: p.colorHex || null,
+        role: p.role,
+        name: p.name,
+        onPick: (hex) => handlers.onColorChange?.(p.id, hex),
+      });
+      e.stopPropagation();
+    });
+
     const eye = document.createElement('button');
     eye.type = 'button';
     eye.className = 'icon-btn' + (p.visible ? '' : ' off');
-    eye.title = p.visible ? 'Hide' : 'Show';
+    eye.title = p.latticed
+      ? (p.visible ? 'Hide lattice' : 'Show lattice')
+      : (p.visible ? 'Hide' : 'Show');
     eye.setAttribute('aria-label', p.visible ? 'Hide part' : 'Show part');
     eye.innerHTML = p.visible ? ICON_EYE : ICON_EYE_OFF;
     eye.addEventListener('click', () => handlers.onToggleVisible(p.id));
@@ -289,7 +373,7 @@ export function renderParts(parts, pending, handlers) {
     del.innerHTML = ICON_X;
     del.addEventListener('click', () => handlers.onDelete(p.id));
 
-    tools.append(eye, del);
+    tools.append(dot, eye, del);
 
     // Nested tree node — one-line provenance/operation child. Three cases:
     //   derived part  → the op label verbatim ("└ BOOLEAN · A − B", "└ PRIM · BOX…")
@@ -297,13 +381,13 @@ export function renderParts(parts, pending, handlers) {
     //   base upload   → "└ TPMS · <PATTERN> · <ROLE>" (the legacy lattice line)
     const node = document.createElement('div');
     node.className = 'part-node';
-    node.style.setProperty('--role-color', roleColorHex(p.role));
+    node.style.setProperty('--role-color', partColor);
     if (isZoneRole(p.role)) {
       // Zone marker takes priority (a derived primitive used AS a zone reads as a
       // zone). Whole line in the zone colour so the provenance is unmistakable.
       const zk = p.role.replace('zone-', '').toUpperCase();
       node.classList.add('zone-node');
-      node.style.color = roleColorHex(p.role);
+      node.style.color = partColor;
       node.innerHTML = `└ <span class="nk">ZONE</span> · <span class="nr">${zk}</span>`;
     } else if (p.derived && p.derived.label) {
       node.innerHTML = `└ <span class="nk">${escapeHtml(p.derived.label)}</span>`;
@@ -352,6 +436,17 @@ function buildPendingRow(q) {
 
   row.append(main, spin);
   return row;
+}
+
+// Bring a row into view when the canvas made it the primary selection — a pick
+// in the viewport must be findable in the objects list without hunting.
+export function scrollPartRowIntoView(id) {
+  const row = els.partsList.querySelector(`.part-row[data-id="${CSS.escape(String(id))}"]`);
+  if (!row) return;
+  const box = els.partsList.getBoundingClientRect();
+  const r = row.getBoundingClientRect();
+  if (r.top >= box.top && r.bottom <= box.bottom) return;   // already visible — no jolt
+  row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 // Single ease-out accent highlight on a just-landed part row, so a fast
@@ -911,7 +1006,7 @@ function setDeltaP(kPa) {
 
 /**
  * Paint the source checkbox list.
- * @param items    [{ id, kind:'part'|'job', name, meta, role }]
+ * @param items    [{ id, kind:'part'|'job', name, meta, role, colorHex }]
  * @param checked  Set of checked ids
  * @param onToggle (id, checked) => void
  */
@@ -932,7 +1027,10 @@ export function renderExportSources(items, checked, onToggle) {
     const row = document.createElement('label');
     row.className = 'ex-src' + (it.kind === 'job' ? ' ex-src-result' : '');
     row.dataset.id = it.id;
-    row.style.setProperty('--role-color', it.kind === 'job' ? 'var(--primary)' : roleColorHex(it.role));
+    // Same colour the OBJECTS row reads in: the part's own colour when it has
+    // one, else its role's. The jobId RESULT row has neither, so it stays --primary.
+    row.style.setProperty('--role-color',
+      it.kind === 'job' ? 'var(--primary)' : effectiveColorHex(it.colorHex, it.role));
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
@@ -972,11 +1070,8 @@ export function getExportOutput() { return activeVal(els.exOutput, '.seg-btn') |
 
 /** OUTPUT seg only makes sense with 2+ objects ticked. */
 export function setExportOutputVisible(show) { if (els.exOutputBlock) els.exOutputBlock.hidden = !show; }
-/** STEP options row (target-triangle readout + weight warning). */
+/** STEP options row (target-triangle stepper + weight warning). */
 export function setExportStepVisible(show) { if (els.exStepBlock) els.exStepBlock.hidden = !show; }
-export function setExportStepTris(n) {
-  if (els.exStepTris) els.exStepTris.textContent = fmtInt(n);
-}
 
 /** The `→ name.ext · 3 files` line under the filename field. */
 export function setExportHint(text) { if (els.exOut) els.exOut.textContent = text; }
@@ -1044,9 +1139,15 @@ export function setResultTools(enabled) {
 // (pinned GENERATE while armed/generating, EXPORT STL while the result is fresh).
 /** Pinned GENERATE solid fill (armed or generating) vs outline. */
 export function setGenerateFilled(filled) { els.generate.classList.toggle('solid', filled); }
-/** EXPORT solid fill (#export-btn in the EXPORT tile) — only when the
- *  currently-shown result is fresh. Name kept for the accent-machine contract. */
+/** EXPORT solid fill (#export-btn, inside the EXPORT view) — carried only while
+ *  that view is actually on screen. Name kept for the accent-machine contract. */
 export function setExportStlFilled(filled) { els.exportBtn?.classList.toggle('solid', filled); }
+/** TOOLBAR EXPORT solid fill. With a fresh result and the EXPORT view CLOSED,
+ *  the in-panel button is not on screen to carry the fill — but exporting is
+ *  still the next action, and this button is always visible, so it takes the
+ *  slot and doubles as the way in. Handed straight back to #export-btn the
+ *  moment the view opens. */
+export function setTbExportFilled(filled) { els.tbExport?.classList.toggle('solid', !!filled); }
 /** Tool CONFIRM solid fill — holds the single fill while an open tool is valid
  *  (GENERATE / EXPORT ghost meanwhile). See main.updateAccents' toolOpen branch. */
 export function setToolConfirmFilled(filled) { els.toolConfirm?.classList.toggle('solid', !!filled); }
@@ -1111,14 +1212,62 @@ export function initPanels() {
   els.rightChevron?.addEventListener('click', () =>
     setPanelCollapsed('right', !els.panelRight.classList.contains('collapsed')));
 
-  // Toolbar active-section highlight (button lit while its section scrolls into view).
-  observeActiveSection(els.panelLeft?.querySelector('.panel-scroll'), [
-    { sec: els.secTpms,   btn: els.tbTpms },
-    { sec: els.secOrient, btn: els.tbOrient },
-  ]);
+  // Toolbar active-section highlight (button lit while its section scrolls into
+  // view). The LEFT panel no longer needs one — it shows a single view at a
+  // time and setLeftView lights the matching toolbar button directly.
   observeActiveSection(els.panelRight?.querySelector('.panel-scroll'), [
     { sec: els.flowCard,  btn: els.tbFlow },
   ]);
+}
+
+// ── Left panel · single-view host ─────────────────────────────────────
+// 'lattice' = the home view (TPMS parameters + ZONES + POSITION + the pinned
+// GENERATE foot); 'tool' = whichever tool js/tools.js has open, full height.
+// Exactly one is ever on screen, so a tool can never scroll into the lattice
+// parameters and GENERATE exists only while the LATTICE view is showing.
+let _leftView = 'lattice';
+export function setLeftView(view) {
+  const tool = view === 'tool';
+  _leftView = tool ? 'tool' : 'lattice';
+  els.viewLattice?.classList.toggle('hidden', tool);
+  els.leftFoot?.classList.toggle('hidden', tool);
+  els.viewTool?.classList.toggle('hidden', !tool);
+  // The LATTICE toolbar button reads as the active view whenever no tool owns
+  // the panel (tools.js lights its own button on the same switch).
+  els.tbLattice?.classList.toggle('active', !tool);
+  // A view swap resets the scroll position of the view being shown.
+  const shown = tool ? els.viewTool : els.viewLattice;
+  if (shown) shown.scrollTop = 0;
+}
+/** Which view the left panel is showing: 'lattice' | 'tool'. */
+export function getLeftView() { return _leftView; }
+
+// ── Right panel · single-view host ────────────────────────────────────
+// Same pattern as the left: 'objects' = the default stack (objects tree +
+// RESULT + FLOW), 'export' = the EXPORT tile alone, full height. The toolbar
+// EXPORT button switches; ✕ / ESC / pressing EXPORT again come back.
+let _rightView = 'objects';
+export function setRightView(view) {
+  const exp = view === 'export';
+  _rightView = exp ? 'export' : 'objects';
+  els.viewObjects?.classList.toggle('hidden', exp);
+  els.viewExport?.classList.toggle('hidden', !exp);
+  // The toolbar button reads as the active view while the panel shows it (lit,
+  // not filled — the accent machine decides separately who carries the fill).
+  els.tbExport?.classList.toggle('active', exp);
+  const shown = exp ? els.viewExport : els.viewObjects;
+  if (shown) shown.scrollTop = 0;
+  // Opening EXPORT into a collapsed panel would show nothing at all.
+  if (exp && els.panelRight?.classList.contains('collapsed')) setPanelCollapsed('right', false);
+}
+/** Which view the right panel is showing: 'objects' | 'export'. */
+export function getRightView() { return _rightView; }
+/** True only when the EXPORT view is actually ON SCREEN — the view is selected
+ *  AND the right panel is expanded. The accent machine asks this, not
+ *  getRightView(), because a solid fill inside a collapsed panel is a fill the
+ *  user cannot see (and would break the one-visible-fill invariant). */
+export function isExportViewVisible() {
+  return _rightView === 'export' && !els.panelRight?.classList.contains('collapsed');
 }
 
 // Highlight the toolbar button whose panel section is most in view.
@@ -1136,23 +1285,20 @@ function observeActiveSection(root, entries) {
   for (const { sec } of list) io.observe(sec);
 }
 
-// Scroll a left/right-panel section into view, flash it, expanding as needed.
-// TPMS/ORIENT live in the left panel (ORIENT also opens the LATTICE disclosure);
-// FLOW + EXPORT live in the right panel. Called from the toolbar buttons in main.js.
+// Scroll a panel section into view, flash it, expanding the panel as needed.
+// LATTICE and EXPORT are whole VIEWS now (setLeftView / setRightView) rather
+// than scroll targets; only FLOW is still a scroll-to inside a view.
 export function focusSection(name) {
   const MAP = {
-    tpms:   { sec: els.secTpms,   side: 'left'  },
-    orient: { sec: els.secOrient, side: 'left', disclosure: true },
+    lattice: { sec: els.secTpms,  side: 'left'  },
     flow:   { sec: els.flowCard,  side: 'right' },
-    export: { sec: els.secExportPanel, side: 'right' },
   };
   const t = MAP[name];
   if (!t || !t.sec) return;
   const panel = t.side === 'left' ? els.panelLeft : els.panelRight;
   if (panel?.classList.contains('collapsed')) setPanelCollapsed(t.side, false);
-  if (t.disclosure && els.advToggle && els.advToggle.getAttribute('aria-expanded') !== 'true') {
-    els.advToggle.click();   // reuse initLatticeControls' toggle so state stays consistent
-  }
+  // FLOW lives in the OBJECTS view — scrolling to it means being in that view.
+  if (t.side === 'right') setRightView('objects');
   // Next frame: let the expand relayout settle before scrolling + flashing.
   requestAnimationFrame(() => {
     t.sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1252,6 +1398,291 @@ export function toast(message, kind = 'info', timeout = 6000) {
   els.toastStack.appendChild(el);
   if (timeout > 0) setTimeout(dismiss, timeout);
   return el;
+}
+
+// ══ Wave-6 · canvas context menu + anchored count popover ═════════════
+// The same HUD vocabulary as the dialogs, at menu scale: a chamfered --card
+// panel behind a --line rim, Kode Mono rows, hover = a --muted row tint. It
+// takes NO share of the solid --primary accent budget — every row is text on a
+// neutral fill, so the one solid fill in the app stays where it belongs.
+//
+// One popup at a time. It closes on: an item, a click outside, Escape, a wheel,
+// a window resize, or any pointerdown that starts an orbit.
+
+let ctxEl = null;         // the open menu/popover element
+let ctxCleanup = null;    // its listener teardown
+
+/** Close whatever popup is open (safe to call when none is). */
+export function closeContextMenu() {
+  if (ctxCleanup) { ctxCleanup(); ctxCleanup = null; }
+  if (ctxEl) { ctxEl.remove(); ctxEl = null; }
+}
+
+// Park a floating panel at (x, y), flipped/clamped so it always lands on screen.
+function placePopup(el, x, y) {
+  el.style.left = '0px';
+  el.style.top = '0px';
+  const r = el.getBoundingClientRect();
+  const pad = 8;
+  const left = Math.max(pad, Math.min(x, window.innerWidth - r.width - pad));
+  const top = Math.max(pad, Math.min(y, window.innerHeight - r.height - pad));
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+}
+
+// Wire the shared dismissal rules to the freshly-opened popup.
+function armPopupDismiss(el, onClose) {
+  // A non-Node target (an event dispatched straight at window) can never be
+  // inside the panel — Node.contains() would throw on it, so it is ruled out first.
+  const closeIf = (e) => {
+    const t = e.target;
+    if (!(t instanceof Node) || !el.contains(t)) onClose();
+  };
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();   // Escape closes the popup and NOTHING else
+    onClose();
+  };
+  const opts = { capture: true };
+  window.addEventListener('pointerdown', closeIf, opts);
+  window.addEventListener('keydown', onKey, opts);
+  window.addEventListener('wheel', onClose, { capture: true, passive: true });
+  window.addEventListener('resize', onClose);
+  ctxCleanup = () => {
+    window.removeEventListener('pointerdown', closeIf, opts);
+    window.removeEventListener('keydown', onKey, opts);
+    window.removeEventListener('wheel', onClose, opts);
+    window.removeEventListener('resize', onClose);
+  };
+}
+
+/**
+ * items: [{ label, disabled?, onSelect(x, y)? } | { sep: true }]
+ * A disabled row stays VISIBLE and dim — the menu is a map of what exists, not
+ * a shifting list. onSelect receives the menu's own anchor so a follow-up
+ * popover (DUPLICATE…) opens exactly where the menu was.
+ */
+export function openContextMenu(x, y, items) {
+  closeContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.setAttribute('role', 'menu');
+  for (const it of items || []) {
+    if (it.sep) {
+      const s = document.createElement('div');
+      s.className = 'ctx-sep';
+      menu.appendChild(s);
+      continue;
+    }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ctx-item';
+    b.setAttribute('role', 'menuitem');
+    b.textContent = it.label;
+    if (it.disabled) { b.disabled = true; if (it.title) b.title = it.title; }
+    else b.addEventListener('click', () => { closeContextMenu(); it.onSelect?.(x, y); });
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  ctxEl = menu;
+  placePopup(menu, x, y);
+  armPopupDismiss(menu, closeContextMenu);
+  menu.querySelector('.ctx-item:not(:disabled)')?.focus();
+  return menu;
+}
+
+/**
+ * A small anchored number prompt — NOT a full modal (it never blocks the app or
+ * takes the keyboard away from anything else). { label, value, min, max,
+ * onConfirm(n) }.
+ */
+export function openCountPopover(x, y, opts = {}) {
+  closeContextMenu();
+  const min = opts.min ?? 1, max = opts.max ?? 20;
+  const pop = document.createElement('div');
+  pop.className = 'ctx-menu ctx-pop';
+
+  const row = document.createElement('div');
+  row.className = 'ctx-pop-row';
+  const lab = document.createElement('span');
+  lab.className = 'label';
+  lab.textContent = opts.label || 'COUNT';
+
+  const grp = document.createElement('span');
+  grp.className = 'step-group compact';
+  const minus = document.createElement('button');
+  minus.type = 'button'; minus.className = 'btn flip step-btn'; minus.dataset.step = '-1';
+  minus.textContent = '−'; minus.setAttribute('aria-label', 'Decrease');
+  const field = document.createElement('span');
+  field.className = 'field';
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.name = 'ctx-count';
+  inp.min = String(min); inp.max = String(max); inp.step = '1';
+  inp.value = String(opts.value ?? min);
+  field.appendChild(inp);
+  const plus = document.createElement('button');
+  plus.type = 'button'; plus.className = 'btn step-btn'; plus.dataset.step = '1';
+  plus.textContent = '＋'; plus.setAttribute('aria-label', 'Increase');
+  grp.append(minus, field, plus);
+  row.append(lab, grp);
+
+  const acts = document.createElement('div');
+  acts.className = 'ctx-pop-acts';
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'btn tool-mini'; cancel.textContent = 'CANCEL';
+  const ok = document.createElement('button');
+  ok.type = 'button'; ok.className = 'btn tool-mini'; ok.textContent = 'OK';
+  acts.append(cancel, ok);
+
+  const clamp = () => {
+    const n = Math.round(parseFloat(inp.value));
+    return Math.max(min, Math.min(max, Number.isFinite(n) ? n : min));
+  };
+  const bump = (d) => { inp.value = String(Math.max(min, Math.min(max, clamp() + d))); };
+  minus.addEventListener('click', () => bump(-1));
+  plus.addEventListener('click', () => bump(1));
+  const confirm = () => { const n = clamp(); closeContextMenu(); opts.onConfirm?.(n); };
+  ok.addEventListener('click', confirm);
+  cancel.addEventListener('click', () => closeContextMenu());
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); confirm(); }
+  });
+
+  pop.append(row, acts);
+  document.body.appendChild(pop);
+  ctxEl = pop;
+  placePopup(pop, x, y);
+  armPopupDismiss(pop, closeContextMenu);
+  inp.focus();
+  inp.select();
+  return pop;
+}
+
+/**
+ * PART COLOUR — an anchored swatch grid + one hex field + RESET, in the same
+ * popover shell as the context menu (chamfered --card panel, Kode Mono, one
+ * popup at a time, closes on pick / Escape / click-out).
+ *
+ * Deliberately NOT a gradient or rainbow picker: ten curated, HUD-legible hues
+ * (roles.PART_SWATCHES) plus a typed #rrggbb escape hatch for anyone who knows
+ * exactly what they want. The hex field validates LIVE (the field goes `bad`
+ * the moment the text stops being a colour) and only applies on Enter or blur,
+ * so a half-typed "#4d" never repaints the scene.
+ *
+ * opts = { value: '#rrggbb'|null, role, name, onPick(hex|null) }
+ *   value null → the part is on its role colour, and RESET is a no-op.
+ *   onPick(null) → RESET: drop the override, back to the role colour.
+ */
+export function openColorPopover(x, y, opts = {}) {
+  closeContextMenu();
+  const current = normalizeHex(opts.value);
+  const roleHex = roleColorHex(opts.role);
+
+  // Set by the Escape listener armed at the bottom: Escape means "never mind",
+  // so the blur it causes must not commit the half-typed hex.
+  let escaped = false;
+
+  const pop = document.createElement('div');
+  pop.className = 'ctx-menu ctx-pop ctx-color';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', `Colour${opts.name ? ` for ${opts.name}` : ''}`);
+
+  const head = document.createElement('div');
+  head.className = 'regmark ctx-color-head';
+  head.textContent = 'COLOUR';
+
+  const grid = document.createElement('div');
+  grid.className = 'ctx-swatches';
+  for (const hex of PART_SWATCHES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ctx-swatch' + (current === hex ? ' on' : '');
+    b.style.setProperty('--sw', hex);
+    b.title = hex;
+    b.setAttribute('aria-label', hex);
+    b.addEventListener('click', () => { closeContextMenu(); opts.onPick?.(hex); });
+    grid.appendChild(b);
+  }
+
+  const row = document.createElement('div');
+  row.className = 'ctx-pop-row';
+  const lab = document.createElement('span');
+  lab.className = 'label';
+  lab.textContent = 'HEX';
+  const field = document.createElement('span');
+  field.className = 'field ctx-hex';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.name = 'ctx-hex';
+  inp.spellcheck = false;
+  inp.autocomplete = 'off';
+  inp.maxLength = 7;
+  inp.placeholder = roleHex;
+  inp.value = current || '';
+  field.appendChild(inp);
+  row.append(lab, field);
+
+  const acts = document.createElement('div');
+  acts.className = 'ctx-pop-acts';
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.className = 'btn tool-mini';
+  reset.textContent = 'RESET';
+  reset.title = `Back to the role colour (${roleHex})`;
+  reset.addEventListener('click', () => { closeContextMenu(); opts.onPick?.(null); });
+  acts.append(reset);
+
+  // Live validation: empty is neutral (nothing typed yet), anything that is not
+  // a #rrggbb reads `bad` immediately, so a rejected value is VISIBLE before
+  // Enter rather than silently ignored after it.
+  const validate = () => {
+    const raw = inp.value.trim();
+    const ok = !raw || !!normalizeHex(raw);
+    field.classList.toggle('bad', !ok);
+    return ok;
+  };
+  const apply = () => {
+    const raw = inp.value.trim();
+    if (!raw) return false;                 // blank on blur = leave it alone
+    const hex = normalizeHex(raw);
+    if (!hex) { field.classList.add('bad'); return false; }
+    closeContextMenu();
+    opts.onPick?.(hex);
+    return true;
+  };
+  inp.addEventListener('input', validate);
+  inp.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    apply();
+  });
+  // Blur commits — EXCEPT when focus merely moved to another control inside the
+  // popover (a swatch click blurs the field first; applying the typed text there
+  // would beat the swatch to the punch), and except after Escape, which means
+  // "never mind" and must not commit the half-typed value on its way out.
+  inp.addEventListener('blur', (e) => {
+    if (escaped) return;
+    if (e.relatedTarget instanceof Node && pop.contains(e.relatedTarget)) return;
+    if (validate()) apply();
+  });
+
+  pop.append(head, grid, row, acts);
+  document.body.appendChild(pop);
+  ctxEl = pop;
+  placePopup(pop, x, y);
+  // Registered BEFORE armPopupDismiss so this capture listener runs first — the
+  // dismiss handler stops propagation on Escape, so nothing downstream sees it.
+  const onEsc = (e) => { if (e.key === 'Escape') escaped = true; };
+  window.addEventListener('keydown', onEsc, { capture: true });
+  armPopupDismiss(pop, closeContextMenu);
+  const baseCleanup = ctxCleanup;
+  ctxCleanup = () => {
+    window.removeEventListener('keydown', onEsc, { capture: true });
+    baseCleanup?.();
+  };
+  grid.querySelector('.ctx-swatch.on, .ctx-swatch')?.focus();
+  return pop;
 }
 
 // ── Server / worker health indicator (header conn dot) ────────────────
@@ -1403,3 +1834,7 @@ function escapeHtml(s) {
 const ICON_EYE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
 const ICON_EYE_OFF = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.7 5.1A9.7 9.7 0 0 1 12 5c6.5 0 10 7 10 7a15.8 15.8 0 0 1-2.8 3.6M6.6 6.6A15.8 15.8 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 4.2-.9"/><path d="m3 3 18 18"/></svg>';
 const ICON_X = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+// Latticed-row verbs: the source shell drawn behind the lattice, and the undo
+// arc that gives the plain part back.
+const ICON_GHOST = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V10a7 7 0 0 1 14 0v10l-2.3-1.8L14.3 20 12 18.2 9.7 20l-2.4-1.8Z"/><path d="M9.5 10h.01M14.5 10h.01"/></svg>';
+const ICON_REVERT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.1-9.4L3 7"/></svg>';

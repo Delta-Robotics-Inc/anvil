@@ -15,9 +15,15 @@ import { roleColorInt } from './roles.js';
 
 // Wave-2 viewport constants.
 const SELECT_DRAG_PX = 4;      // pointer travel under which a pointerup counts as a click
-const CUBE_PX = 96;            // view-cube overlay size (top-right corner)
+const CUBE_PX = 78;            // orientation-widget size (cube + corner triad, top-right)
 const CUBE_MARGIN = 12;        // px inset of the cube from the viewport corner
 const CUBE_CAM_DIST = 3.4;     // orthographic cube camera distance
+const CUBE_HALF = 0.75;        // half-extent of the cube mesh (edge 1.5)
+const CUBE_ORTHO = 1.60;       // ortho half-extent — the cube plus room for the triad
+const CUBE_ZONE = 0.22;        // edge/corner pick band ÷ half-extent (see _cubeZoneAt)
+const CUBE_AX_LEN = 0.44;      // corner-triad arrow length, cube units
+const CUBE_AX_GLYPH = 0.60;    // triad letter distance from the hub
+const CUBE_LABEL_W = 104;      // px of the 128px face texture a label may span
 const SNAP_MS = 250;           // view-cube snap animation duration
 // EULER round-trip self-test flag. Flipped true during Stage-4 verification to
 // print the hand-chain-vs-proxy matrix proof to the console, then returned to
@@ -27,10 +33,6 @@ const EULER_SELFTEST = false;
 // T(P)·R(Δq)·T(−P)·M0 decomposes back into the canonical T·Rz·Ry·Rx·S chain.
 const PIVOT_SELFTEST = false;
 
-// ── Wave-4 · INTERACTION constants ───────────────────────────────────────
-const AXES_PX = 72;            // bottom-left orientation-triad overlay size
-const AXES_MARGIN = 12;        // px inset of the triad from the viewport corner
-const AXES_CAM_DIST = 4;       // orthographic triad camera distance
 // ── World display frame (selectable up axis) ─────────────────────────────
 // IRON RULE: geometry is NEVER rotated, mirrored or translated by any of this.
 // These are LABELS on the world axes, not a change of basis. The up axis is a
@@ -50,45 +52,54 @@ const AXES_CAM_DIST = 4;       // orthographic triad camera distance
 //          back toward the camera (= FRONT at the FRONT view), so screen-right
 //          is cross(up, toCamera).
 //
-// Where FRONT comes from — the one part that was measured, not derived:
+// Where FRONT comes from — ONE construction rule, four rows:
 //
-//   FRONT was MEASURED against the reference CAD renders of the pneumatic
-//   manifold (docs/assets/manifold-*.png). In that part's exported STEP the
-//   slit/notch edge and the two front ports sit at −Z and the lone apex port at
-//   +Z, and the CAD view the part is presented in looks at the slit edge.
-//   Parking HOME on the +Z octant showed users the BACK of every import. So
-//   with up on ±Y, FRONT = −Z.
+//   X is always the left-right screen axis (true of every CAD front view), so
+//   FRONT is the one remaining world axis. Its SIGN is fixed by requiring the
+//   POSITIVE-up mode of each pair to read +X to the RIGHT, i.e.
+//   cross(UP, FRONT) = +X:
 //
-//   The rule that GENERALISES that to ±Z: X is always the left-right screen
-//   axis (true of every CAD front view), so FRONT is the negative of the one
-//   remaining world axis — −Z when up is ±Y, −Y when up is ±Z. The ±Z entries
-//   are therefore exactly the Onshape / SolidWorks Z-up front view, which looks
-//   at the XZ plane from −Y with +X to the right.
+//     up +Y → FRONT +Z   cross(( 0,1,0), (0, 0,1)) = ( 1,0,0)   ← ANVIL original
+//     up +Z → FRONT −Y   cross(( 0,0,1), (0,−1,0)) = ( 1,0,0)   ← Onshape/SolidWorks
 //
-//   RIGHT then FOLLOWS from the cross product and flips sign with UP, which is
-//   why +Y gives RIGHT = −X while −Y gives RIGHT = +X. (The manifold fixture is
-//   mirror-symmetric about x = 0, so it cannot independently confirm the X
-//   sign — only the FRONT/BACK axis is evidence-backed. Re-measure with a
-//   chiral part if this is ever questioned.)
+//   The NEGATIVE-up mode of a pair is that same frame rolled 180° about FRONT:
+//   it KEEPS the pair's FRONT, and RIGHT flips to −X on its own through the
+//   cross product. Each mode is therefore self-consistent, and X stays the
+//   horizontal screen axis in all four.
 //
 //                UP        FRONT     RIGHT = cross(UP, FRONT)
-//   '+y'      ( 0, 1, 0) ( 0,0,−1)   (−1, 0, 0)
-//   '-y'      ( 0,−1, 0) ( 0,0,−1)   ( 1, 0, 0)
-//   '+z'      ( 0, 0, 1) ( 0,−1,0)   ( 1, 0, 0)
-//   '-z'      ( 0, 0,−1) ( 0,−1,0)   (−1, 0, 0)
+//   '+y'      ( 0, 1, 0) ( 0, 0, 1)  ( 1, 0, 0)
+//   '-y'      ( 0,−1, 0) ( 0, 0, 1)  (−1, 0, 0)
+//   '+z'      ( 0, 0, 1) ( 0,−1, 0)  ( 1, 0, 0)
+//   '-z'      ( 0, 0,−1) ( 0,−1, 0)  (−1, 0, 0)
+//
+// '+y' reproduces ANVIL's original frame exactly: the cube reads +X RIGHT, −X
+// LEFT, +Z FRONT, −Z BACK, +Y TOP, −Y BOTTOM; HOME iso direction (1, 0.8, 1);
+// first camera ≈ (79, 63, 79).
+//
+// A −Y default shipped briefly, inferred from the pneumatic-manifold reference
+// renders (its holes appeared to face FRONT only if FRONT was −Z). The FIXTURE
+// was mis-oriented, not the viewer, so that inference is withdrawn — hence the
+// storage-key bump to `anvil.upAxis.v2` in main.js, which drops a stored '-y'
+// that was only ever written by the old default.
+//
+// The default is now '+z' (key bumped again, to `anvil.upAxis.v3`, so an
+// existing session lands on it instead of on a stored '+y'): ANVIL's own CAD is
+// authored Z-up, and Z-up is what every mechanical CAD package this talks to
+// (Onshape, SolidWorks, Fusion) presents. The ±Y modes stay — they are one
+// chip away and the frame maths is mode-agnostic.
 //
 // _cubeFaceSpec derives the view-cube labels and per-face glyph rotations from
 // this trio, so labels and camera can never drift apart.
 const UP_AXES = Object.freeze({
-  '+y': Object.freeze({ up: [0, 1, 0], front: [0, 0, -1] }),
-  '-y': Object.freeze({ up: [0, -1, 0], front: [0, 0, -1] }),
+  '+y': Object.freeze({ up: [0, 1, 0], front: [0, 0, 1] }),
+  '-y': Object.freeze({ up: [0, -1, 0], front: [0, 0, 1] }),
   '+z': Object.freeze({ up: [0, 0, 1], front: [0, -1, 0] }),
   '-z': Object.freeze({ up: [0, 0, -1], front: [0, -1, 0] }),
 });
-// Default −Y: it is the convention the reference CAD exports are modelled in
-// (feature faces toward −Y, so counterbores open −Y and cavities sit near
-// y-max). Any other document can pick its own mode from the view strip.
-export const UP_AXIS_DEFAULT = '-y';
+// Default +Z — Z IS UP. Any document can pick another mode from the view strip;
+// the choice is presentation only (no vertex data is ever touched).
+export const UP_AXIS_DEFAULT = '+z';
 export const UP_AXIS_KEYS = Object.freeze(Object.keys(UP_AXES));
 
 const HOME_TILT = 0.8;      // UP share of the HOME iso (FRONT + RIGHT + 0.8·UP)
@@ -122,18 +133,40 @@ const CUBE_FACES = Object.freeze([
 // Empty-scene plate: the grid + camera framing shown before the first import, so
 // the viewport reads as a build plate instead of a void (mm).
 const EMPTY_PLATE_MM = 120;
-// Axis colours (NO red anywhere in ANVIL): X --primary, Y --green, Z --cyan.
-// Shared by the orientation triad AND the transform gizmo, so a handle and its
-// triad arrow always mean the same axis.
+// TRANSFORM-GIZMO axis colours: X --primary, Y --green, Z --cyan. The HUD's
+// "no red" rule still governs here and everywhere else in the app.
 const AX_X = 0xff5c00, AX_Y = 0x47c86e, AX_Z = 0x5bc8e8;
 const AX_HUB     = 0x9a9a9a;   // triad origin pip / recoloured neutral gizmo parts
+
+// VIEW-CUBE triad colours — the ONE deliberate exception to "no red". A corner
+// axis triad is a reading of world orientation, not an ANVIL accent, and every
+// CAD package a user arrives from paints it R/G/B; a triad in orange/green/cyan
+// costs a translation step on every glance. Values are the pastel RGB from the
+// design mock, near-equiluminant (L* ≈ 0.63–0.66) so no arrow shouts over the
+// others on the dark cube. Deliberately NOT shared with the gizmo above: they
+// are different widgets, and the gizmo palette is unchanged.
+const CUBE_AX_X = 0xe06666,   // x — red
+      CUBE_AX_Y = 0x6aa84f,   // y — green
+      CUBE_AX_Z = 0x6d9eeb;   // z — blue, and in the default frame it points UP
+const CUBE_HI    = 0x9a9a9a;   // view-cube zone hover — neutral gray, never an accent
+// Per-face base value for the view-cube textures, keyed by the DISPLAY label
+// _cubeFaceSpec derives (so a face re-shades with the up axis, not with its
+// world normal). Top catches the most light, the sides less, Bottom least.
+// Front/Back and Right/Left pair up deliberately: no viewpoint shows both
+// members of a pair, so the three faces on screen are always three distinct
+// values and every visible edge is a value step. This is the ONLY thing
+// separating the faces now — the stroked frame is gone (see _makeCubeFaceTexture).
+const CUBE_FACE_SHADE = Object.freeze({
+  Top: '#3f3f3f', Front: '#333333', Back: '#333333',
+  Right: '#2b2b2b', Left: '#2b2b2b', Bottom: '#232323',
+});
 const GIZ_HI_MIX = 0.42;       // hover/drag highlight = axis colour brightened toward white
 const GIZ_YELLOW = 0xffff00;   // the hardcoded TransformControls highlight we intercept
 
 // Ghost meshes take their colour from the shared role map (roles.js) so a part's
-// 3D preview always matches its sidebar row accent: Part = --primary orange,
-// Positive = --green, Negative = --primary orange. Uploaded parts render
-// translucent; the generated result is solid light gray (--fg) with a sheen.
+// 3D preview always matches its sidebar row accent: Part/Positive = --primary
+// orange (the body), Negative = --green (the cavity interior). Uploaded parts
+// render translucent; the generated result is solid light gray (--fg) with a sheen.
 const RESULT_COLOR = 0xd9d9d9;  // --fg
 
 const UP_OPACITY = 0.42;   // uploaded parts, translucent
@@ -167,6 +200,32 @@ const FACE_LIFT_MM   = 0.3;     // face quads float this far off the surface
 const RO_STENCIL = 20;   // + 2·i writers, + 2·i + 1 cap
 const RO_RECT    = 200;  // manipulator plane rect / triad / face quads
 const RO_ARROW   = 210;  // arrow (depthTest off — always grabbable)
+
+// ── Part draw order: interiors AFTER their containers ────────────────────
+// Ghost parts are translucent with depthWrite off, and three.js re-sorts the
+// transparent list by DEPTH on every frame. That sort is per-object-centre, so
+// on a nested pair (a Negative cavity sitting inside a Positive shell) the two
+// centres are almost coincident and the winner flips with the camera: from half
+// the orbit the outer shell was drawn LAST and, writing no depth but blending
+// over what was already there, washed the interior out entirely. The part
+// "disappeared" at some angles and came back at others.
+//
+// renderOrder is applied BEFORE that depth sort, so ordering by SIZE makes the
+// answer deterministic and camera-independent: bigger translucents draw first,
+// nested (smaller) ones after, so an interior stays visible inside its
+// container from every direction. Size, not role — role↔inner/outer depends on
+// upload order and user re-roling, so it is the wrong key (learned the hard
+// way: a swapped positive/negative pair hid the interior at EVERY angle).
+// _resortTranslucents() reassigns 1..N by descending world-bbox volume on
+// add/remove/role/transform-commit; solids sit above all translucent lanes.
+const RO_SOLID = 18;   // opaque results — above every translucent, below stencil
+const RO_TRANSLUCENT_MAX = 17;   // 1..17 then ties (stencil lanes start at 20)
+
+/** '#rrggbb' → 0xrrggbb for three.js. Garbage in → white, never NaN. */
+function hexInt(hex) {
+  const n = parseInt(String(hex || '').replace('#', ''), 16);
+  return Number.isFinite(n) ? n : 0xffffff;
+}
 
 export class Viewer {
   constructor(container, opts = {}) {
@@ -251,18 +310,26 @@ export class Viewer {
 
     // ── Wave-2 selection + transform gizmo + view cube ──────────────────
     // Callbacks wired by main.js (viewer stays state-free; main owns app state).
-    this.onPick = null;            // (id|null)      → click-select / empty-click clear
-    this.onTransformLive = null;   // (id, trs)      → gizmo drag (rebuild only, no fit)
-    this.onTransformCommit = null; // (id, trs)      → gizmo drag END (single commit)
+    this.onPick = null;            // (id|null, mods) → click-select / empty-click clear
+    this.onFocus = null;           // (id)            → DOUBLE-click a part: select + frame it
+    this.onTransformLive = null;   // ([{id,trs}])    → gizmo drag (rebuild only, no fit)
+    this.onTransformCommit = null; // ([{id,trs}])    → gizmo drag END (one commit)
     this.onDragChange = null;      // (bool)         → freeze refreshParts while dragging
     this.onLayFlat = null;         // (id, trs|null) → lay-flat one-shot result
     this.onSectionChange = null;   // (sectionState) → HUD readout + chip sync
 
+    // Wave-6 · selection is an ORDERED MULTI-SET. `_selection` is the whole set
+    // (order = the order the user picked them, which drives boolean A/B later);
+    // `_selectedId` is a cached mirror of its LAST element — the PRIMARY — so
+    // every single-part path below (lay flat, section face quads, face cache)
+    // keeps reading exactly what it always read.
+    this._selection = [];
     this._selectedId = null;
     this._gizmoActive = false;
     this._layFlatArmed = false;
     this._raycaster = new THREE.Raycaster();
     this._cubeAnim = null;
+    this._cubeCursor = false;   // body.cube-pick state, so the class is written once per crossing
 
     // Hidden proxy Object3D the gizmo drives: part meshes use matrixAutoUpdate=
     // false hand-built matrices, so TransformControls cannot attach to them.
@@ -284,24 +351,23 @@ export class Viewer {
     scene.add(gizmo.getHelper());   // r170: add the helper root, not the control
     this._recolorGizmo();           // red/green/blue + yellow hover → the ANVIL axis palette
     gizmo.addEventListener('objectChange', () => {
-      if (!this._gizmoActive || !this._selectedId) return;
-      const trs = this._readProxyTrs();
-      if (trs) this.onTransformLive?.(this._selectedId, trs);
+      if (!this._gizmoActive || !this._selection.length) return;
+      const entries = this._readDragEntries();
+      if (entries.length) this.onTransformLive?.(entries);
     });
     gizmo.addEventListener('dragging-changed', (e) => {
       this.controls.enabled = !e.value;
       this.onDragChange?.(e.value);
       if (e.value) { this._captureDragRef(); return; }
       const ref = this._dragRef;
-      const p = this._selectedId ? this.parts.get(this._selectedId) : null;
-      let trs = (p && ref) ? this._readProxyTrs() : null;
-      // A rotation lands the unit back on the bed — the plate as it was DRAWN
-      // when the drag started (_plateH is only recomputed on commit, never
-      // mid-drag). Translate / scale are left alone (the user may be hovering a
-      // part deliberately).
-      if (trs && ref.mode === 'rotate') trs = this._groundTrs(p, trs);
+      let entries = ref ? this._readDragEntries() : [];
+      // A rotation lands the SELECTION back on the bed as one body — the plate as
+      // it was DRAWN when the drag started (_plateH is only recomputed on commit,
+      // never mid-drag). Translate / scale are left alone (the user may be
+      // hovering a part deliberately).
+      if (entries.length && ref.mode === 'rotate') entries = this._groundEntries(entries);
       this._dragRef = null;
-      if (trs) this.onTransformCommit?.(p.id, trs);
+      if (entries.length) this.onTransformCommit?.(entries);
       this._syncProxy();
     });
 
@@ -327,12 +393,11 @@ export class Viewer {
     this._secPending = null;    // pointerdown pick awaiting a <4px release
 
     this._initViewCube();
-    this._initAxisTriad();
     this._initPointer();
 
     // Empty scene ≠ empty viewport: lay the plate and park HOME on it so the
-    // first frame already reads as a build volume (and so the cube/triad have a
-    // ground plane to orient against before anything is imported).
+    // first frame already reads as a build volume (and so the orientation widget
+    // has a ground plane to orient against before anything is imported).
     this._emptyView();
 
     if (EULER_SELFTEST) { try { this._selfTestEuler(); } catch (err) { console.error('[anvil] euler self-test threw', err); } }
@@ -448,20 +513,24 @@ export class Viewer {
   // opts.solid → the SOLID result look (light gray, opaque, sheen) instead of the
   // translucent role-coloured ghost. A generated lattice is a normal part in every
   // other respect: selectable, gizmo-drivable, section-capped, COM-weighted.
+  // opts.colorHex → an explicit per-part colour (see setPartColor); null means
+  // "use the role colour", and a restore hands the stored override straight back.
   addPart(id, url, role, opts = {}) {
     const solid = !!opts.solid;
+    const colorHex = opts.colorHex || null;
+    const tint = colorHex ? hexInt(colorHex) : (solid ? RESULT_COLOR : roleColorInt(role));
     return new Promise((resolve, reject) => {
       this._loader.load(url, (geometry) => {
         geometry.computeVertexNormals();
         const mat = solid
           ? new THREE.MeshStandardMaterial({
-              color: RESULT_COLOR,
+              color: tint,
               metalness: 0.35,   // slight metallic look
               roughness: 0.45,
               side: THREE.DoubleSide,
             })
           : new THREE.MeshStandardMaterial({
-              color: roleColorInt(role),
+              color: tint,
               metalness: 0.05,
               roughness: 0.65,
               transparent: true,
@@ -470,14 +539,15 @@ export class Viewer {
               side: THREE.DoubleSide,
             });
         const mesh = new THREE.Mesh(geometry, mat);   // no transform — world coords preserved
-        mesh.renderOrder = solid ? 2 : 1;
+        mesh.renderOrder = solid ? RO_SOLID : 1;      // provisional; _resortTranslucents finalizes
         mesh.userData._solid = solid;   // the cap builder reads this for full-strength hatch
         if (this._ghostsHidden && !solid) mesh.visible = false;
         this.scene.add(mesh);
-        this.parts.set(id, { id, mesh, role, visible: true, solid });
+        this.parts.set(id, { id, mesh, role, visible: true, solid, colorHex });
+        this._resortTranslucents();
         // Selected before its mesh finished loading (row appears first): the
         // gizmo had nothing to sit on, so seat it now.
-        if (id === this._selectedId) this.startGizmo(this.gizmo.mode || 'translate');
+        if (this._selection.includes(id)) this.startGizmo(this.gizmo.mode || 'translate');
         this._sectionDirty();
         this.fitView();
         resolve();
@@ -489,9 +559,44 @@ export class Viewer {
     const p = this.parts.get(id);
     if (!p) return;
     p.role = role;
-    if (p.solid) return;   // a solid result keeps RESULT_COLOR whatever its data role says
+    if (p.colorHex) return;   // an explicit per-part colour outlives its role
+    if (p.solid) return;      // a solid result keeps RESULT_COLOR whatever its data role says
     p.mesh.material.color.setHex(roleColorInt(role));
-    if (id === this._selectedId) this._applySelTint(p);   // keep the emissive glow hued to the new role
+    if (this._selection.includes(id)) this._applySelTint(p);   // keep the emissive glow hued to the new role
+  }
+
+  // Reassign translucent draw order by descending world-bbox volume: containers
+  // (bigger) first, nested parts (smaller) after, so interiors never wash out.
+  // Cheap (N part boxes) — called on add/remove and transform commits, never
+  // per-frame. Beyond 17 translucents the smallest tie at the cap (harmless).
+  _resortTranslucents() {
+    const rows = [];
+    for (const p of this.parts.values()) {
+      if (p.solid) { p.mesh.renderOrder = RO_SOLID; continue; }
+      const b = new THREE.Box3().setFromObject(p.mesh);
+      const s = b.isEmpty() ? new THREE.Vector3() : b.getSize(new THREE.Vector3());
+      rows.push({ mesh: p.mesh, vol: s.x * s.y * s.z });
+    }
+    rows.sort((a, b) => b.vol - a.vol);
+    rows.forEach((r, i) => { r.mesh.renderOrder = Math.min(1 + i, RO_TRANSLUCENT_MAX); });
+  }
+
+  /** Per-part colour override. `hex` is '#rrggbb', or null to fall back to the
+   *  role colour (a solid lattice falls back to RESULT_COLOR). It drives the
+   *  mesh tint AND the selection emissive, which is derived from material.color,
+   *  so a selected part recolours without losing its glow. */
+  setPartColor(id, hex) {
+    const p = this.parts.get(id);
+    if (!p) return;
+    const next = hex || null;
+    const tint = next ? hexInt(next) : (p.solid ? RESULT_COLOR : roleColorInt(p.role));
+    // No-op guard: syncViewerRoles pushes every part's colour after each history
+    // step, and the section rebuild below is not free.
+    if (p.colorHex === next && p.mesh.material.color.getHex() === tint) return;
+    p.colorHex = next;
+    p.mesh.material.color.setHex(tint);
+    if (this._selection.includes(id)) this._applySelTint(p);
+    this._sectionDirty();   // the hatch cap takes its tint from the source material
   }
 
   // ── Linked ghosts (a lattice carries the sources it was built from) ──
@@ -554,6 +659,7 @@ export class Viewer {
     if (!p) return;
     p.trs = trs || null;
     this._applyPartMatrix(p);
+    this._resortTranslucents();     // scale/moves can change nesting order
     this._secQuadsFrozen = false;   // commit → re-detect faces at the new pose
     this._syncFaceQuads();
     this._syncProxy();              // gizmo re-seats on the moved part's new pivot
@@ -577,6 +683,7 @@ export class Viewer {
     if (!p) return;
     p.trs = null;
     this._applyPartMatrix(p);   // identity own-matrix (still composed under a host)
+    this._resortTranslucents();
     this._syncFaceQuads();
     this._syncProxy();
     this.fitView();
@@ -668,6 +775,77 @@ export class Viewer {
     if (!p) return null;
     return this._groundTrs(p, this._trsOf(p));
   }
+
+  // ── Wave-6 · the SELECTION as one body ───────────────────────────────
+  // A group transform measures the COMBINED box of every selected unit (each
+  // unit = a part plus the ghosts linked to it), so the pivot, the plate contact
+  // and the auto-drop after a rotate all treat the selection as a single body.
+
+  /** [{id, trs}] → the world AABB the whole set would occupy. null if empty. */
+  _entriesBox(entries) {
+    const box = new THREE.Box3();
+    for (const e of entries) {
+      const p = this.parts.get(e.id);
+      if (!p) continue;
+      const b = this._unitBox(p, this._matrixFromTrs(e.trs));
+      if (b) box.union(b);
+    }
+    return box.isEmpty() ? null : box;
+  }
+  /** Same entries, ALL slid by the same delta along UP so the combined box's
+   *  lowest display point lands on the plate as currently drawn. */
+  _groundEntries(entries) {
+    const box = this._entriesBox(entries);
+    if (!box) return entries;
+    const d = this._plateH - this._boxFloor(box);
+    return entries.map((e) => ({
+      id: e.id,
+      trs: {
+        translateMM: {
+          x: e.trs.translateMM.x + this._up.x * d,
+          y: e.trs.translateMM.y + this._up.y * d,
+          z: e.trs.translateMM.z + this._up.z * d,
+        },
+        rotateDeg: { ...e.trs.rotateDeg },
+        scale: { ...e.trs.scale },
+      },
+    }));
+  }
+  /** The selection's current pose as entries — the input every group op starts from. */
+  _selectionEntries() {
+    const out = [];
+    for (const id of this._selection) {
+      const p = this.parts.get(id);
+      if (p) out.push({ id, trs: this._trsOf(p) });
+    }
+    return out;
+  }
+  /** Combined world AABB of every selected unit, as drawn. null if none. */
+  _selectionBox() { return this._entriesBox(this._selectionEntries()); }
+  /** Pivot P for a group transform: the combined box centre (falls back to the
+   *  primary part's own pivot, then to the origin). */
+  _selectionPivot() {
+    const b = this._selectionBox();
+    if (b) return b.getCenter(new THREE.Vector3());
+    const p = this._selectedId ? this.parts.get(this._selectedId) : null;
+    return p ? this._unitPivot(p) : new THREE.Vector3();
+  }
+  /** DROP for the whole selection: ground the combined body. Returns entries. */
+  dropSelectionToPlate() {
+    const entries = this._selectionEntries();
+    return entries.length ? this._groundEntries(entries) : [];
+  }
+  /** { center:{x,y,z}, size:{x,y,z} } of the combined selection box, or null.
+   *  The XFORM tool's live world-bbox readout reads it. */
+  selectionBoxInfo() {
+    const b = this._selectionBox();
+    if (!b) return null;
+    const c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
+    return { center: { x: c.x, y: c.y, z: c.z }, size: { x: s.x, y: s.y, z: s.z } };
+  }
+  /** The display frame's RIGHT unit vector, as plain numbers (duplicate offsets
+   *  step along it so copies land beside the original, not inside it). */
+  rightAxis() { return { x: this._right.x, y: this._right.y, z: this._right.z }; }
   _applyPartMatrix(p) {
     const own = this._ownMatrix(p);
     const host = p.linkHostId ? this.parts.get(p.linkHostId) : null;
@@ -701,12 +879,18 @@ export class Viewer {
   removePart(id) {
     const p = this.parts.get(id);
     if (!p) return;
-    if (id === this._selectedId) { this.stopGizmo(); this._selectedId = null; this._syncFaceQuads(); }
+    if (this._selection.includes(id)) {
+      this._selection = this._selection.filter((x) => x !== id);
+      this._selectedId = this._selection[this._selection.length - 1] || null;
+      if (!this._selection.length) this.stopGizmo(); else this._syncProxy();
+      this._syncFaceQuads();
+    }
     this.unlinkGhosts(id);   // a removed lattice releases its ghosts…
     if (p.linkHostId) this.parts.get(p.linkHostId)?.links?.delete(id);   // …a removed ghost leaves its host
     this.scene.remove(p.mesh);
     disposeMesh(p.mesh);
     this.parts.delete(id);
+    this._resortTranslucents();
     this._sectionDirty();
     this.fitView();
   }
@@ -724,7 +908,7 @@ export class Viewer {
           side: THREE.DoubleSide,
         });
         const mesh = new THREE.Mesh(geometry, mat);   // no transform
-        mesh.renderOrder = 2;
+        mesh.renderOrder = RO_SOLID;   // opaque, and above every translucent lane
         this.result = mesh;
         this.scene.add(mesh);
         this.dimUploaded();
@@ -1325,9 +1509,17 @@ export class Viewer {
     const union = this._visibleBox();
     if (!union) { this._emptyView(); return; }
 
-    const sel = (!opts.union && this._selectedId) ? this.parts.get(this._selectedId) : null;
-    let selBox = (sel && sel.mesh.visible) ? new THREE.Box3().setFromObject(sel.mesh) : null;
-    if (selBox && selBox.isEmpty()) selBox = null;
+    // FIT frames the WHOLE selection (one part or twenty) — the union of the
+    // selected meshes that are actually visible.
+    let selBox = null;
+    if (!opts.union && this._selection.length) {
+      const b = new THREE.Box3();
+      for (const id of this._selection) {
+        const q = this.parts.get(id);
+        if (q && q.mesh.visible) b.expandByObject(q.mesh);
+      }
+      if (!b.isEmpty()) selBox = b;
+    }
     const box = selBox || union;
 
     const center = box.getCenter(new THREE.Vector3());
@@ -1435,23 +1627,40 @@ export class Viewer {
     if (this.grid) { this._gridMeta.size = -1; this.fitView(); }
   }
 
-  // ══ Wave-2 · Selection ═══════════════════════════════════════════════
+  // ══ Wave-2/6 · Selection ═════════════════════════════════════════════
   // Selection is state-derived in main.js; the viewer only reflects it: an
-  // emissive tint on the selected mesh (original emissive stored/restored).
-  setSelected(id) {
-    const nid = id || null;
-    if (this._selectedId === nid) return;
-    const prev = this._selectedId ? this.parts.get(this._selectedId) : null;
-    if (prev) this._clearSelTint(prev);
-    this._selectedId = nid;
-    const p = nid ? this.parts.get(nid) : null;
-    if (p) this._applySelTint(p);
-    else this.stopGizmo();
+  // emissive tint on EVERY selected mesh (original emissive stored/restored).
+  // Linked ghosts are never tinted on their own — they ride their host, which is
+  // what the selection actually holds.
+  //
+  // `ids` is the ordered set; a bare id (or null) is still accepted so any
+  // caller written against the single-selection API keeps working.
+  setSelected(ids) {
+    const next = (Array.isArray(ids) ? ids : (ids ? [ids] : [])).filter(Boolean);
+    if (next.join('|') === this._selection.join('|')) return;
+    const nextSet = new Set(next);
+    for (const id of this._selection) {          // dropped members lose the tint
+      if (nextSet.has(id)) continue;
+      const q = this.parts.get(id);
+      if (q) this._clearSelTint(q);
+    }
+    const prevSet = new Set(this._selection);
+    this._selection = next;
+    this._selectedId = next[next.length - 1] || null;
+    for (const id of next) {                     // added members take it
+      if (prevSet.has(id)) continue;
+      const q = this.parts.get(id);
+      if (q) this._applySelTint(q);
+    }
+    if (!next.length) this.stopGizmo();
+    else if (this._gizmoActive) this._syncProxy();   // gizmo re-seats on the new combined pivot
     this._secQuadsFrozen = false;   // a cancelled live transform must not strand the freeze
-    this._syncFaceQuads();          // face quads belong to the selected part only
+    this._syncFaceQuads();          // face quads belong to the PRIMARY part only
     if (this._section.enabled && !this._section.hasPlane) this._buildTriad();   // re-anchor
   }
   selectedId() { return this._selectedId; }
+  /** The ordered selection (a copy — callers must not mutate the viewer's). */
+  selection() { return this._selection.slice(); }
   _applySelTint(p) {
     const m = p.mesh && p.mesh.material;
     if (!m || !m.emissive) return;
@@ -1479,63 +1688,97 @@ export class Viewer {
     const hits = this._raycaster.intersectObjects(meshes, false);
     return hits.length ? hits[0].object.userData._pid : null;
   }
+  /** Public raycast — the context menu asks "what is under the cursor?". */
+  pickAt(cx, cy) { return this._pickPart(cx, cy); }
+  /** True when the point sits inside the nav-cube widget rect (which owns its
+   *  own pointer events — the context menu stays out of it). */
+  isOverCube(cx, cy) { return this._cubeContains(cx, cy); }
 
-  // ══ Wave-4 · Transform gizmo — PIVOT ON THE PART ═════════════════════
-  // The proxy is parked at the unit's world bbox centre P (so the handles draw
-  // ON the part, never at the world origin) and carries the part's rotation +
-  // scale. A drag is therefore a DELTA against the pose snapshotted at drag
-  // start, mapped back onto the canonical chain M = T·Rz·Ry·Rx·S:
+  // ══ Wave-4/6 · Transform gizmo — PIVOT ON THE SELECTION ══════════════
+  // The proxy is parked at the COMBINED unit bbox centre P of the whole
+  // selection (so the handles draw on the body being moved, never at the world
+  // origin). A drag is therefore a DELTA against the pose snapshotted at drag
+  // start, mapped back onto the canonical chain M = T·Rz·Ry·Rx·S — PER MEMBER,
+  // all sharing the one pivot P0:
   //
-  //   TRANSLATE (world)  Δ = proxy.position − P0        → t = t0 + Δ
-  //   ROTATE    (world)  Δq = proxy.q · q0⁻¹
-  //                      M_new = T(P0)·R(Δq)·T(−P0)·M0
-  //                            ⇒ R = Δq·R0 (= proxy.q), S = S0,
-  //                              t = Δq·(t0 − P0) + P0        ← still T·R·S
-  //   SCALE     (local)  S = proxy.scale (local-axis only: world-axis scaling of
-  //                      a rotated body is a shear and has no T·R·S form), then
-  //                      t += P0 − centre(M_new) so the pivot stays put.
+  //   TRANSLATE (world)  Δ = proxy.position − P0        → t_i = t0_i + Δ
+  //   ROTATE    (world)  Δq = proxy.q · pq0⁻¹
+  //                      M_new_i = T(P0)·R(Δq)·T(−P0)·M0_i
+  //                            ⇒ R_i = Δq·R0_i, S_i = S0_i,
+  //                              t_i = Δq·(t0_i − P0) + P0     ← still T·R·S
+  //   SCALE     (local)  SINGLE SELECTION ONLY. S = proxy.scale (local-axis: a
+  //                      world-axis scale of a rotated body is a shear with no
+  //                      T·R·S form), then t += P0 − centre(M_new).
   //
+  // With one part selected the proxy carries that part's rotation, so pq0 = q0
+  // and every formula collapses to the Wave-4 single-part case element for
+  // element. With several, the proxy is seated unrotated at the group centre.
   // _selfTestPivot proves the rotate case numerically (max element err < 1e-6).
-  _readProxyTrs() {
-    const p = this._selectedId ? this.parts.get(this._selectedId) : null;
-    if (!p) return null;
+  _readDragEntries() {
     const ref = this._dragRef;
-    if (!ref || ref.id !== p.id) return this._trsOf(p);   // no live drag → current pose
+    if (!ref || !ref.members.length) return [];
     const R2D = 180 / Math.PI;
 
     if (ref.mode === 'rotate') {
-      const dq = this._proxy.quaternion.clone().multiply(ref.q0.clone().invert());
-      const e = new THREE.Euler().setFromQuaternion(this._proxy.quaternion, 'ZYX');   // Δq·R0
-      const t = ref.t0.clone().sub(ref.P0).applyQuaternion(dq).add(ref.P0);
-      return {
-        translateMM: { x: t.x, y: t.y, z: t.z },
-        rotateDeg:   { x: e.x * R2D, y: e.y * R2D, z: e.z * R2D },
-        scale:       { x: ref.s0.x, y: ref.s0.y, z: ref.s0.z },
-      };
+      const dq = this._proxy.quaternion.clone().multiply(ref.pq0.clone().invert());
+      const out = [];
+      for (const m of ref.members) {
+        if (!this.parts.get(m.id)) continue;
+        const e = new THREE.Euler().setFromQuaternion(dq.clone().multiply(m.q0), 'ZYX');
+        const t = m.t0.clone().sub(ref.P0).applyQuaternion(dq).add(ref.P0);
+        out.push({ id: m.id, trs: {
+          translateMM: { x: t.x, y: t.y, z: t.z },
+          rotateDeg:   { x: e.x * R2D, y: e.y * R2D, z: e.z * R2D },
+          scale:       { x: m.s0.x, y: m.s0.y, z: m.s0.z },
+        } });
+      }
+      return out;
     }
 
     if (ref.mode === 'scale') {
+      const m = ref.members[0];                     // SCALE is single-selection only
+      const p = m && this.parts.get(m.id);
+      if (!p) return [];
       const s = this._proxy.scale;
       const trs = {
-        translateMM: { x: ref.t0.x, y: ref.t0.y, z: ref.t0.z },
-        rotateDeg:   { ...ref.r0 },
+        translateMM: { x: m.t0.x, y: m.t0.y, z: m.t0.z },
+        rotateDeg:   { ...m.r0 },
         scale:       { x: s.x, y: s.y, z: s.z },
       };
       const c = this._unitPivot(p, this._matrixFromTrs(trs));   // where the centre landed
       trs.translateMM.x += ref.P0.x - c.x;
       trs.translateMM.y += ref.P0.y - c.y;
       trs.translateMM.z += ref.P0.z - c.z;
-      return trs;
+      return [{ id: m.id, trs }];
     }
 
     const d = this._proxy.position.clone().sub(ref.P0);
-    return {
-      translateMM: { x: ref.t0.x + d.x, y: ref.t0.y + d.y, z: ref.t0.z + d.z },
-      rotateDeg:   { ...ref.r0 },
-      scale:       { x: ref.s0.x, y: ref.s0.y, z: ref.s0.z },
-    };
+    const out = [];
+    for (const m of ref.members) {
+      if (!this.parts.get(m.id)) continue;
+      out.push({ id: m.id, trs: {
+        translateMM: { x: m.t0.x + d.x, y: m.t0.y + d.y, z: m.t0.z + d.z },
+        rotateDeg:   { ...m.r0 },
+        scale:       { x: m.s0.x, y: m.s0.y, z: m.s0.z },
+      } });
+    }
+    return out;
   }
-  /** Park the proxy on the part: position = pivot P, rotation/scale = the TRS. */
+  /** Park the proxy on the selection. ONE part → its own pivot + its rotation
+   *  and scale (the Wave-4 behaviour, so SCALE's local axes stay the part's).
+   *  SEVERAL → the combined centre, unrotated and unscaled: a group rotate is a
+   *  world-space delta and a group scale is refused outright. */
+  _writeProxyFromSelection() {
+    if (this._selection.length === 1) {
+      const p = this.parts.get(this._selection[0]);
+      if (p) { this._writeProxyFromPart(p); return; }
+    }
+    this._proxy.position.copy(this._selectionPivot());
+    this._proxy.quaternion.identity();
+    this._proxy.scale.set(1, 1, 1);
+    this._proxy.updateMatrixWorld(true);
+  }
+  /** Park the proxy on one part: position = pivot P, rotation/scale = the TRS. */
   _writeProxyFromPart(p) {
     const { rotateDeg: r, scale: s } = this._trsOf(p);
     const D = Math.PI / 180;
@@ -1545,48 +1788,57 @@ export class Viewer {
     this._proxy.scale.set(s.x, s.y, s.z);
     this._proxy.updateMatrixWorld(true);
   }
-  /** Re-seat the proxy on the selected part (skipped mid-drag: the gizmo owns it). */
+  /** Re-seat the proxy on the selection (skipped mid-drag: the gizmo owns it). */
   _syncProxy() {
-    if (!this._gizmoActive || !this._selectedId || this._dragRef) return;
-    const p = this.parts.get(this._selectedId);
-    if (p) this._writeProxyFromPart(p);
+    if (!this._gizmoActive || !this._selection.length || this._dragRef) return;
+    this._writeProxyFromSelection();
   }
-  /** Snapshot the pose + pivot the whole drag is measured against. */
+  /** Snapshot the shared pivot + every member's pose: what the drag measures. */
   _captureDragRef() {
-    const p = this._selectedId ? this.parts.get(this._selectedId) : null;
-    if (!p) { this._dragRef = null; return; }
-    const { translateMM: t, rotateDeg: r, scale: s } = this._trsOf(p);
+    if (!this._selection.length) { this._dragRef = null; return; }
     const D = Math.PI / 180;
+    const members = [];
+    for (const id of this._selection) {
+      const p = this.parts.get(id);
+      if (!p) continue;
+      const { translateMM: t, rotateDeg: r, scale: s } = this._trsOf(p);
+      members.push({
+        id,
+        t0: new THREE.Vector3(t.x, t.y, t.z),
+        r0: { ...r },
+        s0: new THREE.Vector3(s.x, s.y, s.z),
+        q0: new THREE.Quaternion().setFromEuler(new THREE.Euler(r.x * D, r.y * D, r.z * D, 'ZYX')),
+        M0: this._ownMatrix(p),
+      });
+    }
+    if (!members.length) { this._dragRef = null; return; }
     this._dragRef = {
-      id: p.id,
       mode: this.gizmo.mode,
-      P0: this._unitPivot(p),
-      t0: new THREE.Vector3(t.x, t.y, t.z),
-      r0: { ...r },
-      s0: new THREE.Vector3(s.x, s.y, s.z),
-      q0: new THREE.Quaternion().setFromEuler(new THREE.Euler(r.x * D, r.y * D, r.z * D, 'ZYX')),
-      M0: this._ownMatrix(p),
+      // P0 IS where the proxy sits — one pivot, shared by every member.
+      P0: this._proxy.position.clone(),
+      pq0: this._proxy.quaternion.clone(),
+      members,
     };
   }
   startGizmo(mode) {
-    if (!this._selectedId) return;
-    const p = this.parts.get(this._selectedId);
-    if (!p) return;
+    if (!this._selection.length) return;
     this._layFlatArmed = false;
-    this._writeProxyFromPart(p);
-    this.gizmo.mode = mode || 'translate';
-    this.gizmo.space = this.gizmo.mode === 'scale' ? 'local' : 'world';
+    this._writeProxyFromSelection();
+    let want = mode || 'translate';
+    if (want === 'scale' && this._selection.length > 1) want = 'translate';
+    this.gizmo.mode = want;
+    this.gizmo.space = want === 'scale' ? 'local' : 'world';
     this.gizmo.attach(this._proxy);
     this._gizmoActive = true;
   }
   setGizmoMode(mode) {
-    if (!this._selectedId) return;
+    if (!this._selection.length) return;
+    if (mode === 'scale' && this._selection.length > 1) return;   // group scale is a shear
     if (!this._gizmoActive) { this.startGizmo(mode); return; }
-    // Already active: re-seat the proxy on the part's committed pose before
-    // switching modes (corrects a proxy left stale by an external TRS change —
-    // transform panel / lay-flat — on the selected part).
-    const p = this.parts.get(this._selectedId);
-    if (p) this._writeProxyFromPart(p);
+    // Already active: re-seat the proxy on the committed pose before switching
+    // modes (corrects a proxy left stale by an external TRS change — transform
+    // panel / lay-flat — on a selected part).
+    this._writeProxyFromSelection();
     // SCALE is local-axis ONLY: scaling a rotated body along world axes is a
     // shear, which the canonical T·Rz·Ry·Rx·S chain cannot represent.
     this.gizmo.space = mode === 'scale' ? 'local' : 'world';
@@ -1700,31 +1952,45 @@ export class Viewer {
     });
   }
 
-  // ══ Wave-4 · Freeform plate drag ═════════════════════════════════════
-  // Grab the SELECTED part (or one of its linked ghosts) anywhere on its surface
-  // and slide it across the plate. The drag rides the plane NORMAL TO UP through
-  // the grab point, so the height along UP never changes — lifting off the bed
-  // needs the gizmo arrow. Arms only on the selected unit, so a click on ANOTHER
-  // part still selects it.
+  // ══ Wave-4/6 · Freeform plate drag ═══════════════════════════════════
+  // Grab ANY selected part (or one of its linked ghosts) anywhere on its surface
+  // and slide the WHOLE selection across the plate. The drag rides the plane
+  // NORMAL TO UP through the grab point, so the height along UP never changes —
+  // lifting off the bed needs the gizmo arrow. Arms only on the selection, so a
+  // click on an unselected part still selects it.
 
-  /** Nearest visible part under the pointer, if it belongs to the selected unit. */
+  /** Nearest visible part under the pointer, if it belongs to ANY selected unit.
+   *  Carries `pid` — which selected part's unit was actually grabbed. */
   _unitHit(cx, cy) {
-    const p = this._selectedId ? this.parts.get(this._selectedId) : null;
-    if (!p || !p.mesh.visible) return null;
-    const ids = new Set(this._unitMeshes(p).map((u) => u.mesh.id));
+    if (!this._selection.length) return null;
+    const owner = new Map();   // mesh.id -> the SELECTED part id whose unit it belongs to
+    for (const id of this._selection) {
+      const p = this.parts.get(id);
+      if (!p || !p.mesh.visible) continue;
+      for (const u of this._unitMeshes(p)) owner.set(u.mesh.id, id);
+    }
+    if (!owner.size) return null;
     this._raycaster.setFromCamera(this._ndcFromClient(cx, cy), this.camera);
     const meshes = [];
     for (const q of this.parts.values()) if (q.mesh.visible) meshes.push(q.mesh);
     const hits = this._raycaster.intersectObjects(meshes, false);
     if (!hits.length) return null;
-    return ids.has(hits[0].object.id) ? hits[0] : null;   // something else is in front
+    const pid = owner.get(hits[0].object.id);
+    if (!pid) return null;                       // something unselected is in front
+    hits[0].pid = pid;
+    return hits[0];
   }
   _beginPlateDrag(e, hit) {
-    const p = this.parts.get(this._selectedId);
-    const trs = this._trsOf(p);
+    const members = [];
+    for (const id of this._selection) {
+      const p = this.parts.get(id);
+      if (!p) continue;
+      const trs = this._trsOf(p);
+      members.push({ id, t0: trs.translateMM, r0: trs.rotateDeg, s0: trs.scale });
+    }
+    if (!members.length) return;
     this._plate = {
-      id: p.id, p0: hit.point.clone(),
-      t0: trs.translateMM, r0: trs.rotateDeg, s0: trs.scale,
+      id: hit.pid || this._selectedId, members, p0: hit.point.clone(),
       x0: e.clientX, y0: e.clientY, moved: false, last: null,
     };
     this.controls.enabled = false;
@@ -1750,13 +2016,16 @@ export class Viewer {
     if (!q) return;
     // q and p0 both lie in the plane, so q − p0 is perpendicular to UP by
     // construction: the height along UP is untouched without special-casing it.
-    d.last = {
-      translateMM: {
-        x: d.t0.x + (q.x - d.p0.x), y: d.t0.y + (q.y - d.p0.y), z: d.t0.z + (q.z - d.p0.z),
+    // ONE delta, every selected member.
+    const dx = q.x - d.p0.x, dy = q.y - d.p0.y, dz = q.z - d.p0.z;
+    d.last = d.members.map((m) => ({
+      id: m.id,
+      trs: {
+        translateMM: { x: m.t0.x + dx, y: m.t0.y + dy, z: m.t0.z + dz },
+        rotateDeg: { ...m.r0 }, scale: { ...m.s0 },
       },
-      rotateDeg: { ...d.r0 }, scale: { ...d.s0 },
-    };
-    this.onTransformLive?.(d.id, d.last);
+    }));
+    this.onTransformLive?.(d.last);
   }
   _endPlateDrag(e) {
     const d = this._plate;
@@ -1766,22 +2035,145 @@ export class Viewer {
     document.body.classList.remove('plate-dragging');
     try { this.renderer.domElement.releasePointerCapture(e.pointerId); } catch { /* nothing captured */ }
     if (!d) return;
-    if (d.moved && d.last) { this.onTransformCommit?.(d.id, d.last); this._syncProxy(); }
-    else this.onPick?.(d.id);   // a click, not a drag — keep/confirm the selection
+    if (d.moved && d.last) { this.onTransformCommit?.(d.last); this._syncProxy(); }
+    // A click, not a drag: hand the grabbed part back with the modifier state, so
+    // Ctrl/Shift-clicking an already-selected part can still TOGGLE it out.
+    else this.onPick?.(d.id, { ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey });
   }
 
-  // ══ Wave-2 · View cube (2nd scene + ortho, drawn inside _tick) ════════
+  // ══ Wave-5 · Orientation widget (2nd scene + ortho, drawn inside _tick) ══
+  // ONE widget in the top-right corner carries everything orientation:
+  //   · the labelled view cube (6 canvas textures, relabelled per display frame),
+  //   · the world-axis triad (X/Y/Z arrows + sprite letters) hung off a corner —
+  //     the bottom-left overlay it replaces is gone,
+  //   · 26 invisible pick zones (6 faces · 12 edges · 8 corners) that light up
+  //     translucent gray under the cursor and snap the camera when clicked.
+  // Still ONE rAF: _tick renders it through a scissor slice, exactly as before.
   _initViewCube() {
     const scene = new THREE.Scene();
-    const cam = new THREE.OrthographicCamera(-1.35, 1.35, 1.35, -1.35, 0.1, 100);
+    const cam = new THREE.OrthographicCamera(
+      -CUBE_ORTHO, CUBE_ORTHO, CUBE_ORTHO, -CUBE_ORTHO, 0.1, 100);
     cam.position.set(0, 0, CUBE_CAM_DIST);
     cam.up.set(0, 1, 0);
     cam.lookAt(0, 0, 0);
     const mats = CUBE_FACES.map(() => new THREE.MeshBasicMaterial());
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), mats);
+    const e = CUBE_HALF * 2;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(e, e, e), mats);
     scene.add(mesh);
-    this._cube = { scene, camera: cam, mesh };
+    this._cube = { scene, camera: cam, mesh, zones: new Map(), axes: null, hover: null };
+    this._buildCubeZones();
+    this._buildCubeAxes();
     this._relabelCube();
+  }
+
+  // The 26 hover zones, keyed by their sign signature — "1,0,0" = the +X face,
+  // "1,1,0" = the +X/+Y edge, "1,1,1" = the corner they share. Sizes MIRROR
+  // _cubeZoneAt's classification (band m = CUBE_ZONE·H, inner half-span τ =
+  // H − m), so what lights up is exactly what a click would snap to:
+  //   face   plate  2τ × 2τ, 0.02 thick, floated 0.01 off the face
+  //   edge   slab   (m+0.02)² across the two faces, 2τ along the edge
+  //   corner cubelet (m+0.02)³
+  // They are never raycast (the cursor is classified from the cube mesh itself)
+  // and share one material — only ever one is visible.
+  _buildCubeZones() {
+    const H = CUBE_HALF, m = H * CUBE_ZONE, tau = H - m;
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    const mat = new THREE.MeshBasicMaterial({
+      color: CUBE_HI, transparent: true, opacity: 0.35,
+      depthTest: false, depthWrite: false,   // reads on top of the cube face
+    });
+    this._cube.zoneGeo = geo;
+    this._cube.zoneMat = mat;
+    for (let i = 0; i < 27; i++) {
+      const v = [(i % 3) - 1, ((i / 3) | 0) % 3 - 1, ((i / 9) | 0) - 1];
+      const k = (v[0] ? 1 : 0) + (v[1] ? 1 : 0) + (v[2] ? 1 : 0);
+      if (!k) continue;                        // (0,0,0) is the cube's inside
+      const z = new THREE.Mesh(geo, mat);
+      for (let a = 0; a < 3; a++) {
+        if (!v[a]) { z.scale.setComponent(a, tau * 2); z.position.setComponent(a, 0); }
+        else if (k === 1) { z.scale.setComponent(a, 0.02); z.position.setComponent(a, v[a] * (H + 0.01)); }
+        else { z.scale.setComponent(a, m + 0.02); z.position.setComponent(a, v[a] * (H - m / 2)); }
+      }
+      z.visible = false;
+      z.renderOrder = 1;                       // over the cube, under the triad
+      this._cube.scene.add(z);
+      this._cube.zones.set(v.join(','), z);
+    }
+  }
+
+  // World-axis triad, hung off ONE corner so the widget reads as a cube with an
+  // origin corner. The ARROWS are world-fixed by definition (−X/+Y/+Z, always,
+  // in the view-cube palette — see the −X note below) — only the HUB moves with
+  // the display frame, to the NEAR bottom corner, FRONT − UP + RIGHT.
+  //
+  // The design mock anchors its triad at the cube's "front-bottom-LEFT" corner,
+  // with x and y running along the two bottom edges that meet there and z up the
+  // vertical. What that describes is the corner NEAREST THE VIEWER at the bottom
+  // of the silhouette — and it is front-bottom-left in the mock only because the
+  // mock's camera sits in the front-LEFT-top octant (its visible faces are Top /
+  // Front / Left). ANVIL's HOME is the mirror of that, front-RIGHT-top (Top /
+  // Front / Right), so ANVIL's near bottom corner is front-bottom-RIGHT.
+  //
+  // Anchoring on the mock's literal corner instead was tried and is wrong here:
+  // from HOME that corner scores −0.8 against the camera direction (the near one
+  // scores +1.2), i.e. it is a FAR corner, so the triad gets drawn back across
+  // the silhouette and straight over the "Front" label. Same corner, mirrored
+  // camera, opposite result. This anchoring is the mock's intent — bottom
+  // corner, arrows tracing the cube's edges, z up the vertical — reproduced
+  // under ANVIL's own HOME.
+  //
+  // From it, in '+z': +Y traces the bottom-right edge, +Z runs up the near
+  // vertical edge, and the x arrow runs back along the bottom edge (see below).
+  //
+  // The X ARROW IS DRAWN TOWARD −X — DELIBERATE, at the user's request. Do not
+  // "fix" it back to +X. The hub is unchanged; only the arrow (shaft, head and
+  // the `x` glyph) is mirrored, so instead of leaving the cube outward to the
+  // right it traces the cube's bottom edge the other way, and all three arrows
+  // now run along cube edges. The hub itself is still named in DISPLAY terms, so
+  // this re-parks on setUpAxis exactly like y and z do.
+  _buildCubeAxes() {
+    if (!this._arrowGeo) this._arrowGeo = makeArrowGeometry();
+    const g = new THREE.Group();
+    const Z = new THREE.Vector3(0, 0, 1);
+    const spec = [
+      { dir: new THREE.Vector3(-1, 0, 0), col: CUBE_AX_X, ch: 'x' },   // −X per user request
+      { dir: new THREE.Vector3(0, 1, 0), col: CUBE_AX_Y, ch: 'y' },
+      { dir: new THREE.Vector3(0, 0, 1), col: CUBE_AX_Z, ch: 'z' },
+    ];
+    for (const a of spec) {
+      const mat = new THREE.MeshBasicMaterial({ color: a.col, depthTest: false, depthWrite: false });
+      const q = new THREE.Quaternion().setFromUnitVectors(Z, a.dir);
+      for (const geo of [this._arrowGeo.shaft, this._arrowGeo.head]) {
+        const m = new THREE.Mesh(geo, mat);
+        m.quaternion.copy(q);
+        // xy fattened against z: a uniformly-scaled unit arrow is sub-pixel at
+        // this widget size.
+        m.scale.set(CUBE_AX_LEN * 2.6, CUBE_AX_LEN * 2.6, CUBE_AX_LEN);
+        m.frustumCulled = false;
+        m.renderOrder = 2;
+        g.add(m);
+      }
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: makeGlyphTexture(a.ch, a.col), depthTest: false, depthWrite: false, transparent: true,
+      }));
+      sp.position.copy(a.dir).multiplyScalar(CUBE_AX_GLYPH);
+      sp.scale.setScalar(0.42);
+      sp.renderOrder = 3;
+      g.add(sp);
+    }
+    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 10),
+      new THREE.MeshBasicMaterial({ color: AX_HUB, depthTest: false, depthWrite: false }));
+    hub.renderOrder = 2;
+    g.add(hub);
+    this._cube.scene.add(g);
+    this._cube.axes = g;
+    this._placeCubeAxes();
+  }
+  /** Park the triad hub on the display frame's NEAR bottom cube corner. */
+  _placeCubeAxes() {
+    if (!this._cube || !this._cube.axes) return;
+    this._cube.axes.position.copy(this._front).sub(this._up).add(this._right)
+      .multiplyScalar(CUBE_HALF);
   }
 
   // Per-face LABEL and glyph rotation, DERIVED from the UP/FRONT/RIGHT trio so
@@ -1799,12 +2191,15 @@ export class Viewer {
   //          POLE_EPS tilt in _snapDir produces, so the labels and the camera
   //          agree without either knowing about the other.
   //
-  // Worked results (verified against the pre-existing hand table for '+y'):
-  //   '+y'  LEFT 0 · RIGHT 0 · TOP π · BOTTOM π · BACK 0 · FRONT 0
-  //   '-y'  RIGHT π · LEFT π · BOTTOM 0 · TOP 0 · BACK π · FRONT π
+  // Worked results for the reverted table (CUBE_FACES order: +X, −X, +Y, −Y,
+  // +Z, −Z). BoxGeometry's authored UVs are a Y-up box, so '+y' — the original
+  // frame — needs no glyph spin at all, and '-y' is its 180° roll:
+  //   '+y'  RIGHT 0 · LEFT 0 · TOP 0 · BOTTOM 0 · FRONT 0 · BACK 0
+  //   '-y'  LEFT π · RIGHT π · BOTTOM π · TOP π · FRONT π · BACK π
   //   '+z'  RIGHT −π/2 · LEFT π/2 · BACK π · FRONT 0 · TOP 0 · BOTTOM π
   //   '-z'  LEFT π/2 · RIGHT −π/2 · BACK 0 · FRONT π · BOTTOM π · TOP 0
-  // (listed in CUBE_FACES order: +X, −X, +Y, −Y, +Z, −Z)
+  // TOP parks its glyph base toward FRONT (+Z in '+y'): the TOP snap's screen-up
+  // is −FRONT, which is exactly the POLE_EPS tilt _snapDir applies.
   _cubeFaceSpec() {
     const U = this._up, F = this._front, R = this._right;
     const v = (a) => new THREE.Vector3().fromArray(a);
@@ -1812,19 +2207,20 @@ export class Viewer {
       const n = v(f.n);
       const dU = n.dot(U);
       let text, T;
-      if (dU > 0.5) { text = 'TOP'; T = F.clone().negate(); }
-      else if (dU < -0.5) { text = 'BOTTOM'; T = F.clone(); }
+      if (dU > 0.5) { text = 'Top'; T = F.clone().negate(); }
+      else if (dU < -0.5) { text = 'Bottom'; T = F.clone(); }
       else {
         T = U.clone();
         const dF = n.dot(F);
-        if (dF > 0.5) text = 'FRONT';
-        else if (dF < -0.5) text = 'BACK';
-        else text = n.dot(R) > 0.5 ? 'RIGHT' : 'LEFT';
+        if (dF > 0.5) text = 'Front';
+        else if (dF < -0.5) text = 'Back';
+        else text = n.dot(R) > 0.5 ? 'Right' : 'Left';
       }
       return { text, rot: Math.atan2(v(f.r).dot(T), v(f.u).dot(T)) };
     });
   }
-  /** Re-bake the six face textures for the current display frame. */
+  /** Re-bake the six face textures for the current display frame, and re-park
+   *  the triad hub (its corner is named in display terms). */
   _relabelCube() {
     const cube = this._cube;
     if (!cube) return;
@@ -1834,20 +2230,33 @@ export class Viewer {
       m.map = this._makeCubeFaceTexture(spec[i].text, spec[i].rot);
       m.needsUpdate = true;
     });
+    this._placeCubeAxes();
   }
-  // `rot` (radians) spins the LABEL inside the face; the border is drawn in the
-  // unrotated frame so every face keeps the same gray edge.
+  // `rot` (radians) spins the LABEL inside the face. The label is fitted to
+  // CUBE_LABEL_W of the face rather than set at a fixed size — the widget is
+  // small enough that a 6-letter "Bottom" at a one-size-fits-all font would be
+  // sub-pixel on screen.
+  //
+  // There is NO stroked frame around a face any more. The old 6px gray
+  // strokeRect drew a visible box INSIDE each face, so the cube read as six
+  // separate tiles rather than one solid; the mock has none. What replaces it is
+  // SHADING: CUBE_FACE_SHADE gives every face a slightly different base value,
+  // so each of the three faces visible at once is a different lightness and
+  // every silhouette edge reads as a value step — the way a real lit cube
+  // separates, and one less line in a HUD that already has plenty.
   _makeCubeFaceTexture(text, rot = 0) {
     const s = 128;
     const cv = document.createElement('canvas');
     cv.width = s; cv.height = s;
     const g = cv.getContext('2d');
-    g.fillStyle = '#242424';                 // dark face (~ --card)
+    g.fillStyle = CUBE_FACE_SHADE[text] || CUBE_FACE_SHADE.Front;
     g.fillRect(0, 0, s, s);
-    g.strokeStyle = '#565656'; g.lineWidth = 6;  // neutral gray edges/corners (between --line and --dim)
-    g.strokeRect(3, 3, s - 6, s - 6);
-    g.fillStyle = '#d9d9d9';                 // --fg label
-    g.font = '700 21px "Kode Mono", ui-monospace, monospace';
+    g.fillStyle = '#dcdcdc';                 // --fg label
+    const font = (px) => `500 ${px}px "Kode Mono", ui-monospace, monospace`;
+    let px = 34;
+    g.font = font(px);
+    const w = g.measureText(text).width;
+    if (w > CUBE_LABEL_W) { px = Math.floor(px * CUBE_LABEL_W / w); g.font = font(px); }
     g.textAlign = 'center'; g.textBaseline = 'middle';
     g.save();
     g.translate(s / 2, s / 2);
@@ -1860,69 +2269,6 @@ export class Viewer {
     return tex;
   }
 
-  // ══ Wave-4 · Orientation triad (bottom-left, mirrors the main camera) ══
-  // Slicer-style XYZ reference: a third scene + ortho camera drawn in the SAME
-  // rAF through setViewport/setScissor, exactly like the view cube. Arrows are
-  // the section-manipulator geometry (authored along +Z, unit length); the
-  // letters are sprites, so they never roll with the camera.
-  _initAxisTriad() {
-    const scene = new THREE.Scene();
-    const cam = new THREE.OrthographicCamera(-1.55, 1.55, 1.55, -1.55, 0.1, 100);
-    cam.position.set(0, 0, AXES_CAM_DIST);
-    cam.up.set(0, 1, 0);   // re-copied from the main camera every frame
-    cam.lookAt(0, 0, 0);
-    if (!this._arrowGeo) this._arrowGeo = makeArrowGeometry();
-    const Z = new THREE.Vector3(0, 0, 1);
-    const axes = [
-      { dir: new THREE.Vector3(1, 0, 0), col: AX_X, ch: 'X' },
-      { dir: new THREE.Vector3(0, 1, 0), col: AX_Y, ch: 'Y' },
-      { dir: new THREE.Vector3(0, 0, 1), col: AX_Z, ch: 'Z' },
-    ];
-    for (const a of axes) {
-      const mat = new THREE.MeshBasicMaterial({ color: a.col, depthTest: false, depthWrite: false });
-      const q = new THREE.Quaternion().setFromUnitVectors(Z, a.dir);
-      for (const geo of [this._arrowGeo.shaft, this._arrowGeo.head]) {
-        const m = new THREE.Mesh(geo, mat);
-        m.quaternion.copy(q);
-        m.frustumCulled = false;
-        m.renderOrder = 1;
-        scene.add(m);
-      }
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: makeGlyphTexture(a.ch, a.col), depthTest: false, depthWrite: false, transparent: true,
-      }));
-      sp.position.copy(a.dir).multiplyScalar(1.24);
-      sp.scale.setScalar(0.62);
-      sp.renderOrder = 2;
-      scene.add(sp);
-    }
-    // Origin pip — reads as the shared corner the three arrows leave from.
-    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 10),
-      new THREE.MeshBasicMaterial({ color: AX_HUB, depthTest: false, depthWrite: false }));
-    hub.renderOrder = 1;
-    scene.add(hub);
-    this._axes = { scene, camera: cam };
-  }
-  _renderAxisTriad(w, h) {
-    const t = this._axes;
-    if (!t) return;
-    const r = this.renderer;
-    const dir = this.camera.position.clone().sub(this.controls.target);
-    if (dir.lengthSq() < 1e-9) dir.set(0, 0, 1);
-    t.camera.position.copy(dir.normalize()).multiplyScalar(AXES_CAM_DIST);
-    t.camera.up.copy(this.camera.up);
-    t.camera.lookAt(0, 0, 0);
-    t.camera.updateMatrixWorld();
-    r.autoClear = false;
-    r.clearDepth();
-    r.setScissorTest(true);
-    r.setScissor(AXES_MARGIN, AXES_MARGIN, AXES_PX, AXES_PX);   // GL origin = bottom-left
-    r.setViewport(AXES_MARGIN, AXES_MARGIN, AXES_PX, AXES_PX);
-    r.render(t.scene, t.camera);
-    r.setScissorTest(false);
-    r.setViewport(0, 0, w, h);
-    r.autoClear = true;
-  }
   _renderViewCube(w, h) {
     const cube = this._cube;
     if (!cube) return;
@@ -1953,9 +2299,22 @@ export class Viewer {
     const top = r.top + CUBE_MARGIN;
     return cx >= left && cx <= left + CUBE_PX && cy >= top && cy <= top + CUBE_PX;
   }
-  _handleCubeClick(cx, cy) {
+
+  // Classify a pointer position over the cube rect into one of the 26 zones.
+  // ONE raycast, against the SINGLE cube mesh — the hit POINT then says which
+  // zone it landed in. With H the half-extent, m = CUBE_ZONE·H the edge band and
+  // τ = H − m the inner half-span:
+  //
+  //   face axis  = the coordinate sitting at ±H (the largest |c|)
+  //   every OTHER axis with |c| > τ JOINS the zone
+  //
+  // 1 axis → face, 2 → edge, 3 → corner, and the snap direction is the
+  // normalised sum of the participating face normals:
+  //   (1,0,0) · (1,1,0)/√2 · (1,1,1)/√3.
+  // Returns { key, dir } (key = the sign signature, e.g. "1,0,-1") or null.
+  _cubeZoneAt(cx, cy) {
     const cube = this._cube;
-    if (!cube) return;
+    if (!cube) return null;
     const r = this.container.getBoundingClientRect();
     const left = r.right - CUBE_MARGIN - CUBE_PX;
     const top = r.top + CUBE_MARGIN;
@@ -1963,14 +2322,29 @@ export class Viewer {
     const ny = -(((cy - top) / CUBE_PX) * 2 - 1);
     this._raycaster.setFromCamera(new THREE.Vector2(nx, ny), cube.camera);
     const hits = this._raycaster.intersectObject(cube.mesh, false);
-    if (!hits.length || !hits[0].face) return;
-    const n = hits[0].face.normal;
-    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-    let dir;
-    if (ax >= ay && ax >= az) dir = new THREE.Vector3(Math.sign(n.x) || 1, 0, 0);
-    else if (ay >= az)        dir = new THREE.Vector3(0, Math.sign(n.y) || 1, 0);
-    else                      dir = new THREE.Vector3(0, 0, Math.sign(n.z) || 1);
-    this._snapToAxis(dir);
+    if (!hits.length) return null;
+    const p = hits[0].point;              // cube sits at the origin, identity matrix
+    const c = [p.x, p.y, p.z];
+    const tau = CUBE_HALF * (1 - CUBE_ZONE);
+    let face = 0;
+    for (let i = 1; i < 3; i++) if (Math.abs(c[i]) > Math.abs(c[face])) face = i;
+    const v = [0, 0, 0];
+    for (let i = 0; i < 3; i++) if (i === face || Math.abs(c[i]) > tau) v[i] = Math.sign(c[i]) || 1;
+    return { key: v.join(','), dir: new THREE.Vector3(v[0], v[1], v[2]).normalize() };
+  }
+  /** Show the hovered zone (and only it). null hides everything. */
+  _setCubeHover(zone) {
+    const cube = this._cube;
+    if (!cube) return;
+    const key = zone ? zone.key : null;
+    if (cube.hover === key) return;
+    if (cube.hover) { const z = cube.zones.get(cube.hover); if (z) z.visible = false; }
+    cube.hover = key;
+    if (key) { const z = cube.zones.get(key); if (z) z.visible = true; }
+  }
+  _handleCubeClick(cx, cy) {
+    const zone = this._cubeZoneAt(cx, cy);
+    if (zone) this._snapToAxis(zone.dir);
   }
   _snapToAxis(dir) {
     const target = this.controls.target.clone();
@@ -2052,7 +2426,19 @@ export class Viewer {
     c.addEventListener('pointermove', (e) => {
       if (st.mode === 'secdrag') { e.stopPropagation(); this._updateArrowDrag(e); return; }
       if (st.mode === 'plate') { e.stopPropagation(); this._updatePlateDrag(e); return; }
-      if (st.mode === 'none' && onCanvas(e)) {
+      // The cube owns its rect, so its hover is checked FIRST and nothing else
+      // reacts inside it. One cheap raycast against one mesh, only in-rect.
+      const overCube = onCanvas(e) && (st.mode === 'none' || st.mode === 'cube')
+        && this._cubeContains(e.clientX, e.clientY);
+      this._setCubeHover(overCube ? this._cubeZoneAt(e.clientX, e.clientY) : null);
+      if (overCube !== this._cubeCursor) {
+        this._cubeCursor = overCube;
+        document.body.classList.toggle('cube-pick', overCube);
+      }
+      if (st.mode === 'none' && overCube) {
+        this._setSecHover(null);
+        document.body.classList.remove('plate-grab');
+      } else if (st.mode === 'none' && onCanvas(e)) {
         // Hover glow on whatever section overlay is under the cursor.
         const h = this._secPick(e.clientX, e.clientY);
         this._setSecHover(h && h.obj ? h.obj : null);
@@ -2061,6 +2447,27 @@ export class Viewer {
       if (st.mode === 'none') return;
       if (!st.moved && Math.hypot(e.clientX - st.downX, e.clientY - st.downY) > SELECT_DRAG_PX) st.moved = true;
     }, { capture: true });
+
+    // DOUBLE click = FOCUS, and it is the ONLY pointer path in the viewer that
+    // moves the camera. A plain click selects and nothing else — the view must
+    // not lurch every time the user picks something to look at. The dblclick
+    // arrives AFTER the two pointerup selects it implies; those are idempotent
+    // (the part ends up selected either way), so they need no suppression and
+    // the <4px click-select guard is left exactly as it is.
+    c.addEventListener('dblclick', (e) => {
+      if (!onCanvas(e)) return;
+      if (this._cubeContains(e.clientX, e.clientY)) return;   // the cube owns its rect
+      const id = this._pickPart(e.clientX, e.clientY);
+      if (!id) return;                                        // empty space: no focus, no move
+      e.stopPropagation();
+      this.onFocus?.(id);
+    }, { capture: true });
+
+    // Leaving the viewport drops the cube highlight (no stuck gray zone).
+    c.addEventListener('pointerleave', () => {
+      this._setCubeHover(null);
+      if (this._cubeCursor) { this._cubeCursor = false; document.body.classList.remove('cube-pick'); }
+    });
 
     c.addEventListener('pointerup', (e) => {
       const mode = st.mode;
@@ -2098,7 +2505,10 @@ export class Viewer {
       if (mode === 'select') {
         if (st.moved) return;                            // drag = orbit, not a click
         if (this.gizmo && this.gizmo.dragging) return;   // a gizmo grab just ended here
-        this.onPick?.(this._pickPart(e.clientX, e.clientY));   // id or null (empty click clears)
+        // id or null (empty click clears). Ctrl (primary) and Shift both TOGGLE
+        // membership — main.js decides what that means for the selection set.
+        this.onPick?.(this._pickPart(e.clientX, e.clientY),
+          { ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey });
       }
       // mode 'gizmo' → TransformControls owned it; commit fired via dragging-changed
     }, { capture: true });
@@ -2225,9 +2635,8 @@ export class Viewer {
     r.autoClear = true;
     r.render(this.scene, this.camera);
 
-    // Corner overlays — same rAF, viewport/scissor slices (never a 2nd rAF loop).
+    // Orientation widget — same rAF, a viewport/scissor slice (never a 2nd loop).
     this._renderViewCube(w, h);
-    this._renderAxisTriad(w, h);
 
     requestAnimationFrame(this._tick);
   }
@@ -2312,16 +2721,17 @@ function whiten(color, k) {
     (up((hex >> 16) & 255) << 16) | (up((hex >> 8) & 255) << 8) | up(hex & 255));
 }
 
-// Single-glyph sprite texture (orientation-triad X/Y/Z letters). Transparent
+// Single-glyph sprite texture (view-cube triad X/Y/Z letters). Transparent
 // background, axis-coloured, drawn upright — sprites always face the camera, so
-// the letters stay readable at every orbit angle.
+// the letters stay readable at every orbit angle. Set nearly full-bleed in the
+// canvas: at the widget's size the sprite is ~11 px, so every pixel counts.
 function makeGlyphTexture(ch, colorHex) {
   const s = 64;
   const cv = document.createElement('canvas');
   cv.width = s; cv.height = s;
   const g = cv.getContext('2d');
   g.fillStyle = '#' + colorHex.toString(16).padStart(6, '0');
-  g.font = '700 40px "Kode Mono", ui-monospace, monospace';
+  g.font = '700 54px "Kode Mono", ui-monospace, monospace';
   g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillText(ch, s / 2, s / 2 + 2);
   const tex = new THREE.CanvasTexture(cv);

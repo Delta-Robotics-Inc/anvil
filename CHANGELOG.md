@@ -94,6 +94,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Live lattice preview.** A `PREVIEW OFF | ON` row at the top of the `LATTICE`
+  panel raymarches the TPMS field on the GPU inside the target part, so scrubbing
+  cell size, wall thickness, bias, pattern, sheet/skeletal, rotation, phase or
+  per-axis cell redraws the lattice frame by frame instead of after a bake. The
+  target is whatever `GENERATE` would build - the selected or role-assigned part
+  in single mode, the `Negative` in fuse mode - and it re-derives when the
+  selection or the roles change. A `QUALITY LOW | HIGH` row trades raymarch
+  budget for frame rate; `HIGH` is the default. The preview is an approximation
+  and says so in the docs: the bake stays the ground truth for export,
+  watertightness and every metric. Finishing a generate turns the preview off,
+  shows the real mesh and toasts `preview replaced by the baked result`; turning
+  the preview back on hides the baked mesh, so one object is never drawn at two
+  fidelities at once. The section plane cuts the preview, the plate grid shows
+  through its openings and the gizmo draws over it (the shader writes true
+  per-pixel depth). Preview state is session only and is never persisted.
+- **Part distance fields for the preview clip.** `POST /api/parts/{id}/sdf` bakes
+  a narrow-band signed-distance volume for a part, `GET .../sdf.json` describes
+  it and `GET .../sdf.bin` serves it as `r8` bytes. The preview clips the lattice
+  to the part's real shape with it. The field is stored in the part's own
+  coordinates, so moving the part with the gizmo re-uses the same bake and never
+  re-requests one. While a bake is in flight the panel notes
+  `BAKING PART FIELD_` and the preview clips to the part's bounding box instead;
+  the clip tightens on its own when the field arrives.
 - **A per-part colour picker.** Every objects row carries a colour swatch beside
   the eye that opens an anchored picker: ten curated colours, a `HEX` field
   (`#rrggbb`, validated live, applied on `Enter` or blur) and `RESET`. There is

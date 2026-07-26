@@ -126,6 +126,41 @@ export async function getExport(id) {
   return res.json();
 }
 
+// ── Part distance field (live preview clip) ────────────────────────────
+// The GPU preview clips the TPMS field to the part's ACTUAL shape by sampling a
+// baked signed-distance volume. The field is PART-LOCAL (untransformed mesh
+// coords), so moving the part with the gizmo re-uses the same bake — the shader
+// applies the part's TRS through an inverse matrix instead.
+//
+//   POST /api/parts/{id}/sdf        → 200 { ready:true }  (cached)
+//                                   → 202 { jobId }       (poll getJob)
+//   GET  /api/parts/{id}/sdf.json   → { nx, ny, nz, originMM:{x,y,z}, cellMM,
+//                                       bandMM, encoding:'r8',
+//                                       sign:'negative-inside', url }
+//   GET  /api/parts/{id}/sdf.bin    → Uint8, x-fastest,
+//                                     clamp(d/bandMM,-1,1)*127+128  (<128 inside)
+//
+// Both throw on any non-2xx, INCLUDING 404 — the preview treats that as "not
+// served yet" and stays in bbox-clip fallback.
+export async function requestPartSdf(id, resolution) {
+  const res = await fetch(`${BASE}/parts/${encodeURIComponent(id)}/sdf`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(resolution ? { resolution } : {}),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  const body = await res.json().catch(() => ({}));
+  return { ready: !!body.ready, jobId: body.jobId || null };
+}
+
+export async function getPartSdfMeta(id) {
+  const res = await fetch(`${BASE}/parts/${encodeURIComponent(id)}/sdf.json`);
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
+export const partSdfBinUrl = (id) => `${BASE}/parts/${encodeURIComponent(id)}/sdf.bin`;
+
 // ── Stage-5 scripting (POST /api/scripts/run, GET /api/scripts) ────────
 /** List library + user scripts. Returns [{id,name,source,savedUtc}]. */
 export async function listScripts() {

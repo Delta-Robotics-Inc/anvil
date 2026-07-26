@@ -12,6 +12,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { roleColorInt } from './roles.js';
+import { LatticePreview } from './preview.js';
 
 // Wave-2 viewport constants.
 const SELECT_DRAG_PX = 4;      // pointer travel under which a pointerup counts as a click
@@ -394,6 +395,13 @@ export class Viewer {
 
     this._initViewCube();
     this._initPointer();
+
+    // ── LIVE PREVIEW (GPU raymarch of the TPMS field) ───────────────────
+    // Owned here so its per-frame sync rides the SINGLE rAF below; main.js
+    // drives it through `viewer.preview` (enable / target / params / quality).
+    this.preview = new LatticePreview(this);
+    this._previewDimId = null;   // the target ghost currently held at DIM opacity
+    this._resultHidden = false;  // a baked lattice parked while the preview is up
 
     // Empty scene ≠ empty viewport: lay the plate and park HOME on it so the
     // first frame already reads as a build volume (and so the orientation widget
@@ -885,6 +893,8 @@ export class Viewer {
       if (!this._selection.length) this.stopGizmo(); else this._syncProxy();
       this._syncFaceQuads();
     }
+    if (this._previewDimId === id) this._previewDimId = null;
+    this.preview?.forget(id);   // its baked part field is gone with it
     this.unlinkGhosts(id);   // a removed lattice releases its ghosts…
     if (p.linkHostId) this.parts.get(p.linkHostId)?.links?.delete(id);   // …a removed ghost leaves its host
     this.scene.remove(p.mesh);
@@ -941,6 +951,41 @@ export class Viewer {
     for (const p of this.parts.values()) if (!p.solid) p.mesh.material.opacity = UP_OPACITY;
     this._syncCapOpacity();
   }
+
+  // ── LIVE PREVIEW support ────────────────────────────────────────────
+  // Two small pieces of scene state the preview owns but the viewer draws:
+  //  · the TARGET ghost drops to DIM opacity while the preview stands in for it
+  //    (it is the same volume twice otherwise, and the ghost washes the raymarch
+  //    out), restoring to whatever the scene-wide dim mode says when it leaves;
+  //  · a shown RESULT mesh hides while the preview is on, and comes back when
+  //    the preview turns off — a baked lattice and its preview are the same
+  //    object at two fidelities and must never be drawn together.
+
+  /** Hold one part's ghost at DIM opacity (null clears the previous holder). */
+  setPreviewDim(id) {
+    const next = id || null;
+    if (next === this._previewDimId) return;
+    const prev = this._previewDimId ? this.parts.get(this._previewDimId) : null;
+    if (prev && !prev.solid) prev.mesh.material.opacity = this._dimmed ? DIM_OPACITY : UP_OPACITY;
+    this._previewDimId = next;
+    const cur = next ? this.parts.get(next) : null;
+    if (cur && !cur.solid) cur.mesh.material.opacity = DIM_OPACITY;
+    this._syncCapOpacity();
+  }
+
+  /** Hide/show every SOLID lattice mesh (registered part or legacy result). */
+  setResultHidden(hidden) {
+    const on = !!hidden;
+    if (on === !!this._resultHidden) return;
+    this._resultHidden = on;
+    for (const p of this.parts.values()) {
+      if (!p.solid) continue;
+      p.mesh.visible = on ? false : p.visible;
+    }
+    if (this.result) this.result.visible = !on;
+    this._sectionDirty();
+  }
+  isResultHidden() { return !!this._resultHidden; }
 
   // ── Ghosts (bulk-toggle translucent parts; a solid lattice stays) ────
   toggleGhosts() {
@@ -2627,6 +2672,10 @@ export class Viewer {
     if (this._sectionActive()) this._syncCaps();
     this._secStencil.updateMatrixWorld(true);
     this._secOverlay.updateMatrixWorld(true);
+
+    // Live preview rides the SAME loop: it only re-writes its proxy matrix and
+    // a handful of uniforms (target TRS, world pivot, section plane, lights).
+    this.preview?.sync();
 
     const w = this.container.clientWidth || 1, h = this.container.clientHeight || 1;
     const r = this.renderer;

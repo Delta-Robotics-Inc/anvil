@@ -194,6 +194,15 @@ public sealed class StepRequestDto
     public int? targetTriangles { get; set; }
 }
 
+/// <summary>
+/// Optional body of POST /parts/{id}/sdf. resolution = cells along the LONGEST
+/// bbox axis; null keeps the default (128) and any value is clamped to 64..192.
+/// </summary>
+public sealed class SdfRequestDto
+{
+    public int? resolution { get; set; }
+}
+
 // ---- Job status (GET /jobs/{id} response) ----------------------------------
 
 public sealed class StepStatusDto

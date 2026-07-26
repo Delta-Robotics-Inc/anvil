@@ -35,6 +35,8 @@ public sealed class JobManager : IAsyncDisposable
     private readonly ILogger<JobManager> _log;
 
     private readonly ConcurrentDictionary<string, JobRecord> _jobs = new();
+    // partId -> the most recent SDF bake submitted for it (dedupe; see SubmitSdf).
+    private readonly ConcurrentDictionary<string, (int Resolution, string JobId)> _sdfJobs = new();
     private readonly Channel<JobRecord> _queue = Channel.CreateUnbounded<JobRecord>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private readonly SemaphoreSlim _slots;
@@ -370,6 +372,65 @@ public sealed class JobManager : IAsyncDisposable
         _jobs[id] = rec;
         _queue.Writer.TryWrite(rec);
         _log.LogInformation("script job {Id} submitted ('{Name}', voxel {Voxel})", id, dispName, voxelSizeMM);
+        return id;
+    }
+
+    /// <summary>
+    /// Submit an SDF bake (mode == "sdf") for one part: a LIGHTWEIGHT job that
+    /// writes sdf.bin + sdf.json into the part's own data dir and registers
+    /// nothing (the part already exists). Runs through the SAME channel + slot
+    /// gate as generate/op/script jobs, so poll semantics are identical.
+    ///
+    /// An in-flight bake for the same part at a resolution that already covers
+    /// the request is REUSED rather than re-spawned — the client polls the same
+    /// job id — so a double-click (or two components asking at once) never runs
+    /// the field twice.
+    /// </summary>
+    public string SubmitSdf(string partId, string stlPath, string partDir, int resolution)
+    {
+        if (_sdfJobs.TryGetValue(partId, out var prev) && prev.Resolution >= resolution &&
+            _jobs.TryGetValue(prev.JobId, out var prevRec))
+        {
+            lock (prevRec.Gate)
+            {
+                if (prevRec.State is JobState.Queued or JobState.Running)
+                {
+                    _log.LogInformation("sdf job {Id} reused for part {PartId} (res {Res} covers {Want})",
+                        prev.JobId, partId, prev.Resolution, resolution);
+                    return prev.JobId;
+                }
+            }
+        }
+
+        string id = "j_" + Token.New();
+        string dir = Path.Combine(_jobsDir, id);
+        Directory.CreateDirectory(dir);
+        string jobJson = Path.Combine(dir, "job.json");
+
+        var workerJob = new Dictionary<string, object?>
+        {
+            ["mode"] = "sdf",
+            ["stlPath"] = stlPath,
+            ["resolution"] = resolution,
+            ["outputDir"] = partDir,   // receives sdf.bin + sdf.json
+        };
+        File.WriteAllText(jobJson, JsonSerializer.Serialize(workerJob, CamelOut));
+
+        var rec = new JobRecord
+        {
+            Id = id,
+            Dir = dir,
+            JobJsonPath = jobJson,
+            ResultStlPath = Path.Combine(dir, "result.stl"),   // unused for sdf bakes
+            ResultStepPath = Path.Combine(dir, "result.step"), // unused for sdf bakes
+            State = JobState.Queued,
+            Stage = "queued",
+            Kind = JobKind.Sdf,
+        };
+        _jobs[id] = rec;
+        _sdfJobs[partId] = (resolution, id);
+        _queue.Writer.TryWrite(rec);
+        _log.LogInformation("sdf job {Id} submitted (part {PartId}, resolution {Res})", id, partId, resolution);
         return id;
     }
 
@@ -1005,7 +1066,7 @@ public sealed class JobManager : IAsyncDisposable
 
 public enum JobState { Queued, Running, Done, Failed, Cancelled }
 public enum StepState { None, Running, Done, Failed }
-public enum JobKind { Generate, Op, Script }
+public enum JobKind { Generate, Op, Script, Sdf }
 
 public sealed class JobRecord
 {

@@ -164,6 +164,25 @@
               </span>
             </div>
             <div class="param-grid grid grid-cols-2 gap-[10px]">
+              <!-- LIVE PREVIEW — a GPU raymarch of the same implicit field the
+                   worker bakes, so scrubbing any parameter below redraws the
+                   lattice at interactive rates. Session-only (never persisted);
+                   GENERATE is still the ground truth for export and metrics. -->
+              <div class="param">
+                <span class="label has-tip" data-tip="Live GPU preview of the lattice inside the target part. An approximation — GENERATE stays the ground truth for export and metrics.">Preview</span>
+                <div class="seg" id="preview-seg" role="group" aria-label="Live preview">
+                  <button type="button" class="seg-btn active" data-val="off" aria-pressed="true">OFF</button>
+                  <button type="button" class="seg-btn" data-val="on" aria-pressed="false">ON</button>
+                </div>
+              </div>
+              <div class="param">
+                <span class="label has-tip" data-tip="Raymarch budget. HIGH refines every cell crossing; LOW takes coarser steps and skips refinement — drop to LOW if the viewport feels heavy.">Quality</span>
+                <div class="seg" id="quality-seg" role="group" aria-label="Preview quality">
+                  <button type="button" class="seg-btn" data-val="low" aria-pressed="false">LOW</button>
+                  <button type="button" class="seg-btn active" data-val="high" aria-pressed="true">HIGH</button>
+                </div>
+              </div>
+              <span class="regmark param-wide preview-note" id="preview-note" hidden>BAKING PART FIELD<span class="cursor">_</span></span>
               <label class="param param-wide">
                 <span class="label has-tip" data-tip="TPMS surface type. Gyroid = balanced, isotropic. Schwarz P = straight axis-aligned channels. Schwarz D = branched diamond channels.">Pattern</span>
                 <span class="field">

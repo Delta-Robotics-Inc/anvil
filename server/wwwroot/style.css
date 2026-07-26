@@ -1634,3 +1634,14 @@ button.hdr-link {
 /* ⇄ SWAP sits under BOOL's A/B rows and stays SMALL — it is a nudge, not an action. */
 .tool-actions.tool-swap { margin-top:-4px; }
 .tool-actions.tool-swap .btn { flex:0 0 auto; padding:5px 12px; }
+
+/* ── LIVE PREVIEW row (LATTICE view) ──────────────────────────────────
+   Two segmented controls (PREVIEW OFF|ON, QUALITY LOW|HIGH) plus a status
+   regmark. Segs are NOT fills — .seg-btn.active is a --muted seat with
+   --primary INK, so the single solid --primary fill budget is untouched by
+   everything in this block. */
+.preview-note {
+  display:block; margin-top:-3px; line-height:1.4;
+  color:var(--dim); text-transform:uppercase;
+}
+.preview-note[hidden] { display:none; }

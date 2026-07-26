@@ -89,6 +89,10 @@ namespace Anvil.Worker
         public string? scriptPath { get; set; }                            // abs path to the .csx to compile+run
         public System.Collections.Generic.Dictionary<string, JsonElement>? scriptParams { get; set; } // user params (unwrapped for ScriptGlobals.Params)
         public string? outputDir { get; set; }                             // dir the script's SavePart writes STLs + manifest into
+                                                                           // (mode == "sdf": dir that receives sdf.bin + sdf.json)
+
+        // ---- SDF bake (mode == "sdf"; dispatched to SdfJob) ----
+        public int resolution { get; set; } = 128;                         // cells along the LONGEST bbox axis (clamped 64..192)
 
         public static readonly JsonSerializerOptions JsonOptions = new()
         {
@@ -185,6 +189,14 @@ namespace Anvil.Worker
             Console.Out.Flush();
         }
 
+        /// <summary>SDF done-line: {nx, ny, nz, cells, cellMM, bandMM, …, bakeMs}.</summary>
+        public static void Done(SdfStats stats)
+        {
+            CurrentStage = "done";
+            Console.WriteLine(JsonSerializer.Serialize(new { stage = "done", stats }));
+            Console.Out.Flush();
+        }
+
         /// <summary>Diagnostic line ignored by the server (no "stage"/"stats" key).</summary>
         public static void Note(object o)
         {
@@ -204,7 +216,8 @@ namespace Anvil.Worker
                 case "coarseonly": RunCoarseOnly(job); break;
                 case "op":         OpJob.Run(job); break;
                 case "script":     ScriptJob.Run(job); break;
-                default: throw new ArgumentException($"unknown mode: '{job.mode}' (expected single|fuse|coarseOnly|op|script)");
+                case "sdf":        SdfJob.Run(job); break;
+                default: throw new ArgumentException($"unknown mode: '{job.mode}' (expected single|fuse|coarseOnly|op|script|sdf)");
             }
         }
 

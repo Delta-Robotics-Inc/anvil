@@ -140,6 +140,24 @@ A real fuse-mode job end to end: a 58 x 39 x 27 mm three-port pneumatic manifold
 > [!IMPORTANT]
 > **Resolution guard.** The server rejects a job when the largest part dimension divided by the voxel size exceeds roughly **2000 voxels per axis**, and warns above roughly **2e9** total voxels. Start coarse (0.4 mm) and refine.
 
+### Live preview
+
+The `PREVIEW` row at the top of the `LATTICE` panel turns on a **GPU raymarch of the implicit field** inside the target part. It is not a bake: nothing is voxelised, nothing is sent to the worker, and every control below it writes straight into a shader uniform. Scrubbing cell size, wall thickness, bias, pattern, sheet/skeletal, rotation, phase or per-axis cell redraws the lattice frame by frame, so you can dial a part in before committing to a generate.
+
+It targets exactly what `GENERATE` would build: the selected or role-assigned part in single mode, the **Negative** in fuse mode, since the cavity is the volume that gets filled. Change the selection or the roles and the preview follows.
+
+**The preview is an approximation. The bake is the ground truth** for export, watertightness, volume, infill percentage and every flow metric. Three things it deliberately does not model:
+
+- no voxelisation, so it shows detail a coarse **Resolution** would swallow;
+- no smoothing offset, no island cleanup, no fuse overlap;
+- the part clip is a sampled distance field rather than the exact voxelised solid.
+
+Finishing a generate turns the preview off and shows the real mesh, with a `preview replaced by the baked result` toast. Turning the preview back on hides the baked mesh again, so the same object is never drawn at two fidelities at once. Preview state is session only and is never written to storage.
+
+**Bounding-box fallback.** The first time a part is previewed, the server bakes a small signed-distance volume for it. While that is in flight the panel shows `BAKING PART FIELD_` and the lattice is clipped to the part's **bounding box** instead of its real shape. When the field lands the note clears and the clip tightens on its own, with no interaction needed. The field is stored in the part's own coordinates, so dragging the part with the gizmo moves the preview live and never triggers a re-bake.
+
+**Quality.** `HIGH` is the default and refines every surface crossing. `LOW` cuts the raymarch budget and skips that refinement: thin walls can drop out at grazing angles and surfaces read slightly faceted, but it costs roughly a third as much. Counter-intuitively the expensive case is a **coarse** cell, not a fine one, because an open lattice lets most rays travel the full depth of the part instead of stopping at the first wall. On integrated graphics at a full 1080p viewport, `HIGH` measures 48 fps at a 3 mm cell, 34 fps at the 8 mm default and 27 fps at 12 mm, while `LOW` holds about 80 fps throughout. Drop to `LOW` for large cells, large parts, or any machine without a discrete GPU. Neither setting affects the bake in any way.
+
 **Orientation matters for some patterns.** Gyroid is near-isotropic, so rotation mostly changes how walls meet the part surface. **Schwarz P is strongly anisotropic** with straight axis-aligned channels: aligning the flow axis with a channel gives far more open area than sampling off-axis, and a 45 degree rotation deliberately chokes it. For FDM, prefer rotations that keep sheet walls near-vertical along the up axis; for powder-bed processes, orientation is unconstrained.
 
 ## Sheet vs skeletal

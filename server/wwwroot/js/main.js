@@ -996,6 +996,9 @@ function updateMode() {
   ui.setOverlapEnabled(m.mode === 'fuse');
   // Progressive disclosure: the ZONES tile appears once any zone role exists.
   ui.setZonesVisible(state.parts.some((p) => isZoneRole(p.role)));
+  // The live preview always previews what GENERATE would build, so the target
+  // re-derives from the SAME mode result (selection, roles and part set alike).
+  syncPreviewTarget(m);
   return m;
 }
 
@@ -1070,6 +1073,70 @@ function markParamsDirty() {
   state.resultFresh = false;
   updateAccents();
   updateViewportContext();
+}
+
+// ── LIVE PREVIEW (GPU raymarch of the TPMS field) ─────────────────────
+// The preview previews GENERATE, so its target is whatever GENERATE would
+// lattice: the selected/role part in single mode, the NEGATIVE in fuse mode
+// (the cavity IS the volume that gets filled). Everything else the preview needs
+// lives in the viewer; main only owns "what" and "when".
+//
+// State is SESSION ONLY. Nothing here is written to localStorage, and nothing
+// here touches the accent budget: both controls are segmented groups, which
+// carry --primary as INK on a --muted seat, never as a fill.
+function previewTargetId(m) {
+  const mm = m || computeMode();
+  if (!mm.valid) return null;
+  return mm.mode === 'fuse' ? (mm.negativeId || null) : (mm.partId || null);
+}
+
+// The preview STANDS IN for the target, so while it is up:
+//   · the target's own ghost drops to DIM (two coincident volumes otherwise);
+//   · any BAKED lattice hides — the same object at two fidelities must never be
+//     drawn on top of itself.
+function applyPreviewScene() {
+  const on = viewer.preview.isEnabled();
+  viewer.setPreviewDim(on ? viewer.preview.getTarget() : null);
+  viewer.setResultHidden(on && !!(state.latticePartId || viewer.result));
+}
+
+function syncPreviewTarget(m) {
+  viewer.preview.setTarget(previewTargetId(m));
+  applyPreviewScene();
+}
+
+/** Turn the preview off from OUTSIDE the seg (a finished bake). */
+function stopPreview(note) {
+  if (!viewer.preview.isEnabled()) return false;
+  viewer.preview.setEnabled(false);
+  ui.setPreviewOn(false);
+  ui.setPreviewNote(null);
+  applyPreviewScene();
+  if (note) ui.toast(note, 'info', 4500);
+  return true;
+}
+
+ui.initPreviewControls(
+  (on) => {
+    if (on) {
+      viewer.preview.setParams(ui.readParams());
+      viewer.preview.setTarget(previewTargetId());
+    }
+    viewer.preview.setEnabled(on);
+    applyPreviewScene();
+    if (!on) ui.setPreviewNote(null);
+  },
+  (q) => viewer.preview.setQuality(q),
+);
+viewer.preview.onNote = (text) => ui.setPreviewNote(viewer.preview.isEnabled() ? text : null);
+viewer.preview.setQuality(ui.getPreviewQuality());
+viewer.preview.setParams(ui.readParams());
+
+// Every LATTICE control feeds the shader on `input` — the steppers fire it
+// continuously, which is what makes a cell-size scrub grow the cells frame by
+// frame instead of on release.
+function pushPreviewParams() {
+  if (viewer.preview.isEnabled()) viewer.preview.setParams(ui.readParams());
 }
 
 // ── Generate ──────────────────────────────────────────────────────────
@@ -1179,6 +1246,9 @@ function pollJob(jobId, stepTarget) {
 }
 
 async function onJobDone(jobId, st, stepTarget) {
+  // A finished bake supersedes its own preview: the approximation steps aside so
+  // the real mesh is what the user is looking at (and measuring, and exporting).
+  stopPreview('preview replaced by the baked result');
   state.job = { id: jobId, stepTarget };   // STEP legacy + flow stats still key off the job
   state.resultStats = st.stats || null;   // Wave-3 — the EXPORT tile's RESULT row reads its tri count
   state.resultFresh = true;   // Fix 1 — result matches current params: EXPORT takes the fill
@@ -1783,7 +1853,17 @@ ui.els.pattern?.addEventListener('change', refreshParts);
 ui.els.panelLeft?.addEventListener('input', markParamsDirty);
 ui.els.panelLeft?.addEventListener('change', markParamsDirty);
 ui.els.panelLeft?.addEventListener('click', (e) => {
+  // PREVIEW / QUALITY are view controls, not generation parameters: toggling
+  // them must not un-freshen a result and hand the accent fill back to GENERATE.
+  if (e.target.closest?.('#preview-seg, #quality-seg')) return;
   if (e.target.closest?.('.seg-btn, .fchip')) markParamsDirty();
+});
+// …and the same three events drive the preview's uniforms (cheap: a handful of
+// scalar writes, no allocation, no fetch).
+ui.els.panelLeft?.addEventListener('input', pushPreviewParams);
+ui.els.panelLeft?.addEventListener('change', pushPreviewParams);
+ui.els.panelLeft?.addEventListener('click', (e) => {
+  if (e.target.closest?.('.seg-btn, .fchip')) pushPreviewParams();
 });
 
 // Floating view strip — HOME · FIT · GHOSTS · SECTION.

@@ -613,6 +613,126 @@ try {
         $n8 = Http-Get "$Base/api/export/e_nope"
         Add-Result 'GET unknown export -> 404' ($n8.status -eq 404) ("status={0}" -f $n8.status)
     }
+
+    # =========================================================================
+    # SDF bake: POST /api/parts/{id}/sdf -> poll -> GET sdf.json + sdf.bin.
+    # The field is PART-LOCAL (no TRS), Uint8-quantized around 128 = surface,
+    # x-fastest, with a 2-cell border of outside space on every side. Probed on
+    # the 60x40x20 box, whose +X face sits at a known mm coordinate.
+    # =========================================================================
+    Write-Host "`n== SDF bake (POST /api/parts/{id}/sdf) ==" -ForegroundColor Cyan
+    if (-not $boxId) {
+        Add-Result 'sdf bake (needs the 60x40x20 box)' $false 'no boxId'
+    } else {
+        $sdfRes  = 128
+        $sdfPost = Http-PostJson "$Base/api/parts/$boxId/sdf" ([ordered]@{ resolution = $sdfRes })
+        $sdfAcc  = ($sdfPost.status -eq 202) -and $sdfPost.obj.jobId
+        Add-Result 'POST /api/parts/{id}/sdf -> 202 {jobId}' $sdfAcc `
+            ("status={0} jobId={1}" -f $sdfPost.status, $sdfPost.obj.jobId)
+
+        $sdfJob = $null
+        if ($sdfAcc) { $sdfJob = Wait-Job $sdfPost.obj.jobId 300 }
+        $sdfDone = ($null -ne $sdfJob) -and ($sdfJob.state -eq 'done')
+        Add-Result 'sdf bake job state=done' $sdfDone `
+            ("state={0} stage={1} cells={2} bakeMs={3} err={4}" -f $sdfJob.state, $sdfJob.stage, $sdfJob.stats.cells, $sdfJob.stats.bakeMs, $sdfJob.error)
+
+        if ($sdfDone) {
+            $mj = Http-Get "$Base/api/parts/$boxId/sdf.json"
+            $m  = $mj.obj
+            $metaOk = ($mj.status -eq 200) -and ($m.encoding -eq 'r8') -and `
+                      ($m.sign -eq 'negative-inside') -and ($m.url -eq "/api/parts/$boxId/sdf.bin") -and `
+                      ($null -ne $m.originMM)
+            Add-Result 'GET sdf.json -> 200 (r8 / negative-inside / bin url)' $metaOk `
+                ("status={0} enc={1} sign={2} url={3}" -f $mj.status, $m.encoding, $m.sign, $m.url)
+
+            $nx = [int]$m.nx; $ny = [int]$m.ny; $nz = [int]$m.nz
+            $cell = [double]$m.cellMM; $band = [double]$m.bandMM
+
+            # 60 mm is the longest axis: cellMM = 60/resolution, the core is exactly
+            # `resolution` cells, and every axis carries a 2-cell pad on both sides.
+            $coreX = [int][math]::Ceiling(60.0 / $cell - 1e-4)
+            $coreY = [int][math]::Ceiling(40.0 / $cell - 1e-4)
+            $coreZ = [int][math]::Ceiling(20.0 / $cell - 1e-4)
+            $dimsOk = ($coreX -eq $sdfRes) -and ($nx -eq $coreX + 4) -and `
+                      ($ny -eq $coreY + 4) -and ($nz -eq $coreZ + 4) -and `
+                      ([math]::Abs($cell - 60.0 / $sdfRes) -lt 1e-6) -and `
+                      ([math]::Abs($band - 4.0 * $cell) -lt 1e-6)
+            Add-Result 'sdf dims: longest axis == resolution + 2-cell pad per side' $dimsOk `
+                ("dims={0}x{1}x{2} core={3}x{4}x{5} res={6} cellMM={7:0.#####} bandMM={8:0.#####}" -f `
+                 $nx, $ny, $nz, $coreX, $coreY, $coreZ, $sdfRes, $cell, $band)
+
+            # originMM is the CENTRE of voxel (0,0,0): 2 pad cells below the bbox
+            # face puts it 1.5 cells outside (the core spans X exactly).
+            $plSdf   = Http-Get "$Base/api/parts"
+            $boxPart = @($plSdf.obj | Where-Object { $_.id -eq $boxId })[0]
+            $bMinX   = [double]$boxPart.bbox.min[0]
+            $bMaxX   = [double]$boxPart.bbox.max[0]
+            $ox = [double]$m.originMM.x
+            $padOk = ([math]::Abs($ox - ($bMinX - 1.5 * $cell)) -lt 1e-4) -and `
+                     (($ox + ($nx - 1) * $cell) -gt ($bMaxX + $cell))
+            Add-Result 'sdf originMM = bbox.min - 1.5 cell (outside-space border)' $padOk `
+                ("originMM.x={0:0.#####} expected={1:0.#####} lastCentre={2:0.####} bbox.max.x={3}" -f `
+                 $ox, ($bMinX - 1.5 * $cell), ($ox + ($nx - 1) * $cell), $bMaxX)
+
+            $bd = Http-Download "$Base/api/parts/$boxId/sdf.bin" (Join-Path $WorkTmp 'box_sdf.bin')
+            $expectBytes = $nx * $ny * $nz
+            $binOk = ($bd.status -eq 200) -and ($bd.length -eq $expectBytes)
+            Add-Result 'GET sdf.bin length == nx*ny*nz' $binOk `
+                ("status={0} bytes={1} expected={2}" -f $bd.status, $bd.length, $expectBytes)
+
+            if ($binOk) {
+                $sdfBytes = [System.IO.File]::ReadAllBytes($bd.path)
+                $xc = [int][math]::Floor($nx / 2); $yc = [int][math]::Floor($ny / 2); $zc = [int][math]::Floor($nz / 2)
+                $bCentre = [int]$sdfBytes[$xc + $nx * ($yc + $ny * $zc)]   # solid box centre
+                $bCorner = [int]$sdfBytes[0]                                # grid corner (pad)
+                $signOk = ($bCentre -lt 128) -and ($bCorner -gt 128)
+                Add-Result 'sdf sign: centre voxel < 128 (inside), grid corner > 128 (outside)' $signOk `
+                    ("centre[{0},{1},{2}]={3} corner[0,0,0]={4}" -f $xc, $yc, $zc, $bCentre, $bCorner)
+
+                # Walk +X along the centre row to the first inside->outside crossing.
+                $xi = -1; $bIn = 0; $bOut = 0
+                for ($x = $xc; $x -lt $nx - 1; $x++) {
+                    $v1 = [int]$sdfBytes[$x + $nx * ($yc + $ny * $zc)]
+                    $v2 = [int]$sdfBytes[($x + 1) + $nx * ($yc + $ny * $zc)]
+                    if ($v1 -lt 128 -and $v2 -ge 128) { $xi = $x; $bIn = $v1; $bOut = $v2; break }
+                }
+                if ($xi -lt 0) {
+                    Add-Result 'sdf surface plane reads ~128' $false 'no inside->outside crossing found on the centre row'
+                    Add-Result 'sdf zero crossing lands on the +X face' $false 'no crossing'
+                } else {
+                    # The surface sits midway between the two straddling voxel
+                    # centres, so THAT is the value a texture fetch returns there.
+                    $surf = ($bIn + $bOut) / 2.0
+                    Add-Result 'sdf surface plane reads 128 +/- 8' ([math]::Abs($surf - 128) -le 8) `
+                        ("straddling bytes {0}/{1} -> surface {2}" -f $bIn, $bOut, $surf)
+
+                    $t = (128.0 - $bIn) / ($bOut - $bIn)
+                    $crossX = $ox + ($xi + $t) * $cell
+                    Add-Result 'sdf zero crossing lands on the +X face (30 mm)' ([math]::Abs($crossX - $bMaxX) -lt 0.05) `
+                        ("crossing={0:0.####} mm face={1} mm (err {2:0.#####} mm)" -f $crossX, $bMaxX, [math]::Abs($crossX - $bMaxX))
+                }
+            } else {
+                Add-Result 'sdf sign: centre voxel < 128 (inside), grid corner > 128 (outside)' $false 'no sdf.bin'
+                Add-Result 'sdf surface plane reads 128 +/- 8' $false 'no sdf.bin'
+                Add-Result 'sdf zero crossing lands on the +X face (30 mm)' $false 'no sdf.bin'
+            }
+
+            # A second POST must hit the cache and answer immediately (no job).
+            $swSdf = [System.Diagnostics.Stopwatch]::StartNew()
+            $sdf2 = Http-PostJson "$Base/api/parts/$boxId/sdf" ([ordered]@{ resolution = $sdfRes })
+            $swSdf.Stop()
+            $cacheOk = ($sdf2.status -eq 200) -and ($sdf2.obj.ready -eq $true) -and ($null -eq $sdf2.obj.jobId)
+            Add-Result 'second POST sdf -> 200 {ready:true} from cache' $cacheOk `
+                ("status={0} ready={1} in {2} ms" -f $sdf2.status, $sdf2.obj.ready, $swSdf.ElapsedMilliseconds)
+        }
+
+        # --- negatives -------------------------------------------------------
+        $n9 = Http-PostJson "$Base/api/parts/p_does_not_exist/sdf" ([ordered]@{ resolution = 128 })
+        Add-Result 'POST sdf unknown part -> 404' ($n9.status -eq 404) ("status={0} err={1}" -f $n9.status, $n9.obj.error)
+
+        $n10 = Http-Get "$Base/api/parts/$($cyl1.id)/sdf.json"
+        Add-Result 'GET sdf.json before any bake -> 404' ($n10.status -eq 404) ("status={0} err={1}" -f $n10.status, $n10.obj.error)
+    }
 }
 finally {
     if ($serverProc -and -not $serverProc.HasExited) {

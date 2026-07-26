@@ -31,6 +31,11 @@ export const els = {
   cleanupSeg: document.getElementById('cleanup-seg'),
   stepTris: document.getElementById('p-steptris'),
 
+  // live-preview controls (session only — never persisted)
+  previewSeg:  document.getElementById('preview-seg'),
+  qualitySeg:  document.getElementById('quality-seg'),
+  previewNote: document.getElementById('preview-note'),
+
   // flow-metrics v1 parameter controls
   latticeSeg:  document.getElementById('lattice-seg'),
   latticeHint: document.getElementById('lattice-hint'),
@@ -562,6 +567,33 @@ function activeVal(group, sel) {
   return on ? on.dataset.val : null;
 }
 export function getLatticeType() { return activeVal(els.latticeSeg, '.seg-btn') || 'sheet'; }
+// ── Live preview (session state — deliberately NOT persisted) ─────────
+// Both are plain segmented groups, so they carry no fill and never touch the
+// accent budget. main.js wires their picks straight into viewer.preview.
+export function initPreviewControls(onPreview, onQuality) {
+  wireSeg(els.previewSeg, (val) => onPreview(val === 'on'));
+  wireSeg(els.qualitySeg, (val) => onQuality(val === 'low' ? 'low' : 'high'));
+}
+export function getPreviewOn()      { return activeVal(els.previewSeg, '.seg-btn') === 'on'; }
+export function getPreviewQuality() { return activeVal(els.qualitySeg, '.seg-btn') || 'high'; }
+/** Force the PREVIEW seg without firing its callback (a finished bake turns the
+ *  preview off from outside the UI). */
+export function setPreviewOn(on) {
+  if (!els.previewSeg) return;
+  for (const b of els.previewSeg.querySelectorAll('.seg-btn')) {
+    const active = (b.dataset.val === 'on') === !!on;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+}
+/** The "BAKING PART FIELD_" regmark under the row. null/'' hides it. */
+export function setPreviewNote(text) {
+  const el = els.previewNote;
+  if (!el) return;
+  if (!text) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = `${String(text).replace(/\.\.\.$/, '')}<span class="cursor">_</span>`;
+}
 export function getFlowAxis()    { return activeVal(els.flowAxis, '.fchip') || 'y'; }
 export function getCellMode()    { return activeVal(els.cellSeg, '.seg-btn') || 'uniform'; }
 // Cleanup toggle: default ON (removes floating islands before export).

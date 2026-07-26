@@ -86,6 +86,56 @@ True("Pipe.volume>0", Volume(pipe) > 0, $"got={Volume(pipe):0.##}");
 NearAbs("Pipe.bbox.size.y", BBox(pipe).Size.y, 21, 1.5);
 NearAbs("Pipe.bbox.size.x", BBox(pipe).Size.x, 21, 1.5);
 
+// Above PipeSegmentLimit segments Pipe hands the run to a beam lattice. Same
+// straight line, 2 points vs 40: the two routes must agree.
+var straight2 = new[] { V(-20, 0, 0), V(20, 0, 0) };
+var straight40 = new List<Vec3>();
+for (int i = 0; i <= 40; i++) straight40.Add(V(-20 + 40.0 * i / 40.0, 0, 0));
+double vShortRoute = Volume(Pipe(straight2, d: 6));
+double vLongRoute = Volume(Pipe(straight40, d: 6));
+True("Pipe.longPath.matchesImplicit",
+     Math.Abs(vLongRoute - vShortRoute) < 0.03 * vShortRoute,
+     $"implicit={vShortRoute:0.##} lattice={vLongRoute:0.##} segs={straight40.Count - 1} limit={Forge.PipeSegmentLimit}");
+
+// ---------------------------------------------------------------------------
+// BEAMS / SPHERES — the batch lattice primitives
+// ---------------------------------------------------------------------------
+// Five parallel, well-separated capsules: volume and area are the analytic sum.
+var beamList = new List<(Vec3 a, Vec3 b, double dA, double dB)>();
+for (int i = 0; i < 5; i++) beamList.Add((V(-10, 12.0 * i, 0), V(10, 12.0 * i, 0), 4.0, 4.0));
+Shape beams5 = Beams(beamList);
+double capsuleVol = Math.PI * 4 * 20 + 4.0 / 3.0 * Math.PI * 8;      // cylinder + two hemispheres
+double capsuleArea = 2 * Math.PI * 2 * 20 + 4 * Math.PI * 4;
+NearVox("Beams.volume.vsCapsuleSum", Volume(beams5), 5 * capsuleVol, 5 * capsuleArea);
+NearAbs("Beams.bbox.size.x", BBox(beams5).Size.x, 24, 1.5);
+NearAbs("Beams.bbox.size.y", BBox(beams5).Size.y, 52, 1.5);
+
+// One beam is exactly one Capsule of the same diameter.
+Shape oneBeam = Beams(new[] { (V(-10, 0, 0), V(10, 0, 0), 8.0, 8.0) });
+double vCapsuleCmd = Volume(Capsule(V(-10, 0, 0), V(10, 0, 0), d: 8));
+True("Beams.oneBeam==Capsule", Math.Abs(Volume(oneBeam) - vCapsuleCmd) < 0.03 * vCapsuleCmd,
+     $"beam={Volume(oneBeam):0.##} capsule={vCapsuleCmd:0.##}");
+
+// A per-end diameter is free: the taper sits between the two constant-diameter
+// beams it interpolates, and the bbox knows about both end radii.
+Shape tapered = Beams(new[] { (V(0, 0, 0), V(0, 20, 0), 8.0, 2.0) });
+double vFat = Volume(Beams(new[] { (V(0, 0, 0), V(0, 20, 0), 8.0, 8.0) }));
+double vThin = Volume(Beams(new[] { (V(0, 0, 0), V(0, 20, 0), 2.0, 2.0) }));
+True("Beams.taper.betweenEnds", Volume(tapered) > vThin && Volume(tapered) < vFat,
+     $"thin={vThin:0.##} taper={Volume(tapered):0.##} fat={vFat:0.##}");
+NearAbs("Beams.taper.bbox.y", BBox(tapered).Size.y, 25, 1.5);
+
+// The polyline overload chains points, exactly like Pipe.
+Shape beamRun = Beams(new[] { V(-15, 0, 0), V(0, 0, 0), V(0, 15, 0) }, d: 6);
+NearAbs("Beams.polyline.bbox.x", BBox(beamRun).Size.x, 21, 1.5);
+NearAbs("Beams.polyline.bbox.y", BBox(beamRun).Size.y, 21, 1.5);
+
+var ballPts = new List<Vec3>();
+for (int i = 0; i < 4; i++) ballPts.Add(V(20.0 * i, 0, 0));
+Shape balls = Spheres(ballPts, d: 10);
+NearVox("Spheres.volume", Volume(balls), 4 * (4.0 / 3.0 * Math.PI * 125), 4 * 4 * Math.PI * 25);
+NearAbs("Spheres.bbox.size.x", BBox(balls).Size.x, 70, 1.5);
+
 // FromFile: write a solid out as STL, read it straight back.
 string tmpStl = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
     "forge_smoke_" + Guid.NewGuid().ToString("N") + ".stl");
@@ -173,6 +223,43 @@ double vRounded = Volume(Smooth(box, 2));
 True("Smooth.rounds.corners", vRounded < vBox && vRounded > 0.85 * vBox,
      $"got={vRounded:0.##} solid={vBox:0.##}");
 
+// ---------------------------------------------------------------------------
+// FILLET — concave only, strictly additive, and NOT Smooth
+// ---------------------------------------------------------------------------
+// An L: two slabs meeting at a right angle, so there is exactly one concave
+// seam to fill and plenty of convex edges that must not move.
+Shape ell = Union(Box(30, 6, 20, at: V(0, 3, 0)), Box(6, 30, 20, at: V(-12, 15, 0)));
+double vEll = Volume(ell);
+Bounds bbEll = BBox(ell);
+Shape ellFilleted = Fillet(ell, 3);
+double vEllF = Volume(ellFilleted);
+True("Fillet.onlyAdds", vEllF >= vEll - 1e-6, $"before={vEll:0.##} after={vEllF:0.##}");
+
+// A fillet of radius r along a right-angle seam adds r^2 (1 - pi/4) per mm of
+// seam. The seam here runs the L's full 20 mm z extent. A voxel closing at a
+// 6-voxel radius under-fills the ends, so bracket it rather than nail it.
+double filletVol = 20.0 * 9.0 * (1.0 - Math.PI / 4.0);
+double filletAdded = vEllF - vEll;
+True("Fillet.fillsConcaveSeam",
+     filletAdded > 0.4 * filletVol && filletAdded < 2.5 * filletVol,
+     $"added={filletAdded:0.##} analytic={filletVol:0.##} band={0.4 * filletVol:0.##}..{2.5 * filletVol:0.##}");
+NearAbs("Fillet.keepsBBox.x", BBox(ellFilleted).Size.x, bbEll.Size.x, 0.6);
+NearAbs("Fillet.keepsBBox.y", BBox(ellFilleted).Size.y, bbEll.Size.y, 0.6);
+
+// A plain box has no concave edge at all, so Fillet is a no-op on it while
+// Smooth eats its corners. That difference is the whole reason Fillet exists.
+double vBoxFillet = Volume(Fillet(box, 2));
+True("Fillet.noConcave.isNoOp", Math.Abs(vBoxFillet - vBox) < 0.01 * vBox,
+     $"box={vBox:0.##} filleted={vBoxFillet:0.##}");
+True("Fillet.keepsWhatSmoothEats", vBoxFillet > vRounded,
+     $"fillet={vBoxFillet:0.##} smooth={vRounded:0.##}");
+
+// A thin rib survives Fillet and does not survive Smooth intact.
+Shape rib = Box(40, 2, 20);
+double vRib = Volume(rib);
+True("Fillet.keepsThinRib", Volume(Fillet(rib, 0.8)) >= vRib - 1e-6,
+     $"rib={vRib:0.##} filleted={Volume(Fillet(rib, 0.8)):0.##} smoothed={Volume(Smooth(rib, 0.8)):0.##}");
+
 Shape unit = Box(10, 10, 10);
 Shape rowOf4 = ArrayLinear(unit, 4, V(15, 0, 0));
 NearVox("ArrayLinear.volume", Volume(rowOf4), 4000, 4 * 600);
@@ -196,6 +283,54 @@ True("Lattice.skeletal.volume>0", Volume(skeletal) > 0, $"got={Volume(skeletal):
 Shape tuned = Lattice(cube30, cell: 8, wall: 1.5, rotDeg: V(0, 30, 0), phase: V(0.25, 0, 0),
                       cellXYZ: V(8, 12, 8));
 True("Lattice.modifiers.volume>0", Volume(tuned) > 0, $"got={Volume(tuned):0.##}");
+
+// ===========================================================================
+// AXIS — the same builders stood up along +Z
+// ===========================================================================
+// Default is unchanged (+Y), axis:"z" gives the identical solid rotated onto +Z:
+// same volume, swapped bbox.
+Bounds bbCylY = BBox(Cylinder(d: 20, h: 30));
+Shape cylZ = Cylinder(d: 20, h: 30, axis: "z");
+Bounds bbCylZ = BBox(cylZ);
+NearAbs("Cylinder.axis.default.isY", bbCylY.Size.y, 30, 1.0);
+NearAbs("Cylinder.axis.z.height", bbCylZ.Size.z, 30, 1.0);
+NearAbs("Cylinder.axis.z.width", bbCylZ.Size.x, 20, 1.0);
+NearVox("Cylinder.axis.z.volume", Volume(cylZ), Math.PI * 100 * 30,
+        2 * Math.PI * 100 + 2 * Math.PI * 10 * 30);
+NearAbs("Cylinder.axis.z.at", Center(Cylinder(d: 10, h: 20, at: V(3, -4, 7), axis: "z")).z, 7, 0.6);
+
+Shape coneZ = Cone(d: 20, h: 30, axis: "z");
+NearAbs("Cone.axis.z.height", BBox(coneZ).Size.z, 30, 1.0);
+NearVox("Cone.axis.z.volume", Volume(coneZ), Math.PI * 100 * 30 / 3.0,
+        Math.PI * 100 + Math.PI * 10 * Math.Sqrt(100 + 900));
+
+Shape loftZ = Loft(t => 10 - 5 * (t / 20.0), 0, 20, axis: "z");
+NearAbs("Loft.axis.z.height", BBox(loftZ).Size.z, 20, 1.0);
+NearAbs("Loft.axis.z.width", BBox(loftZ).Size.x, 20, 1.0);
+NearVox("Loft.axis.z.volume", Volume(loftZ), Math.PI * 20 / 3.0 * (100 + 50 + 25),
+        Math.PI * 100 + Math.PI * 25 + Math.PI * 15 * loftSlant);
+True("Loft.axis.z.matchesY", Math.Abs(Volume(loftZ) - Volume(lofted)) < 0.02 * Volume(lofted),
+     $"y={Volume(lofted):0.##} z={Volume(loftZ):0.##}");
+
+Shape ringZ = Torus(d: 30, ring: 8, axis: "z");
+NearAbs("Torus.axis.z.thickness", BBox(ringZ).Size.z, 8, 1.5);
+NearAbs("Torus.axis.z.span", BBox(ringZ).Size.x, 38, 1.5);
+True("Torus.axis.z.matchesY", Math.Abs(Volume(ringZ) - Volume(ring)) < 0.02 * Volume(ring),
+     $"y={Volume(ring):0.##} z={Volume(ringZ):0.##}");
+
+Shape wheelZ = ArrayRadial(Cylinder(d: 6, h: 10, axis: "z"), 6, radius: 15, axis: "z");
+NearAbs("ArrayRadial.axis.z.span", BBox(wheelZ).Size.x, 36, 2.0);
+NearAbs("ArrayRadial.axis.z.height", BBox(wheelZ).Size.z, 10, 1.0);
+NearVox("ArrayRadial.axis.z.volume", Volume(wheelZ), 6 * Math.PI * 9 * 10,
+        6 * (2 * Math.PI * 9 + 2 * Math.PI * 3 * 10));
+
+// ===========================================================================
+// AREA — surface area, and the triangle-count prediction it buys
+// ===========================================================================
+NearAbs("Area.box20", Area(box), 2400, 240);
+NearAbs("Area.sphere20", Area(ball), 4 * Math.PI * 100, 120);
+True("Area.cube.growsWithSize", Area(Box(40, 40, 40)) > 3.5 * Area(box),
+     $"box20={Area(box):0.##} box40={Area(Box(40, 40, 40)):0.##}");
 
 // ===========================================================================
 // EMBOSS — the bundled anvil depth map, raised and cut

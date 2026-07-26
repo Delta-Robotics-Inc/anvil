@@ -6,7 +6,7 @@
 //   * "library"  scripts-library\*.csx   (versioned seeds in the repo, read-only)
 //   * "user"     {DataDir}\scripts\*.csx  (saved via POST /api/scripts / save_script)
 //
-// Ids are "{source}:{stem}" (e.g. "library:heat_exchanger_core"). Saving a
+// Ids are "{source}:{stem}" (e.g. "library:heat_exchanger"). Saving a
 // script slugifies the name to a filename and REFUSES anything that would escape
 // the user scripts dir (path traversal). The user dir is gitignored.
 //

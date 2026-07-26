@@ -15,7 +15,9 @@ SavePart("bracket", Subtract(body, holes));
 - [Running a script](#running-a-script)
 - [Script globals](#script-globals)
 - [Conventions](#conventions)
+- [Building along +Z](#building-along-z)
 - [The voxel-size rule](#the-voxel-size-rule)
+- [What actually costs time](#what-actually-costs-time)
 - [Command reference](#command-reference)
   - [Points](#points)
   - [Builders](#builders)
@@ -23,7 +25,8 @@ SavePart("bracket", Subtract(body, holes));
   - [Modifiers](#modifiers)
   - [Info](#info)
   - [The Shape and Bounds types](#the-shape-and-bounds-types)
-- [Worked example: the rocket nozzle](#worked-example-the-rocket-nozzle)
+- [Writing your own field](#writing-your-own-field)
+- [Worked example: the regen-cooled nozzle](#worked-example-the-regen-cooled-nozzle)
 - [Example scripts](#example-scripts)
 - [Gotchas](#gotchas)
 - [Security](#security)
@@ -32,7 +35,7 @@ SavePart("bracket", Subtract(body, holes));
 
 There are three ways in, and all three run the same worker.
 
-**The SCRIPTS view.** Open `SCRIPTS` in the toolbar. Pick a template from the picker (the `scripts-library` seeds plus everything you have saved), edit, and press `RUN` or `Ctrl+Enter`. Every part the script saves lands in the canvas and the objects list through the normal derived-part flow, so a whole run is one `Ctrl+Z`. `SAVE` files the buffer under a name, `UPLOAD` reads a `.csx` off disk, and `TOOLS ?` opens this page.
+**The SCRIPTS view.** Open `SCRIPTS` in the toolbar. Pick one from the `EXAMPLES` picker (the `scripts-library` examples plus everything you have saved), edit, and press `RUN` or `Ctrl+Enter`. Every part the script saves lands in the canvas and the objects list through the normal derived-part flow — drawn solid, like any finished model — so a whole run is one `Ctrl+Z`. `SAVE` files the buffer under a name, `UPLOAD` reads a `.csx` off disk, and `TOOLS ?` opens this page.
 
 **The HTTP API.**
 
@@ -76,11 +79,36 @@ Also imported automatically: `PicoGK` (`Voxels`, `Mesh`, `IImplicit`, `BBox3`), 
 These hold for every command, without exception.
 
 - **Units are millimetres. Angles are degrees.**
-- **The up axis is +Y**, the Onshape and SolidWorks convention the viewer uses. `Cylinder`, `Cone`, `Loft`, `Torus` and `ArrayRadial` all revolve about +Y.
+- **The up axis is +Y**, the Onshape and SolidWorks convention. `Cylinder`, `Cone`, `Loft`, `Torus` and `ArrayRadial` revolve about +Y by default, and every one of those five takes an `axis` modifier — see [Building along +Z](#building-along-z).
 - **Scripts are coordinate-explicit.** Nothing is auto-dropped onto a build plate. Every builder's `at` modifier is the shape's **centre** and defaults to the world origin. To stand a 20 mm cylinder on the XZ plane, say so: `Cylinder(10, 20, at: V(0, 10, 0))`.
 - **Commands never mutate their inputs.** Every one returns a new `Shape`, so an input can be reused as many times as you like.
 - **Bad modifiers fail loudly.** An out-of-range value raises an `ArgumentException` naming the command and the offending number, and the worker reports it on the script error channel with the rest of the run's log. A script failure reads like a compiler error, not a stack trace.
 - **Operators are shorthand.** `a + b` is `Union`, `a - b` is `Subtract`, `a & b` is `Intersect`.
+
+## Building along +Z
+
+The Forge authors geometry with **+Y up**. The viewer, however, defaults to **+Z up**, and so does every build plate you are likely to send a part to. A script that builds a 130 mm nozzle along +Y is correct, and it will lie on its side in the canvas.
+
+So the five commands that have an axis take an `axis` modifier:
+
+| Command | `axis: "y"` (default) | `axis: "z"` |
+| --- | --- | --- |
+| `Cylinder(d, h, at, axis)` | stands along +Y | stands along +Z |
+| `Cone(d, h, at, axis)` | base low in Y, apex high | base low in Z, apex high |
+| `Loft(r, y0, y1, axis)` | revolves about +Y | revolves about +Z, `y0`/`y1` read as `z0`/`z1` |
+| `Torus(d, ring, at, axis)` | ring in the XZ plane | ring in the XY plane |
+| `ArrayRadial(shape, n, r, about, axis)` | copies around +Y | copies around +Z |
+
+Nothing else in the command set has an up axis. `Box` takes three extents, `Capsule` / `Pipe` / `Beams` take points and are direction-free, `Sphere` is isotropic, `Emboss` takes any of the six faces, and `Shell` / `Offset` / `Smooth` / `Fillet` are all isotropic. Pass `axis: "z"` to those five and the rest follows, which is how **every bundled example** ends up standing on the plate at `z = 0` with no reorientation step:
+
+```csharp
+Shape core   = Cylinder(60, 80, at: V(0, 0, 40), axis: "z");        // z in [0, 80]
+Shape bell   = Loft(z => 12 + 0.2 * z, 0, 130, axis: "z");          // stands on the plate
+Shape ring   = Torus(d: 90, ring: 9, at: V(0, 0, 8), axis: "z");
+Shape bolts  = ArrayRadial(Cylinder(5.5, 8, axis: "z"), 8, radius: 34, axis: "z");
+```
+
+The alternative — build in +Y and rotate the finished part once at the end — costs a full mesh round trip on the whole solid and half a voxel of re-discretisation. Prefer `axis`.
 
 ## The voxel-size rule
 
@@ -89,7 +117,24 @@ Everything in a script runs inside one PicoGK library at the job's `voxelSizeMM`
 - Booleans, offsets, shells and lattices are accurate to about **half a voxel**. A measured volume therefore differs from the analytic one by roughly surface area times half a voxel: a 20 mm cube at a 0.5 mm voxel measures about 8600 mm3, not 8000.
 - **Any feature you care about needs several voxels across it.** A 1.2 mm lattice wall at a 0.3 mm voxel is four voxels thick, which is fine. The same wall at 0.6 mm is two, and it will look ragged.
 - **Cost grows with the cube of resolution.** Halving the voxel size multiplies memory and time by roughly eight. Rough a design in at 0.4 to 0.6 mm, then drop to 0.15 to 0.2 mm for the final bake.
-- Validate against it rather than guessing: `if (wallMM < 2 * VoxelSizeMM) throw new ArgumentException(...)`.
+- Validate against it rather than guessing: `if (wallMM < 2 * VoxelSizeMM) throw new ArgumentException(...)`. Leave a hair of slack — parameters arrive through `ParamF` as `float`, so `0.9f < 3 * 0.3f` is true by half an ulp. Compare against `3 * VoxelSizeMM - 1e-3`.
+
+## What actually costs time
+
+Three facts about the kernel decide whether a script takes eight seconds or eight minutes. None of them are obvious from the command list.
+
+**Meshing is usually the ceiling, not the field maths.** `SavePart` meshes the field, cleans it and writes an STL, and the triangle count is roughly `Area / (0.5 * voxel^2)`. Past about four million triangles that dominates everything else. Use [`Area`](#area) to predict it *before* you save — and do not call `Area` casually, because it meshes the shape too.
+
+**An implicit field is sampled once per voxel of its whole bounding box.** That is how `Loft`, `Torus`, `Capsule`, `Pipe`, `Lattice` and any `IImplicit` you write are rendered, single-threaded, with a managed callback per voxel. A 130 mm part at a 0.3 mm voxel is 56 million of them per render. Keep the count of full-box renders down, and prefer a boolean over a second identical loft:
+
+```csharp
+Shape wallSolid = Loft(z => R(z) + Wall(z), -4, 136, axis: "z");   // one render
+Shape hotWall   = Intersect(wallSolid, Box(200, 200, 132, at: V(0, 0, 66)));  // ~0.2 s, not 4.6 s
+```
+
+**A beam lattice is rendered per beam, natively, over each beam's own tight box.** That is why [`Beams`](#beams) is not just a convenience: 8,500 tapered beams render in about three seconds, where the same geometry as one implicit would be hours. Anything strut-, spiral- or network-shaped belongs in `Beams`.
+
+The same logic applies to expensive modifiers. `SmoothUnion` and `Fillet` are offsets, and an offset's cost tracks the surface area you hand it. Blending a flange onto a smooth conical wall takes a few seconds; blending it onto the same wall *after* you have unioned a corrugated helical jacket onto it took 26.
 
 ## Command reference
 
@@ -143,30 +188,32 @@ An axis-aligned rectangular block.
 #### Cylinder
 
 ```csharp
-Shape Cylinder(double d, double h, Vec3? at = null)
+Shape Cylinder(double d, double h, Vec3? at = null, string axis = "y")
 ```
 
-A circular cylinder standing along +Y.
+A circular cylinder standing along +Y, or along +Z with `axis: "z"`.
 
 | Parameter | Units | Default | Meaning |
 | --- | --- | --- | --- |
 | `d` | mm | required | Diameter. Must be greater than 0. |
-| `h` | mm | required | Height along Y. Must be greater than 0. |
-| `at` | mm point | origin | Centre of the cylinder. It spans `at.y` plus or minus `h/2`. |
+| `h` | mm | required | Height along the chosen axis. Must be greater than 0. |
+| `at` | mm point | origin | Centre of the cylinder. It spans `at` plus or minus `h/2` along the axis. |
+| `axis` | – | `"y"` | Axis to stand along: `"y"` or `"z"`. See [Building along +Z](#building-along-z). |
 
 #### Cone
 
 ```csharp
-Shape Cone(double d, double h, Vec3? at = null)
+Shape Cone(double d, double h, Vec3? at = null, string axis = "y")
 ```
 
-A circular cone standing along +Y: base at `at.y - h/2`, apex at `at.y + h/2`.
+A circular cone standing along +Y (base at `at.y - h/2`, apex at `at.y + h/2`), or along +Z with `axis: "z"`.
 
 | Parameter | Units | Default | Meaning |
 | --- | --- | --- | --- |
 | `d` | mm | required | Base diameter. Must be greater than 0. |
-| `h` | mm | required | Height along Y. Must be greater than 0. |
+| `h` | mm | required | Height along the chosen axis. Must be greater than 0. |
 | `at` | mm point | origin | Centre of the cone's bounding box. |
+| `axis` | – | `"y"` | Axis to stand along: `"y"` or `"z"`. |
 
 #### Sphere
 
@@ -198,30 +245,32 @@ A sphere of diameter `d` swept along the straight line from `a` to `b`, so a rod
 #### Torus
 
 ```csharp
-Shape Torus(double d, double ring, Vec3? at = null)
+Shape Torus(double d, double ring, Vec3? at = null, string axis = "y")
 ```
 
-A torus lying in the XZ plane, so its axis of revolution is +Y: a ring you look through from above.
+A torus lying in the XZ plane, so its axis of revolution is +Y: a ring you look through from above. With `axis: "z"` the ring lies in the XY plane instead.
 
 | Parameter | Units | Default | Meaning |
 | --- | --- | --- | --- |
 | `d` | mm | required | Diameter of the ring's **centre circle**. The outer diameter is `d + ring`. Must be greater than 0. |
 | `ring` | mm | required | Diameter of the tube itself. Must be greater than 0. |
 | `at` | mm point | origin | Centre of the torus. |
+| `axis` | – | `"y"` | Axis of revolution: `"y"` or `"z"`. |
 
 #### Loft
 
 ```csharp
-Shape Loft(Func<double, double> radiusAtY, double y0, double y1)
+Shape Loft(Func<double, double> radiusAtY, double y0, double y1, string axis = "y")
 ```
 
-A solid of revolution about +Y, built from a radius function. The rocket-nozzle, vase and trumpet-bell primitive. The profile is sampled finely enough for the job's voxel size, capped flat at both ends, and slope-corrected so steep profiles stay accurate.
+A solid of revolution about +Y, built from a radius function. The rocket-nozzle, vase and trumpet-bell primitive. The profile is sampled finely enough for the job's voxel size, capped flat at both ends, and slope-corrected so steep profiles stay accurate. With `axis: "z"` the same profile stands up along +Z and `y0`/`y1` read as `z0`/`z1`.
 
 | Parameter | Units | Default | Meaning |
 | --- | --- | --- | --- |
 | `radiusAtY` | mm from mm | required | Radius in mm at a given height y in mm, for example `y => 5 + 10 * Math.Pow(y / 40.0, 2)`. Negative returns clamp to 0. |
 | `y0` | mm | required | Height where the solid starts. |
 | `y1` | mm | required | Height where the solid ends. Must differ from `y0`. |
+| `axis` | – | `"y"` | Axis of revolution: `"y"` or `"z"`. |
 
 #### Pipe
 
@@ -231,10 +280,53 @@ Shape Pipe(IEnumerable<Vec3> path, double d)
 
 A round pipe following a polyline: the union of a capsule per segment, so corners round themselves and every joint is watertight.
 
+Up to **16 segments** the whole run is one implicit field with an exact distance, evaluated in a single render. Above that the scan turns quadratic, so `Pipe` hands the run to [`Beams`](#beams) instead — same shape, different cost. For thousands of segments, call `Beams` yourself.
+
 | Parameter | Units | Default | Meaning |
 | --- | --- | --- | --- |
 | `path` | mm points | required | Two or more points along the pipe's centreline. |
 | `d` | mm | required | Outside diameter. Must be greater than 0. Use `Shell` afterwards to hollow it. |
+
+#### Beams
+
+```csharp
+Shape Beams(IEnumerable<(Vec3 a, Vec3 b, double dA, double dB)> beams, bool roundCap = true)
+Shape Beams(IEnumerable<Vec3> path, double d, double? dEnd = null, bool roundCap = true)
+```
+
+A solid built from a batch of straight beams, each with its **own diameter at each end**, in a single render. This is the primitive behind strut lattices, helical cooling channels, spiral ribs and pipe networks.
+
+Every beam is rendered natively over its own tight bounding box, so thousands of them cost about as much as the material they cover. An implicit field (`Pipe`, `Capsule`) is instead sampled once per voxel of the **whole** bounding box and has to consider every segment each time — for a 22-start helix on a 130 mm nozzle that is the difference between eight seconds and several hours.
+
+A per-end diameter is free, which is what makes tapered struts, graded lattices and self-supporting teardrop channel roofs cheap: one extra beam per sample.
+
+| Parameter | Units | Default | Meaning |
+| --- | --- | --- | --- |
+| `beams` | – | required | The beams, as `(start, end, diameter at start, diameter at end)`. Both diameters must be greater than 0. |
+| `path` | mm points | required | Polyline overload: two or more points; each consecutive pair becomes one beam. |
+| `d` | mm | required | Polyline overload: diameter at the first point. |
+| `dEnd` | mm | same as `d` | Polyline overload: diameter at the last point, tapering linearly along the run. |
+| `roundCap` | – | `true` | Cap each beam with a hemisphere, so beams meeting at a shared point join smoothly. `false` gives flat ends. |
+
+```csharp
+var beams = new List<(Vec3 a, Vec3 b, double dA, double dB)>();
+for (int i = 0; i < pts.Count - 1; i++)
+    beams.Add((pts[i], pts[i + 1], 2 * rad[i], 2 * rad[i + 1]));
+Shape channels = Beams(beams);          // 8,500 beams, one render, ~3 s
+```
+
+#### Spheres
+
+```csharp
+Shape Spheres(IEnumerable<Vec3> points, double d)
+```
+
+A batch of spheres in one render: the point-cloud companion to `Beams`, for lattice nodes and seeded packings.
+
+| Parameter | Units | Default | Meaning |
+| --- | --- | --- | --- |
+| `points` | mm points | required | Sphere centres. |
+| `d` | mm | required | Diameter of every sphere. Must be greater than 0. |
 
 #### FromFile
 
@@ -455,6 +547,21 @@ Round every edge of a solid, convex and concave alike, by a radius, using a trip
 | `shape` | shape | required | Shape to smooth. |
 | `r` | mm | required | Rounding radius. Must be greater than 0. Features thinner than `2r` disappear. |
 
+#### Fillet
+
+```csharp
+Shape Fillet(Shape shape, double r)
+```
+
+Fillet the **concave** edges of a solid: every internal corner where two faces meet gets a radius, and nothing else moves. This is the finishing pass for a ribbed or latticed part — it only ever **adds** material, so a 1.5 mm rib survives a 0.6 mm fillet untouched.
+
+Reach for `Smooth` instead only when you want the convex edges rounded too. `Smooth` is a triple offset and it deletes anything thinner than twice its radius, which makes it unusable as a finishing pass on a ribbed part.
+
+| Parameter | Units | Default | Meaning |
+| --- | --- | --- | --- |
+| `shape` | shape | required | Shape to fillet. |
+| `r` | mm | required | Fillet radius. Must be greater than 0 and worth a couple of voxels. |
+
 #### ArrayLinear
 
 ```csharp
@@ -472,17 +579,18 @@ Repeat a shape along a straight line and fuse the copies.
 #### ArrayRadial
 
 ```csharp
-Shape ArrayRadial(Shape shape, int count, double radius, Vec3? about = null)
+Shape ArrayRadial(Shape shape, int count, double radius, Vec3? about = null, string axis = "y")
 ```
 
-Repeat a shape evenly around the +Y axis and fuse the copies. Each copy is first pushed out along +X by `radius`, then rotated into place, so a radius of 0 spins the copies about the axis itself.
+Repeat a shape evenly around the +Y axis (or +Z with `axis: "z"`) and fuse the copies. Each copy is first pushed out along +X by `radius`, then rotated into place, so a radius of 0 spins the copies about the axis itself.
 
 | Parameter | Units | Default | Meaning |
 | --- | --- | --- | --- |
 | `shape` | shape | required | Shape to repeat. |
 | `count` | count | required | Number of copies around the full 360 degrees. Must be at least 1. |
 | `radius` | mm | required | Distance from the axis to each copy. May be 0. |
-| `about` | mm point | origin | Point the +Y axis passes through. |
+| `about` | mm point | origin | Point the axis passes through. |
+| `axis` | – | `"y"` | Axis to array around: `"y"` or `"z"`. |
 
 #### Lattice
 
@@ -550,6 +658,25 @@ Solid volume in cubic millimetres, measured on the voxel field, so it carries th
 | --- | --- | --- | --- |
 | `shape` | shape | required | Shape to measure. |
 
+#### Area
+
+```csharp
+double Area(Shape shape)
+```
+
+Wetted surface area in square millimetres: the headline number for a heat exchanger, a lattice or anything else whose job is surface.
+
+`Area` **meshes the shape to measure it**, so it costs about what `SavePart` costs. Call it where surface area is the product spec, not out of habit. It also predicts the triangle count of the saved part, which is usually where a slow script's time is actually going:
+
+```csharp
+double tris = Area(part) / (0.5 * VoxelSizeMM * VoxelSizeMM);
+if (tris > 4e6) Log("over 4 M triangles — meshing will dominate; raise voxelSizeMM");
+```
+
+| Parameter | Units | Default | Meaning |
+| --- | --- | --- | --- |
+| `shape` | shape | required | Shape to measure. |
+
 #### BBox
 
 ```csharp
@@ -605,94 +732,117 @@ A `Shape` is the single value every command consumes and produces.
 | `Center` | Midpoint of the box, in mm. |
 | `MaxSize` | The largest of the three extents, in mm. |
 
-## Worked example: the rocket nozzle
+## Writing your own field
 
-[`scripts-library/rocket_nozzle.csx`](../scripts-library/rocket_nozzle.csx) turns six engineering numbers into a printable bell nozzle in about 12 seconds at a 0.3 mm voxel. It is the clearest demonstration of why geometry is worth writing as code: the contour is not drawn, it is **derived**.
-
-**1. Read the inputs.** Every number comes through `ParamF`, so one script is a family of nozzles.
+The command list is not the ceiling. A script may declare its own `IImplicit` and render it, which is how you build geometry no primitive covers. [`compliant_wheel.csx`](../scripts-library/compliant_wheel.csx) uses it to make every rib of a band the level set of one function:
 
 ```csharp
-double throatDiaMM  = ParamF("throatDiaMM", 12f);
-double exitDiaMM    = ParamF("exitDiaMM", 40f);
-double chamberDiaMM = ParamF("chamberDiaMM", 30f);
-double lengthMM     = ParamF("lengthMM", 60f);
-double wallMM       = ParamF("wallMM", 1.6f);
-double bellFraction = ParamF("bellFraction", 0.8f);
-```
-
-It then rejects impossible combinations up front (an exit smaller than the throat, a wall thinner than two voxels), so a bad call fails with a sentence rather than an empty part.
-
-**2. Do the engineering.** The expansion area ratio sets everything downstream. The bell length is `bellFraction` of the length of a 15 degree conical nozzle with the same area ratio, which is what "80 percent bell" means, and whatever length is left over becomes the convergent section.
-
-```csharp
-double areaRatio = (rExit / rThroat) * (rExit / rThroat);
-double coneLen   = (rExit - rThroat) / Math.Tan(15.0 * Math.PI / 180.0);
-double bellLen   = bellFraction * coneLen;
-double convLen   = lengthMM - bellLen;
-```
-
-The Rao wall angles `thetaN` (leaving the throat) and `thetaE` (arriving at the exit plane) come from a smooth fit to the published charts as a function of area ratio. That is a shaping approximation, not a method-of-characteristics contour, and the script says so in its header.
-
-**3. Build the contour as a function.** The divergent half is a quadratic Bezier whose control point is where the two tangents cross. Because `y(t)` is monotonic, a 36-step bisection inverts it, so the Bezier can be read as a radius at a height. The convergent half is a raised cosine, which lands on the throat with zero slope and gives a rounded throat with no crease.
-
-```csharp
-double y1 = (r2 - r0 - m2 * y2 + m0 * y0) / (m0 - m2);   // tangent intersection
-double r1 = r0 + m0 * (y1 - y0);
-
-Func<double, double> innerRadius = y =>
+sealed class SpiralRibs : IImplicit
 {
-    double yc = Math.Clamp(y, 0.0, lengthMM);
-    return yc <= convLen ? ConvergentRadius(yc) : BellRadius(yc);
-};
+    readonly float m_n, m_b, m_r0, m_r1, m_t0, m_t1, m_phi0;
+    public SpiralRibs(int n, float b, float r0, float r1, float t0, float t1, float phi0)
+    { m_n = n; m_b = b; m_r0 = r0; m_r1 = r1; m_t0 = t0; m_t1 = t1; m_phi0 = phi0; }
+
+    public float fSignedDistance(in Vector3 v)
+    {
+        float r = MathF.Sqrt(v.X * v.X + v.Y * v.Y);
+        if (r < 1e-3f) return 1e3f;
+        float theta = MathF.Atan2(v.Y, v.X) + m_b * MathF.Log(r) - m_phi0;
+        float g     = m_n * theta / (2f * MathF.PI);
+        float frac  = g - MathF.Round(g);                        // signed, in [-0.5, 0.5]
+        float dPerp = MathF.Abs(frac) * (2f * MathF.PI / m_n) * r / MathF.Sqrt(1f + m_b * m_b);
+        float u = Math.Clamp((r - m_r0) / (m_r1 - m_r0), 0f, 1f);
+        float t = m_t0 + (m_t1 - m_t0) * u;                      // thickness graded across the band
+        return 0.95f * (dPerp - 0.5f * t);
+    }
+}
 ```
 
-**4. Make it a wall.** `Loft` revolves the outer surface, a second `Loft` revolves the bore and runs it past both ends so the part is a tube rather than a bottle, and one `Subtract` leaves a constant `wallMM` wall.
+`phi + b*ln(r) = 2*pi*k/n` is a family of `n` logarithmic spirals. Measure the perpendicular distance to the nearest one, subtract half a thickness, and the zero set is every rib in the band — one render, any `n`, and the thickness can be a function of anything you like.
+
+Two rules matter:
+
+- **Return an under-estimate, never an over-estimate.** PicoGK renders a narrow band around the zero set; a field that claims to be further from the surface than it really is will simply be missed. Divide by the local gradient magnitude (the `sqrt(1 + b^2)` above), and if you are unsure, scale the whole thing by 0.95 as this one does.
+- **Clip it with `voxIntersectImplicit`, not `new Voxels(field, box)`.** The intersect form walks only the voxels the envelope already occupies, so a thin annular band costs the band rather than its bounding box:
 
 ```csharp
-Shape outerSolid = Loft(y => innerRadius(y) + wallMM, 0, lengthMM);
-Shape bore       = Loft(innerRadius, -overrun, lengthMM + overrun);
+Shape env = Subtract(Cylinder(2 * r1, w, at: V(0, 0, w * 0.5), axis: "z"),
+                     Cylinder(2 * r0, w + 2, at: V(0, 0, w * 0.5), axis: "z"));
+Shape band = ((Voxels)env).voxIntersectImplicit(new SpiralRibs(n, b, r0, r1, t0, t1, 0));
 ```
 
-`Shell(outerSolid, wallMM)` is the wrong tool here: `Loft` caps its own ends, so shelling it would seal the throat and the exit.
+[`graded_lattice_puck.csx`](../scripts-library/graded_lattice_puck.csx) is the same technique applied to a gyroid whose solid-fraction bias varies with radius.
 
-**5. Add the flange.** A `Cylinder` disc plus a `Torus` bead is a flange with a rolled rim, and `SmoothUnion` fuses it to the nozzle with a fillet instead of a sharp internal corner. The bore is subtracted **after** the flange goes on, which reopens the inlet the disc had covered.
+## Worked example: the regen-cooled nozzle
+
+[`scripts-library/rocket_nozzle.csx`](../scripts-library/rocket_nozzle.csx) turns about twenty engineering numbers into a regeneratively-cooled bell nozzle: a Rao contour, a radius-graded hot-gas wall, and 22 helical cooling channels wrapping the bell under their own closed-out jacket. About 58 seconds at a 0.3 mm voxel. It is the clearest demonstration of why geometry is worth writing as code — none of it is drawn, all of it is **derived**.
+
+**1. Read and validate the inputs.** Every number comes through `ParamF`, so one script is a family of engines, and every impossible combination is rejected up front with a sentence rather than an empty part: an exit smaller than the throat, a wall under three voxels, a bolt circle that would break into the coolant jacket.
+
+**2. Stand it on the plate, exit down.** `z = 0` is the exit plane. Radius decreases monotonically from there up to the throat, so the outer wall leans **inward** the whole way and nothing overhangs. Every revolved builder is called with `axis: "z"`.
+
+**3. Build the contour as a function.** The divergent half is a quadratic Bezier whose control point is where the throat and exit tangents cross; a 36-step bisection inverts `x(t)` so the Bezier reads as a radius at a height. The convergent half is a raised cosine, landing on the throat with zero slope.
 
 ```csharp
-Shape flange = Union(flangeDisc, flangeBead);
-Shape body   = SmoothUnion(outerSolid, flange, radius: Math.Max(wallMM, 1.0));
-body = Subtract(body, bore);
+public double R(double z)
+{
+    double zc = Math.Clamp(z, 0.0, TopZMM);
+    if (zc <= _zT) { /* bisect the Bezier */ }
+    double u = Math.Clamp((zc - _zT) / _convLen, 0.0, 1.0);
+    return _rT + (_rC - _rT) * 0.5 * (1.0 - Math.Cos(Math.PI * u));
+}
 ```
 
-**6. Array in both directions.** `ArrayRadial` appears twice, once as a cutter and once as an adder. Bolt holes are one cylinder pushed out to the bolt circle and spun; the regenerative cooling tubes are one `Pipe` swept along the outer contour and spun about the axis with `radius: 0`.
+**4. Grade the wall for a reason.** Thickest at the throat, where heat flux and pressure both peak; thinnest at the exit. Grading on **radius** rather than height means the convergent section, which climbs back out to the chamber radius, picks up an intermediate thickness automatically:
 
 ```csharp
-body = Subtract(body, ArrayRadial(onePin, boltHoles, radius: boltCircleR));
+public double Wall(double z)
+{
+    double t = Math.Clamp((R(z) - _rT) / (_rE - _rT), 0.0, 1.0);
+    return _wallT + (_wallE - _wallT) * t;
+}
+```
+
+**5. Solve for the helix, do not pick it.** Holding the perpendicular pitch between adjacent channels constant gives `cos(alpha) = pitchMM * N / (2*pi*rho)`. At the throat `rho` is small, so the channels run nearly straight and pack tightly — maximum cooling exactly where the engine needs it. Down the bell `rho` grows and they wrap harder, until `alpha` saturates at `helixMaxDeg`. Channel diameter falls out of the same equation, so the land between channels stays constant. Total wrap at the defaults is 298 degrees.
+
+**6. March the path by arc length and hand it to `Beams`.** This is the step that makes the script finish. Each of the 22 starts is walked in `stepMM` increments along the surface; each segment becomes one beam with its own diameter at each end, and one extra beam per sample grows a tapered cone **radially outward** — turning the round bore into a self-supporting teardrop.
+
+```csharp
+z   += step * cosA;              // axial advance
+phi += step * sinA / rr;         // circumferential advance, exact on the surface
 ...
-Shape oneTube = Pipe(tubePath, tubeDiaMM);
-body = Union(body, ArrayRadial(oneTube, coolingTubes, radius: 0));
+beams.Add((pts[i], pts[i + 1], 2 * rad[i], 2 * rad[i + 1]));
+Shape channels = Beams(beams);   // 8,558 beams, one render, about 3 s
 ```
 
-**7. Report and save.** `Volume` and `BBox` go to the log so the run is auditable, and `SavePart` meshes, cleans, watertight-checks and registers the result.
+**7. Model the fluid, derive the metal.** The coolant volume — channels, two manifold tori, two radial ports — is built as one solid and clipped out of the hot-gas wall, so the wall thickness is a guarantee rather than a hope. The closeout jacket is then **grown from the coolant** rather than drawn around it, so it cannot miss a channel:
 
 ```csharp
-Bounds bb = BBox(body);
-Log($"nozzle: {Volume(body):0.#} mm3, bbox {bb.Size}, exit plane at y = {bb.Max.y:0.##} mm");
-SavePart("rocket_nozzle", body);
+Coolant = Subtract(Union(channels, ringIn, ringOut, portIn, portOut), wallSolid);
+Shape jacket = Offset(Coolant, closeoutT);      // 2 * closeout > land, so the jacket closes itself
 ```
 
-At the defaults this produces a watertight part of about 18,200 mm3 in a 56.4 by 61.5 by 56.4 mm box, roughly 613,000 triangles. Change `exitDiaMM` to 60 and every one of those numbers follows, with no redraw.
+**8. Blend the flange where the fillet is, not everywhere.** `SmoothUnion` is a double offset and its cost tracks the surface area you give it, so the flange is blended onto the smooth conical wall *before* the corrugated jacket is unioned on. Same seam, a fifth of the time.
+
+```csharp
+Shape body = Union(SmoothUnion(hotWall, flange, radius: 2.0), jacket, bossIn, bossOut);
+body = Subtract(body, bore, Coolant);            // subtract the function LAST
+```
+
+**9. Report and save.** At the defaults this is a watertight 100,915 mm3 part — 888 g in CuCrZr — in a 122 by 109 by 132 mm box, about 4.9 M triangles. Change `exitDiaMM` and every one of those numbers follows, with no redraw.
 
 ## Example scripts
 
-All of these ship in [`scripts-library/`](../scripts-library) and appear in the SCRIPTS template picker. Runtimes are at the default 0.3 mm voxel.
+All of these ship in [`scripts-library/`](../scripts-library) and appear in the SCRIPTS `EXAMPLES` picker. Every one of them **stands on the plate at `z = 0`**, and each states its own recommended `voxelSizeMM` in its header comment, because the right resolution is part of the design.
 
 | Script | What it makes | Shows off |
 | --- | --- | --- |
-| [`rocket_nozzle.csx`](../scripts-library/rocket_nozzle.csx) | A parametric bell nozzle with a bolted chamber flange and regenerative cooling tubes. About 12 s. | `Loft`, `Subtract`, `Cylinder`, `Torus`, `Union`, `SmoothUnion`, `ArrayRadial` both ways, `Pipe`. |
-| [`embossed_card.csx`](../scripts-library/embossed_card.csx) | A rounded card with the same depth map raised on the front and engraved on the back. About 12 s. | `Box`, `Smooth`, `Emboss` in both modes, `BBox`, `Volume`. |
-| [`manifold_block.csx`](../scripts-library/manifold_block.csx) | A ported pneumatic manifold whose internal gallery is filled with a gyroid. About 6 s. | `ArrayLinear`, `Pipe`, `Union`, `Subtract`, `Intersect`, `Lattice`. |
-| [`heat_exchanger_core.csx`](../scripts-library/heat_exchanger_core.csx) | A parametric gyroid heat-exchanger core. | The raw PicoGK route: `MeshUtil`, `TPMSWall`, `voxIntersectImplicit`. |
-| [`graded_lattice_puck.csx`](../scripts-library/graded_lattice_puck.csx) | A puck filled with a radially graded skeletal gyroid. | Writing your own `IImplicit` when a fixed-parameter field is not enough. |
+| [`rocket_nozzle.csx`](../scripts-library/rocket_nozzle.csx) | A regeneratively-cooled bell nozzle: Rao contour, graded wall, 22 helical cooling channels under their own jacket, bolted injector flange. About 58 s at 0.3 mm. | `Beams`, `Loft(axis)`, `Torus(axis)`, `Capsule`, `Offset` as a jacket, `SmoothUnion`, `ArrayRadial(axis)`. |
+| [`heat_exchanger.csx`](../scripts-library/heat_exchanger.csx) | A two-domain TPMS counterflow heat exchanger: two fluid circuits, four ports, one printable part, with the separation **proven** in the log. About 45 s at 0.4 mm. | The fluid-first recipe, `Lattice` sheet vs skeletal, `Intersect` as an assertion, `Area`, multi-part output. |
+| [`compliant_wheel.csx`](../scripts-library/compliant_wheel.csx) | An airless O180 mm rover wheel: bolted hub, three counter-handed bands of spiral ribs, chevron tread. About 50 s at 0.35 mm. | Writing your own `IImplicit`, `voxIntersectImplicit`, `Fillet` as a finishing pass, `Cylinder`/`ArrayRadial` about +Z. |
+| [`embossed_card.csx`](../scripts-library/embossed_card.csx) | An 85.6 by 54 by 1.6 mm card with the ANVIL emblem raised on the front and engraved on the back. About 37 s at 0.12 mm. | `Emboss` in both modes, a rounded-rectangle outline from `Box` + `Cylinder`, `Smooth` as an edge break. |
+| [`manifold_block.csx`](../scripts-library/manifold_block.csx) | A ported pneumatic manifold standing on the plate, whose internal gallery is filled with a gyroid. About 4 s at 0.3 mm. | `ArrayLinear`, `Pipe`, `Union`, `Subtract`, `Intersect`, `Lattice`, `Cylinder(axis)`. |
+| [`graded_lattice_puck.csx`](../scripts-library/graded_lattice_puck.csx) | A O40 by 15 mm puck filled with a radially graded skeletal gyroid — dense at the rim, open in the middle. About 3 s at 0.3 mm. | Writing your own `IImplicit` when a fixed-parameter field is not enough, plus `voxIntersectImplicit`. |
 | [`forge_smoke.csx`](../scripts-library/forge_smoke.csx) | Two demo parts, plus an assertion per command. | Every Forge command checked against its analytic answer. Read it as an executable spec. |
 
 ## Gotchas
@@ -705,6 +855,9 @@ All of these ship in [`scripts-library/`](../scripts-library) and appear in the 
 - **`ArrayRadial(shape, n, radius: 0)` spins copies about the world +Y axis**, not about each copy's own centre. Pass `about` to move the axis.
 - **Measured volumes carry half a voxel of skin.** Compare shapes at the same voxel size before concluding that a change did something.
 - **Declaring a class inside a script is legal**, and `graded_lattice_puck.csx` does exactly that to define a custom `IImplicit`. Local functions at the top level are fine too, as long as they are declared after the locals they capture.
+- **A class declared in a script cannot see the script globals.** `Log`, `SavePart`, `ParamF` and `VoxelSizeMM` are members of the script's own scope, not statics. Pass what a class needs into its constructor — the three flagship examples take `float voxelMM` and an `Action<string>` logger, which also keeps the class testable.
+- **A cutter whose face lands exactly on the face it is cutting leaves a rind of boundary voxels behind.** If two shapes share a surface, make the cutter overshoot by a couple of millimetres. `heat_exchanger.csx` does this deliberately, and its separation proof comes out at exactly zero because of it.
+- **Compare against `k * VoxelSizeMM` with a little slack.** `ParamF` returns a `float`, so `0.9f < 3 * 0.3f` is true by half an ulp and a perfectly valid three-voxel wall gets rejected. Use `3 * VoxelSizeMM - 1e-3`.
 
 ## Security
 

@@ -23,8 +23,10 @@
 //   Volume       the infill fraction, measured rather than assumed.
 //
 // LAYOUT
-//   X runs along the port line. Y is up. The gallery runs along X below the
-//   bores, then turns out through the +Z face as the supply connection, and
+//   The billet STANDS ON THE PLATE, z in [0, blockHgtMM]. X runs along the port
+//   line, Y is the block's width, Z is up: every revolved builder is called with
+//   axis: "z". The bores are drilled down the +Z face; the gallery runs along X
+//   below them, then turns out through the -Y face as the supply connection, and
 //   the -X end face carries the return.
 //
 // PARAMETERS (all optional)
@@ -65,40 +67,41 @@ if (latticeWallMM < 2 * VoxelSizeMM)
 //    billet, the gallery and the lattice all follow.
 // ---------------------------------------------------------------------------
 double blockLenMM = (ports - 1) * spacingMM + galleryDiaMM + 2 * wallMM;   // along X
-double blockWidMM = galleryDiaMM + 2 * wallMM;                             // along Z
-double blockHgtMM = galleryDiaMM + 2 * wallMM + 8;                         // along Y
+double blockWidMM = galleryDiaMM + 2 * wallMM;                             // along Y
+double blockHgtMM = galleryDiaMM + 2 * wallMM + 8;                         // along Z, standing on the plate
 
-double galleryY   = -blockHgtMM * 0.5 + wallMM + galleryDiaMM * 0.5;       // gallery axis height
-double topY       = blockHgtMM * 0.5;
-double boreHgt    = (topY + 1) - galleryY;                                 // bore breaks into the gallery
-double boreCentreY = (galleryY + topY + 1) * 0.5;
-double firstBoreX = -(ports - 1) * spacingMM * 0.5;
+double galleryZ    = wallMM + galleryDiaMM * 0.5;                          // gallery axis height above the plate
+double topZ        = blockHgtMM;
+double boreHgt     = (topZ + 1) - galleryZ;                                // bore breaks into the gallery
+double boreCentreZ = (galleryZ + topZ + 1) * 0.5;
+double firstBoreX  = -(ports - 1) * spacingMM * 0.5;
 
 Log($"manifold: {ports} ports dia {boreDiaMM:0.##} at {spacingMM:0.##} mm pitch, gallery dia {galleryDiaMM:0.##}, " +
-    $"billet {blockLenMM:0.##} x {blockHgtMM:0.##} x {blockWidMM:0.##} mm, voxel {VoxelSizeMM} mm");
+    $"billet {blockLenMM:0.##} x {blockWidMM:0.##} x {blockHgtMM:0.##} mm (X x Y x Z), voxel {VoxelSizeMM} mm");
 
 // ---------------------------------------------------------------------------
 // 2. The billet.
 // ---------------------------------------------------------------------------
-Shape block = Box(blockLenMM, blockHgtMM, blockWidMM);
+Shape block = Box(blockLenMM, blockWidMM, blockHgtMM, at: V(0, 0, blockHgtMM * 0.5));
 
 // ---------------------------------------------------------------------------
-// 3. The port bores. One cylinder, repeated along X.
+// 3. The port bores. One cylinder standing along +Z, repeated along X.
 // ---------------------------------------------------------------------------
-Shape oneBore = Cylinder(d: boreDiaMM, h: boreHgt, at: V(firstBoreX, boreCentreY, 0));
+Shape oneBore = Cylinder(d: boreDiaMM, h: boreHgt, at: V(firstBoreX, 0, boreCentreZ), axis: "z");
 Shape bores   = ArrayLinear(oneBore, ports, V(spacingMM, 0, 0));
 
 // ---------------------------------------------------------------------------
 // 4. The gallery. It runs the length of the port line, then turns out through
-//    the +Z face. Pipe rounds the corner for you; both open ends are pushed
-//    2 mm past the billet so they break cleanly through the faces.
+//    the -Y face. Pipe rounds the corner for you; both open ends are pushed
+//    2 mm past the billet so they break cleanly through the faces. Pipe takes
+//    points, so it needs no axis of its own.
 // ---------------------------------------------------------------------------
 double turnX = blockLenMM * 0.5 - galleryDiaMM * 0.75;
 var galleryPath = new List<Vec3>
 {
-    V(-blockLenMM * 0.5 - 2, galleryY, 0),          // return, out of the -X face
-    V(turnX,                 galleryY, 0),          // the run under every bore
-    V(turnX,                 galleryY, blockWidMM * 0.5 + 2),  // supply, out of the +Z face
+    V(-blockLenMM * 0.5 - 2, 0, galleryZ),                      // return, out of the -X face
+    V(turnX,                 0, galleryZ),                      // the run under every bore
+    V(turnX, -(blockWidMM * 0.5 + 2), galleryZ),                // supply, out of the -Y face
 };
 Shape gallery = Pipe(galleryPath, galleryDiaMM);
 
@@ -135,5 +138,5 @@ Log($"lattice: {pattern} cell {cellMM:0.##} mm wall {latticeWallMM:0.##} mm, {vF
 Shape manifold = Union(drilled, fill);
 
 Bounds bb = BBox(manifold);
-Log($"manifold: {Volume(manifold):0.#} mm3, bbox {bb.Size}");
+Log($"manifold: {Volume(manifold):0.#} mm3, bbox {bb.Size}, standing on the plate from z = {bb.Min.z:0.##} to {bb.Max.z:0.##} mm");
 SavePart("manifold_block", manifold);

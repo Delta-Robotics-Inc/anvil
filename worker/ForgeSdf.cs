@@ -132,26 +132,50 @@ namespace Anvil.Worker
     }
 
     /// <summary>
-    /// Torus whose ring lies in the XZ plane (axis of revolution = +Y), centred
-    /// on <c>C</c>. <c>R</c> is the centre-circle radius, <c>r</c> the tube
-    /// radius. Exact signed distance everywhere.
+    /// Torus centred on <c>C</c>, revolved about +Y (its ring lies in the XZ
+    /// plane) or about +Z (ring in the XY plane). <c>R</c> is the centre-circle
+    /// radius, <c>r</c> the tube radius. Exact signed distance everywhere.
     /// </summary>
     internal sealed class SdTorus : IImplicit
     {
         private readonly Vector3 _c;
         private readonly float _bigR, _tubeR;
+        private readonly bool _axisZ;
 
-        public SdTorus(Vector3 center, float bigR, float tubeR)
+        public SdTorus(Vector3 center, float bigR, float tubeR, bool axisZ = false)
         {
-            _c = center; _bigR = bigR; _tubeR = tubeR;
+            _c = center; _bigR = bigR; _tubeR = tubeR; _axisZ = axisZ;
         }
 
         public float fSignedDistance(in Vector3 p)
         {
             Vector3 q = p - _c;
-            float k = MathF.Sqrt(q.X * q.X + q.Z * q.Z) - _bigR;
-            return MathF.Sqrt(k * k + q.Y * q.Y) - _tubeR;
+            float inPlane = _axisZ ? MathF.Sqrt(q.X * q.X + q.Y * q.Y)
+                                   : MathF.Sqrt(q.X * q.X + q.Z * q.Z);
+            float alongAxis = _axisZ ? q.Z : q.Y;
+            float k = inPlane - _bigR;
+            return MathF.Sqrt(k * k + alongAxis * alongAxis) - _tubeR;
         }
+    }
+
+    /// <summary>
+    /// Re-frames a +Y-axis implicit onto +Z, so any axisymmetric field written
+    /// about the Forge up axis can also be built standing along +Z.
+    ///
+    /// The rigid rotation that carries the local +Y axis onto world +Z is
+    /// RotX(+90): (x, y, z) -&gt; (x, -z, y). A field is evaluated in its own
+    /// frame, so the sample point is pushed through the INVERSE of that
+    /// rotation, (x, y, z) -&gt; (x, z, -y). Rotations preserve distance, so the
+    /// wrapped field stays exactly as band-safe as the one it wraps.
+    /// </summary>
+    internal sealed class SdAxisZ : IImplicit
+    {
+        private readonly IImplicit _inner;
+
+        public SdAxisZ(IImplicit inner) => _inner = inner;
+
+        public float fSignedDistance(in Vector3 p)
+            => _inner.fSignedDistance(new Vector3(p.X, p.Z, -p.Y));
     }
 
     /// <summary>

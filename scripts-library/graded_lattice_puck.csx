@@ -12,12 +12,16 @@
 // so raising the bias toward the rim thickens the solid network there. Anvil
 // voxelises any IImplicit via voxIntersectImplicit, so this "just works".
 //
+// Orientation: the puck STANDS ON THE PLATE, axis along +Z, z in [0, heightMM].
+// The envelope is built with Cylinder(..., axis: "z") and the grading field
+// measures its radius in the XY plane to match.
+//
 // Parameters (all optional):
-//   diaMM       puck diameter               (default 40)
-//   heightMM    puck height (Y, the up axis)  (default 15)
-//   cellMM      gyroid unit-cell            (default 6)
-//   biasCenter  skeletal bias at the axis   (default -0.6, sparser)
-//   biasRim     skeletal bias at the rim    (default  0.6, denser)
+//   diaMM       puck diameter                 (default 40)
+//   heightMM    puck height (Z, the up axis)  (default 15)
+//   cellMM      gyroid unit-cell              (default 6)
+//   biasCenter  skeletal bias at the axis     (default -0.6, sparser)
+//   biasRim     skeletal bias at the rim      (default  0.6, denser)
 // ---------------------------------------------------------------------------
 
 float diaMM      = ParamF("diaMM", 40f);
@@ -51,10 +55,10 @@ class RadialGradedGyroid : IImplicit
 
     public float fSignedDistance(in Vector3 v)
     {
-        // The puck STANDS IN Y, so the radial coordinate is measured in the
-        // XZ plane — the grading has to run out to the rim, not up the axis.
-        float dx = v.X - m_c.X, dz = v.Z - m_c.Z;
-        float r  = MathF.Sqrt(dx * dx + dz * dz);
+        // The puck STANDS IN Z, so the radial coordinate is measured in the
+        // XY plane — the grading has to run out to the rim, not up the axis.
+        float dx = v.X - m_c.X, dy = v.Y - m_c.Y;
+        float r  = MathF.Sqrt(dx * dx + dy * dy);
         float t  = Math.Clamp(r / m_rMax, 0f, 1f);
         float bias = m_bias0 + (m_bias1 - m_bias0) * t;
 
@@ -68,13 +72,15 @@ class RadialGradedGyroid : IImplicit
     }
 }
 
-// Solid puck envelope (elliptical cylinder with equal diameters, standing in Y).
-int seg = MeshUtil.Segments(diaMM, VoxelSizeMM);
-Mesh mshPuck = MeshUtil.CreateCylinder(diaMM, diaMM, heightMM, Vector3.Zero, seg);
-Voxels voxPuck = new Voxels(mshPuck);
+// Solid puck envelope, standing on the plate along +Z: z in [0, heightMM].
+Shape puck = Cylinder(d: diaMM, h: heightMM, at: V(0, 0, heightMM * 0.5f), axis: "z");
 
-// Clip the graded skeletal gyroid to the puck.
+// Clip the graded skeletal gyroid to the puck. voxIntersectImplicit walks only
+// the voxels the envelope already occupies, so the field is never sampled over
+// empty space.
 var field = new RadialGradedGyroid(cellMM, biasCenter, biasRim, diaMM * 0.5f, Vector3.Zero);
-Voxels voxGraded = voxPuck.voxIntersectImplicit(field);
+Voxels voxGraded = ((Voxels)puck).voxIntersectImplicit(field);
 
+Bounds bb = BBox(voxGraded);
+Log($"puck: {Volume(voxGraded):0.#} mm3, bbox {bb.Size}, standing on the plate from z = {bb.Min.z:0.##} to {bb.Max.z:0.##} mm");
 SavePart("graded_lattice_puck", voxGraded);

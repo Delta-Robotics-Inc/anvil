@@ -13,8 +13,13 @@
 //
 // CONVENTIONS (all commands, no exceptions)
 //   * Units are MILLIMETRES. Angles are DEGREES.
-//   * The up axis is +Y (the Onshape/SolidWorks convention the viewer uses), so
-//     Cylinder / Cone / Loft / Torus / ArrayRadial all revolve about +Y.
+//   * The up axis is +Y (the Onshape/SolidWorks convention), so Cylinder / Cone
+//     / Loft / Torus / ArrayRadial revolve about +Y by default. Every one of
+//     those five takes an `axis` modifier — axis: "z" builds the same shape
+//     standing along +Z instead, which is what a part destined for a +Z-up
+//     viewer or a +Z build plate wants. Nothing else in the command set has an
+//     up axis: Box takes three extents, Capsule / Pipe / Beams take points, and
+//     Emboss takes any of the six faces.
 //   * Scripts are COORDINATE-EXPLICIT: nothing is auto-dropped onto a build
 //     plate. Every builder's `at` modifier is the shape's CENTRE and defaults to
 //     the world origin (0, 0, 0). To stand a 20 mm cylinder on the XZ plane, say
@@ -185,29 +190,37 @@ namespace Anvil.Worker
         }
 
         /// <summary>
-        /// Circular cylinder standing along the +Y axis.
+        /// Circular cylinder standing along the +Y axis, or along +Z with
+        /// <c>axis: "z"</c>.
         /// </summary>
         /// <param name="d">Diameter (mm). Must be &gt; 0.</param>
-        /// <param name="h">Height along Y (mm). Must be &gt; 0.</param>
-        /// <param name="at">Centre of the cylinder (mm) — it spans at.y ± h/2. Default: the world origin.</param>
-        public static Shape Cylinder(double d, double h, Vec3? at = null)
+        /// <param name="h">Height along the chosen axis (mm). Must be &gt; 0.</param>
+        /// <param name="at">Centre of the cylinder (mm) — it spans at ± h/2 along the axis. Default: the world origin.</param>
+        /// <param name="axis">Axis to stand along: "y" (default) or "z".</param>
+        public static Shape Cylinder(double d, double h, Vec3? at = null, string axis = "y")
         {
             Positive(d, "Cylinder", "d"); Positive(h, "Cylinder", "h");
             int seg = MeshUtil.Segments((float)d, s_voxelMM);
-            return Voxelize(MeshUtil.CreateCylinder((float)d, (float)d, (float)h, Pt(at), seg));
+            if (!AxisZ(axis, "Cylinder"))
+                return Voxelize(MeshUtil.CreateCylinder((float)d, (float)d, (float)h, Pt(at), seg));
+            return StandOnZ(MeshUtil.CreateCylinder((float)d, (float)d, (float)h, Vector3.Zero, seg), Pt(at));
         }
 
         /// <summary>
-        /// Circular cone standing along the +Y axis: base at at.y - h/2, apex at at.y + h/2.
+        /// Circular cone standing along the +Y axis (base at at.y - h/2, apex at
+        /// at.y + h/2), or along +Z with <c>axis: "z"</c>.
         /// </summary>
         /// <param name="d">Base diameter (mm). Must be &gt; 0.</param>
-        /// <param name="h">Height along Y (mm). Must be &gt; 0.</param>
+        /// <param name="h">Height along the chosen axis (mm). Must be &gt; 0.</param>
         /// <param name="at">Centre of the cone's bounding box (mm). Default: the world origin.</param>
-        public static Shape Cone(double d, double h, Vec3? at = null)
+        /// <param name="axis">Axis to stand along: "y" (default) or "z".</param>
+        public static Shape Cone(double d, double h, Vec3? at = null, string axis = "y")
         {
             Positive(d, "Cone", "d"); Positive(h, "Cone", "h");
             int seg = MeshUtil.Segments((float)d, s_voxelMM);
-            return Voxelize(MeshUtil.CreateCone((float)d, (float)d, (float)h, Pt(at), seg));
+            if (!AxisZ(axis, "Cone"))
+                return Voxelize(MeshUtil.CreateCone((float)d, (float)d, (float)h, Pt(at), seg));
+            return StandOnZ(MeshUtil.CreateCone((float)d, (float)d, (float)h, Vector3.Zero, seg), Pt(at));
         }
 
         /// <summary>
@@ -244,20 +257,22 @@ namespace Anvil.Worker
 
         /// <summary>
         /// Torus lying in the XZ plane (its axis of revolution is +Y), i.e. a ring
-        /// you look through from above.
+        /// you look through from above — or in the XY plane with <c>axis: "z"</c>.
         /// </summary>
         /// <param name="d">Diameter of the ring's CENTRE circle (mm). The outer diameter is d + ring. Must be &gt; 0.</param>
         /// <param name="ring">Diameter of the tube itself (mm). Must be &gt; 0.</param>
         /// <param name="at">Centre of the torus (mm). Default: the world origin.</param>
-        public static Shape Torus(double d, double ring, Vec3? at = null)
+        /// <param name="axis">Axis of revolution: "y" (default) or "z".</param>
+        public static Shape Torus(double d, double ring, Vec3? at = null, string axis = "y")
         {
             Positive(d, "Torus", "d"); Positive(ring, "Torus", "ring");
+            bool z = AxisZ(axis, "Torus");
             Vector3 c = Pt(at);
             float bigR = (float)d * 0.5f, tubeR = (float)ring * 0.5f;
             float ext = bigR + tubeR;
-            BBox3 box = Pad(new BBox3(c - new Vector3(ext, tubeR, ext),
-                                      c + new Vector3(ext, tubeR, ext)));
-            return Render(new SdTorus(c, bigR, tubeR), box);
+            Vector3 half = z ? new Vector3(ext, ext, tubeR) : new Vector3(ext, tubeR, ext);
+            BBox3 box = Pad(new BBox3(c - half, c + half));
+            return Render(new SdTorus(c, bigR, tubeR, z), box);
         }
 
         /// <summary>
@@ -289,10 +304,15 @@ namespace Anvil.Worker
         /// </param>
         /// <param name="y0">Height where the solid starts (mm).</param>
         /// <param name="y1">Height where the solid ends (mm). Must differ from y0.</param>
-        public static Shape Loft(Func<double, double> radiusAtY, double y0, double y1)
+        /// <param name="axis">
+        /// Axis of revolution: "y" (default — y0/y1 are heights along Y) or "z"
+        /// (the same profile stood up along +Z, so y0/y1 read as z0/z1).
+        /// </param>
+        public static Shape Loft(Func<double, double> radiusAtY, double y0, double y1, string axis = "y")
         {
             if (radiusAtY is null) throw new ArgumentException("Forge.Loft: radiusAtY function is required");
             if (Math.Abs(y1 - y0) < 1e-6) throw new ArgumentException($"Forge.Loft: y0 and y1 must differ (both {y0})");
+            bool z = AxisZ(axis, "Loft");
             double lo = Math.Min(y0, y1), hi = Math.Max(y0, y1);
 
             // 4 profile samples per voxel, so the table never limits the result.
@@ -302,13 +322,22 @@ namespace Anvil.Worker
                 throw new ArgumentException("Forge.Loft: radiusAtY returned 0 or less everywhere — the result would be empty");
 
             float r = sdf.MaxRadius;
-            BBox3 box = Pad(new BBox3(new Vector3(-r, (float)lo, -r), new Vector3(r, (float)hi, r)));
-            return Render(sdf, box);
+            BBox3 box = z
+                ? Pad(new BBox3(new Vector3(-r, -r, (float)lo), new Vector3(r, r, (float)hi)))
+                : Pad(new BBox3(new Vector3(-r, (float)lo, -r), new Vector3(r, (float)hi, r)));
+            return Render(z ? new SdAxisZ(sdf) : sdf, box);
         }
 
         /// <summary>
         /// Round pipe following a polyline: the union of a capsule per segment, so
         /// corners are automatically rounded and every joint is watertight.
+        ///
+        /// A short run is evaluated as ONE implicit field (an exact distance, one
+        /// render). Above <see cref="PipeSegmentLimit"/> segments that scan turns
+        /// quadratic, so a long path is handed to <see cref="Beams(IEnumerable{Vec3}, double, double?, bool)"/>
+        /// instead, which renders each segment natively over its own tight box.
+        /// The result is the same shape; only the cost changes. For thousands of
+        /// segments — a helix, a strut network — call Beams directly.
         /// </summary>
         /// <param name="path">Two or more points along the pipe's centreline (mm).</param>
         /// <param name="d">Outside diameter of the pipe (mm). Must be &gt; 0. Use Shell() afterwards to hollow it.</param>
@@ -327,10 +356,122 @@ namespace Anvil.Worker
                 throw new ArgumentException($"Forge.Pipe: path needs at least 2 points (got {pts.Count})");
 
             float r = (float)d * 0.5f;
+
+            // Long runs: one native beam render per segment beats one managed
+            // callback per voxel that scans every segment.
+            if (pts.Count - 1 > PipeSegmentLimit)
+                return BeamLattice(pts, r, r, true, "Pipe");
+
             Vector3 min = pts[0], max = pts[0];
             foreach (Vector3 p in pts) { min = Vector3.Min(min, p); max = Vector3.Max(max, p); }
             BBox3 box = Pad(new BBox3(min - new Vector3(r, r, r), max + new Vector3(r, r, r)));
             return Render(new SdPolyPipe(pts, r), box);
+        }
+
+        /// <summary>
+        /// Segment count above which <see cref="Pipe"/> switches from one implicit
+        /// field to a beam lattice. The implicit scans every segment per voxel, so
+        /// its cost is (voxels in the whole bounding box) x (segments); a lattice
+        /// costs (voxels near each beam) x 1, in native code.
+        /// </summary>
+        public const int PipeSegmentLimit = 16;
+
+        /// <summary>
+        /// Build a solid from a batch of straight beams, each with its OWN diameter
+        /// at each end, in a single render — the primitive behind strut lattices,
+        /// helical cooling channels, spiral ribs and pipe networks.
+        ///
+        /// Every beam is rendered natively over its own tight bounding box, so
+        /// thousands of them cost about as much as the material they cover. That is
+        /// the difference between seconds and hours: an implicit field (Pipe,
+        /// Capsule) is sampled once per voxel of the WHOLE bounding box and has to
+        /// consider every segment each time.
+        ///
+        /// A per-end diameter is free, which is what makes tapered struts, graded
+        /// lattices and self-supporting teardrop channel roofs cheap.
+        /// </summary>
+        /// <param name="beams">
+        /// The beams, as (start point, end point, diameter at the start,
+        /// diameter at the end). All four are required and both diameters must be
+        /// &gt; 0.
+        /// </param>
+        /// <param name="roundCap">
+        /// true (default) caps each beam with a hemisphere, so beams meeting at a
+        /// shared point join smoothly. false gives flat ends.
+        /// </param>
+        public static Shape Beams(IEnumerable<(Vec3 a, Vec3 b, double dA, double dB)> beams, bool roundCap = true)
+        {
+            if (beams is null) throw new ArgumentException("Forge.Beams: beams is required");
+
+            var lat = new PicoGK.Lattice();
+            int n = 0;
+            foreach ((Vec3 a, Vec3 b, double dA, double dB) in beams)
+            {
+                if (a is null || b is null)
+                    throw new ArgumentException($"Forge.Beams: beam {n} has a null end point");
+                BeamDia(dA, n, "a"); BeamDia(dB, n, "b");
+                Vector3 va = a, vb = b;
+                lat.AddBeam(va, (float)dA * 0.5f, vb, (float)dB * 0.5f, roundCap);
+                n++;
+            }
+            if (n == 0) throw new ArgumentException("Forge.Beams: the beam list is empty — there is nothing to build");
+
+            return Collapsed(new Voxels(lat),
+                $"Forge.Beams: {n} beam(s) rendered to nothing — every diameter is below the {s_voxelMM:0.###} mm voxel size");
+        }
+
+        /// <summary>
+        /// Chain a polyline into beams — the batch equivalent of <see cref="Pipe"/>,
+        /// with an optional linear taper from one end of the run to the other.
+        /// </summary>
+        /// <param name="path">Two or more points; each consecutive pair becomes one beam (mm).</param>
+        /// <param name="d">Diameter at the first point (mm). Must be &gt; 0.</param>
+        /// <param name="dEnd">Diameter at the last point (mm), tapering linearly along the run. Default: the same as <paramref name="d"/>.</param>
+        /// <param name="roundCap">true (default) rounds every joint and both ends.</param>
+        public static Shape Beams(IEnumerable<Vec3> path, double d, double? dEnd = null, bool roundCap = true)
+        {
+            if (path is null) throw new ArgumentException("Forge.Beams: path is required");
+            Positive(d, "Beams", "d");
+            double d1 = dEnd ?? d;
+            if (dEnd is not null) Positive(d1, "Beams", "dEnd");
+
+            var pts = new List<Vector3>();
+            foreach (Vec3 p in path)
+            {
+                if (p is null) throw new ArgumentException("Forge.Beams: path contains a null point");
+                pts.Add(p);
+            }
+            if (pts.Count < 2)
+                throw new ArgumentException($"Forge.Beams: path needs at least 2 points (got {pts.Count})");
+
+            return BeamLattice(pts, (float)d * 0.5f, (float)d1 * 0.5f, roundCap, "Beams");
+        }
+
+        /// <summary>
+        /// A batch of spheres in one render — the point-cloud companion to
+        /// <see cref="Beams(IEnumerable{Vec3}, double, double?, bool)"/>, for
+        /// lattice nodes and seeded packings.
+        /// </summary>
+        /// <param name="points">Sphere centres (mm).</param>
+        /// <param name="d">Diameter of every sphere (mm). Must be &gt; 0.</param>
+        public static Shape Spheres(IEnumerable<Vec3> points, double d)
+        {
+            if (points is null) throw new ArgumentException("Forge.Spheres: points is required");
+            Positive(d, "Spheres", "d");
+
+            var lat = new PicoGK.Lattice();
+            int n = 0;
+            foreach (Vec3 p in points)
+            {
+                if (p is null) throw new ArgumentException("Forge.Spheres: points contains a null point");
+                Vector3 v = p;
+                lat.AddSphere(v, (float)d * 0.5f);
+                n++;
+            }
+            if (n == 0) throw new ArgumentException("Forge.Spheres: the point list is empty — there is nothing to build");
+
+            return Collapsed(new Voxels(lat),
+                $"Forge.Spheres: {n} sphere(s) of {d:0.###} mm rendered to nothing at a {s_voxelMM:0.###} mm voxel size");
         }
 
         // =====================================================================
@@ -547,6 +688,32 @@ namespace Anvil.Worker
         }
 
         /// <summary>
+        /// Fillet the CONCAVE edges of a solid — every internal corner where two
+        /// faces meet gets a radius, and nothing else moves. This is the finishing
+        /// pass for a ribbed or latticed part: it only ever ADDS material, so a
+        /// 1.5 mm rib survives a 0.9 mm fillet untouched.
+        ///
+        /// Reach for Smooth instead only when you want the convex edges rounded
+        /// too — Smooth is a triple offset and it deletes anything thinner than
+        /// twice its radius.
+        /// </summary>
+        /// <param name="shape">Shape to fillet.</param>
+        /// <param name="r">Fillet radius in mm. Must be &gt; 0 and worth a couple of voxels.</param>
+        public static Shape Fillet(Shape shape, double r)
+        {
+            Positive(r, "Fillet", "r");
+            Voxels v = Vox(shape, "Fillet");
+
+            // voxFillet is a morphological closing (offset out r, then back in r):
+            // it fills concave seams, but at practical voxel sizes the return trip
+            // also shaves a fraction of a voxel off convex edges. Re-uniting with
+            // the original gives those faces back, so Fillet is strictly additive.
+            Voxels filleted = v.voxFillet((float)r);
+            filleted.BoolAdd(v);
+            return new Shape(filleted);
+        }
+
+        /// <summary>
         /// Repeat a shape along a straight line and fuse the copies.
         /// </summary>
         /// <param name="shape">Shape to repeat. Copy 0 is the shape where it already is.</param>
@@ -567,25 +734,31 @@ namespace Anvil.Worker
         }
 
         /// <summary>
-        /// Repeat a shape evenly around the +Y axis and fuse the copies. Each copy
-        /// is first pushed out along +X by <paramref name="radius"/>, then rotated
-        /// into place, so a radius of 0 spins copies about their own centre.
+        /// Repeat a shape evenly around the +Y axis (or +Z with <c>axis: "z"</c>)
+        /// and fuse the copies. Each copy is first pushed out along +X by
+        /// <paramref name="radius"/>, then rotated into place, so a radius of 0
+        /// spins copies about their own centre.
         /// </summary>
         /// <param name="shape">Shape to repeat.</param>
         /// <param name="count">Number of copies around the full 360 degrees. Must be &gt;= 1.</param>
         /// <param name="radius">Distance from the axis to each copy (mm). May be 0.</param>
-        /// <param name="about">Point the +Y axis passes through (mm). Default: the world origin.</param>
-        public static Shape ArrayRadial(Shape shape, int count, double radius, Vec3? about = null)
+        /// <param name="about">Point the axis passes through (mm). Default: the world origin.</param>
+        /// <param name="axis">Axis to array around: "y" (default) or "z".</param>
+        public static Shape ArrayRadial(Shape shape, int count, double radius, Vec3? about = null, string axis = "y")
         {
             if (count < 1) throw new ArgumentException($"Forge.ArrayRadial: count must be >= 1 (got {count})");
             if (radius < 0) throw new ArgumentException($"Forge.ArrayRadial: radius must be >= 0 mm (got {radius})");
+            bool z = AxisZ(axis, "ArrayRadial");
 
             Vec3 pivot = about ?? Origin;
             Shape seed = radius > 0 ? Move(shape, radius, 0, 0) : shape;
 
             Voxels acc = new Voxels(Vox(seed, "ArrayRadial"));
             for (int i = 1; i < count; i++)
-                acc.BoolAdd(Vox(RotateY(seed, 360.0 * i / count, pivot), "ArrayRadial"));
+            {
+                double deg = 360.0 * i / count;
+                acc.BoolAdd(Vox(z ? RotateZ(seed, deg, pivot) : RotateY(seed, deg, pivot), "ArrayRadial"));
+            }
             return new Shape(acc);
         }
 
@@ -795,6 +968,22 @@ namespace Anvil.Worker
         }
 
         /// <summary>
+        /// Wetted surface area in square millimetres — the headline number for a
+        /// heat exchanger, a lattice or anything else whose job is surface.
+        ///
+        /// This meshes the shape to measure it, so it is far from free (it costs
+        /// about what SavePart costs). It also predicts the triangle count of the
+        /// saved part: roughly Area / (0.5 * voxel^2). Above a few million,
+        /// meshing is what your runtime is being spent on.
+        /// </summary>
+        /// <param name="shape">Shape to measure.</param>
+        public static double Area(Shape shape)
+        {
+            MeshUtil.MeshMassProps(new Mesh(Vox(shape, "Area")), out _, out float area, out _);
+            return area;
+        }
+
+        /// <summary>
         /// Axis-aligned bounding box of a shape, in mm.
         /// </summary>
         /// <param name="shape">Shape to measure.</param>
@@ -824,6 +1013,54 @@ namespace Anvil.Worker
         {
             if (double.IsNaN(v) || double.IsInfinity(v) || v <= 0)
                 throw new ArgumentException($"Forge.{cmd}: {name} must be greater than 0 (got {v})");
+        }
+
+        private static void BeamDia(double d, int index, string end)
+        {
+            if (double.IsNaN(d) || double.IsInfinity(d) || d <= 0)
+                throw new ArgumentException(
+                    $"Forge.Beams: beam {index} has a diameter of {d} at end {end} — both ends must be greater than 0 mm");
+        }
+
+        /// <summary>
+        /// Parse an `axis` modifier. "y" (the Forge up axis) is the default and
+        /// keeps every builder's historical behaviour; "z" stands the same shape
+        /// up along +Z. A leading "+" is accepted so "+z" reads naturally.
+        /// </summary>
+        private static bool AxisZ(string? axis, string cmd)
+            => (axis ?? "y").Trim().TrimStart('+').ToLowerInvariant() switch
+            {
+                "y" => false,
+                "z" => true,
+                _ => throw new ArgumentException(
+                    $"Forge.{cmd}: unknown axis '{axis}' (expected \"y\" or \"z\")"),
+            };
+
+        /// <summary>
+        /// Voxelise a +Y-axis mesh built at the ORIGIN, first rotating it onto +Z
+        /// and then moving it to its centre. The rotation is applied to the MESH,
+        /// before voxelisation, so it is exact — no re-discretisation.
+        /// </summary>
+        private static Shape StandOnZ(Mesh msh, Vector3 at)
+            => Voxelize(msh.mshCreateTransformed(
+                   Matrix4x4.CreateRotationX(MathF.PI * 0.5f) * Matrix4x4.CreateTranslation(at)));
+
+        /// <summary>
+        /// Chain a point list into a beam lattice, tapering linearly from rA at the
+        /// first point to rB at the last, and render it in one native pass.
+        /// </summary>
+        private static Shape BeamLattice(IReadOnlyList<Vector3> pts, float rA, float rB, bool roundCap, string cmd)
+        {
+            var lat = new PicoGK.Lattice();
+            int segs = pts.Count - 1;
+            for (int i = 0; i < segs; i++)
+            {
+                float t0 = segs > 1 ? i / (float)segs : 0f;
+                float t1 = segs > 1 ? (i + 1) / (float)segs : 1f;
+                lat.AddBeam(pts[i], rA + (rB - rA) * t0, pts[i + 1], rA + (rB - rA) * t1, roundCap);
+            }
+            return Collapsed(new Voxels(lat),
+                $"Forge.{cmd}: the run rendered to nothing — the diameter is below the {s_voxelMM:0.###} mm voxel size");
         }
 
         private static Voxels Vox(Shape? s, string cmd)

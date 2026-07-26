@@ -162,7 +162,7 @@ powershell -ExecutionPolicy Bypass -File scripts\test_api.ps1
 
 # Roslyn scripting + MCP. A worker-direct script job, a compile-error script
 # returning structured scriptError diagnostics, POST /api/scripts/run against
-# heat_exchanger_core, and an MCP smoke test over raw JSON-RPC to /mcp.
+# heat_exchanger, and an MCP smoke test over raw JSON-RPC to /mcp.
 powershell -ExecutionPolicy Bypass -File scripts\test_scripts.ps1
 ```
 

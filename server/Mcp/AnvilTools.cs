@@ -371,7 +371,7 @@ public sealed class AnvilTools
     public string ListScripts() => Json(new { scripts = _scripts.List() });
 
     [McpServerTool(Name = "get_script"), Description(
-        "Get a script's source by id (e.g. 'library:heat_exchanger_core' or 'user:my_part').")]
+        "Get a script's source by id (e.g. 'library:heat_exchanger' or 'user:my_part').")]
     public string GetScript([Description("Script id from list_scripts.")] string id)
     {
         var c = _scripts.Get(id);
@@ -379,7 +379,7 @@ public sealed class AnvilTools
     }
 
     [McpServerTool(Name = "save_script"), Description(
-        "Save a C# script to the user library (name is slugified to a filename). It then shows up in the app's SCRIPTS template picker and in list_scripts. Write it against the FORGE API, the same command set run_script uses, for example: " +
+        "Save a C# script to the user library (name is slugified to a filename). It then shows up in the SCRIPTS view's examples picker and in list_scripts. Write it against the FORGE API, the same command set run_script uses, for example: " +
         "Shape tube = Shell(Cylinder(d:20, h:40, at:V(0,20,0)), wall:2); " +
         "Shape ported = Subtract(tube, ArrayRadial(Cylinder(d:4, h:30), count:8, radius:0)); " +
         "SavePart(\"port_ring\", Lattice(ported, cell:6, wall:1)); " +

@@ -10,7 +10,7 @@
       (b) compile-error script -> worker stderr carries scriptError[] with a line
           number AND the process exits non-zero.
       (c) via a scratch server on port 5239 (isolated DataDir + the real worker):
-          POST /api/scripts/run with heat_exchanger_core.csx -> poll the job ->
+          POST /api/scripts/run with heat_exchanger.csx -> poll the job ->
           the SavePart-ed part(s) are registered and appear in GET /api/parts.
       (d) MCP smoke over raw JSON-RPC HTTP to 127.0.0.1:5239/mcp:
           initialize -> tools/list (>= 18 tools) -> tools/call create_primitive
@@ -68,7 +68,7 @@ $WorkerCsproj = Join-Path $RepoRoot 'worker\Anvil.Worker.csproj'
 $ServerCsproj = Join-Path $RepoRoot 'server\Anvil.Server.csproj'
 $WorkerExe    = Join-Path $RepoRoot 'worker\bin\Debug\net9.0\AnvilWorker.exe'
 $LibDir       = Join-Path $RepoRoot 'scripts-library'
-$HxCsx        = Join-Path $LibDir 'heat_exchanger_core.csx'
+$HxCsx        = Join-Path $LibDir 'heat_exchanger.csx'
 $PuckCsx      = Join-Path $LibDir 'graded_lattice_puck.csx'
 $ForgeCsx     = Join-Path $LibDir 'forge_smoke.csx'
 $EmbossPng    = Join-Path $LibDir 'assets\emboss-sample.png'
@@ -305,13 +305,13 @@ try {
     Add-Result 'server health' ([bool]$health.ok) ("ok={0} workerExists={1}" -f $health.ok, $health.workerExists)
 
     # =========================================================================
-    # (c) POST /api/scripts/run heat_exchanger_core -> parts registered
+    # (c) POST /api/scripts/run heat_exchanger -> parts registered
     # =========================================================================
-    Write-Host "`n== (c) /api/scripts/run heat_exchanger_core ==" -ForegroundColor Cyan
+    Write-Host "`n== (c) /api/scripts/run heat_exchanger ==" -ForegroundColor Cyan
     $hxCode = Get-Content $HxCsx -Raw
     $runResp = Http-PostJson "$Base/api/scripts/run" @{
-        code = $hxCode; name = 'heat_exchanger_core'
-        params = @{ sizeMM = 30; cellMM = 6; wallMM = 1.0 }
+        code = $hxCode; name = 'heat_exchanger'
+        params = @{ coreDiaMM = 48; coreHMM = 60; cellMM = 10; wallMM = 1.6; skinMM = 1.8; jacketGapMM = 5.4; flangeODMM = 76 }
         voxelSizeMM = 0.5
     }
     $runAcc = ($runResp.status -eq 202) -and $runResp.obj.jobId
@@ -391,7 +391,7 @@ try {
     $ls = Mcp-Tool 'list_scripts' @{}
     $names = @($ls.inner.scripts | ForEach-Object { $_.name })
     Add-Result '(d) list_scripts includes seeds' `
-        (($names -contains 'heat_exchanger_core') -and ($names -contains 'graded_lattice_puck')) `
+        (($names -contains 'heat_exchanger') -and ($names -contains 'graded_lattice_puck')) `
         ("scripts={0}" -f ($names -join ','))
 
     # =========================================================================

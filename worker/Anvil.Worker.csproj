@@ -32,7 +32,7 @@
     <!-- Raster decoding for Forge.Emboss (PNG/JPG/BMP depth maps). GDI+, so
          Windows-only, which Anvil already is; the two call sites in ForgeSdf.cs
          are wrapped in #pragma warning disable CA1416. -->
-    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>

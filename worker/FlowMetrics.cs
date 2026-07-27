@@ -311,6 +311,7 @@ namespace Anvil.Worker
             // IMPORTANT PicoGK polarity: in ESliceMode.BlackWhite, INSIDE/solid voxels
             // (SDF ≤ 0) are written as 0.0 and OUTSIDE voxels as 1.0
             // (PicoGK_Voxels.cs GetVoxelSlice). So a SOLID/set voxel is value < 0.5.
+            // And the rows are an IMAGE's rows, i.e. TOP-DOWN — see VoxelSlice.
             for (int z = z0; z < z1; z++)
             {
                 vox.GetVoxelSlice(z, ref local.img, Voxels.ESliceMode.BlackWhite);
@@ -320,7 +321,11 @@ namespace Anvil.Worker
                 int i = 0;
                 for (int y = 0; y < ys; y++)
                 {
-                    int absY = yo + y - yMin;
+                    // `y` walks image ROWS, which run top-down; the voxel-Y they
+                    // hold is VoxelSlice.Row(y, ys). Binning by `y` directly put
+                    // the whole Y profile — and profileY's reported choke
+                    // position (minAtMM on flowAxis "y") — on mirrored bins.
+                    int absY = yo + VoxelSlice.Row(y, ys) - yMin;
                     long rowCount = 0;
                     for (int x = 0; x < xs; x++, i++)
                     {

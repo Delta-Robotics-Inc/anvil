@@ -747,6 +747,100 @@ try {
                 ("status={0} ready={1} in {2} ms" -f $sdf2.status, $sdf2.obj.ready, $swSdf.ElapsedMilliseconds)
         }
 
+        # =====================================================================
+        # SDF CHIRALITY — the field must not be MIRRORED on any axis.
+        #
+        # Everything above this probes a 60x40x20 BOX, and a box is symmetric on
+        # all three axes: mirror it and it is byte-identical. So is a cylinder, a
+        # sphere, and the X-symmetric manifold cavity people actually load. A
+        # Monte-Carlo occupancy/volume check is blind to it too, because a mirror
+        # preserves volume EXACTLY. A real Y flip shipped in SdfJob.ReadOccupancy
+        # (PicoGK slice rows run top-down — see worker/VoxelSlice.cs) and every
+        # one of those checks passed while the GPU preview drew the clip solid
+        # backwards.
+        #
+        # The fixture here is a TETRAHEDRON (0,0,0)-(30,0,0)-(0,20,0)-(0,0,10):
+        # asymmetric on all three axes, with an analytic inside test
+        #   x>0, y>0, z>0, x/30 + y/20 + z/10 < 1
+        # so every voxel's true sign is known in closed form. Voxels within 2
+        # cells of any face are skipped (quantization noise); the rest must match
+        # EXACTLY, and each single-axis mirror of the sample must NOT match.
+        # =====================================================================
+        Write-Host "`n== SDF chirality (asymmetric tetrahedron) ==" -ForegroundColor Cyan
+        $tetPath = Join-Path $WorkTmp 'chirality_tetra.stl'
+        $tetV = @(@(0,0,0), @(30,0,0), @(0,20,0), @(0,0,10))
+        $tetF = @(@(0,2,1), @(0,1,3), @(0,3,2), @(1,2,3))
+        $fsTet = [System.IO.File]::Create($tetPath)
+        $bwTet = New-Object System.IO.BinaryWriter($fsTet)
+        $bwTet.Write([byte[]]::new(80))              # header
+        $bwTet.Write([uint32]$tetF.Count)
+        foreach ($f in $tetF) {
+            $bwTet.Write([float]0); $bwTet.Write([float]0); $bwTet.Write([float]0)   # normal (unused)
+            foreach ($vi in $f) { foreach ($c in $tetV[$vi]) { $bwTet.Write([float]$c) } }
+            $bwTet.Write([uint16]0)
+        }
+        $bwTet.Flush(); $bwTet.Close(); $fsTet.Close()
+
+        $tetUp = Http-Upload "$Base/api/parts" $tetPath
+        $tetId = $tetUp.obj.id
+        Add-Result 'upload asymmetric tetra fixture' (($tetUp.status -eq 200) -and $tetId) `
+            ("status={0} id={1} vol={2:0.##}" -f $tetUp.status, $tetId, [double]$tetUp.obj.volumeMM3)
+
+        if (-not $tetId) {
+            Add-Result 'sdf is not mirrored on any axis' $false 'tetra upload failed'
+        } else {
+            $tPost = Http-PostJson "$Base/api/parts/$tetId/sdf" ([ordered]@{ resolution = 64 })
+            $tJob  = $null
+            if ($tPost.obj.jobId) { $tJob = Wait-Job $tPost.obj.jobId 300 }
+            if (-not $tJob -or $tJob.state -ne 'done') {
+                Add-Result 'sdf is not mirrored on any axis' $false ("tetra bake state={0}" -f $tJob.state)
+            } else {
+                $tm = (Http-Get "$Base/api/parts/$tetId/sdf.json").obj
+                $tb = Http-Download "$Base/api/parts/$tetId/sdf.bin" (Join-Path $WorkTmp 'tetra_sdf.bin')
+                $tBytes = [System.IO.File]::ReadAllBytes($tb.path)
+                $tnx = [int]$tm.nx; $tny = [int]$tm.ny; $tnz = [int]$tm.nz
+                $tc  = [double]$tm.cellMM
+                $tox = [double]$tm.originMM.x; $toy = [double]$tm.originMM.y; $toz = [double]$tm.originMM.z
+                $guard = 2.0 * $tc
+                # Normaliser for the slanted face's plane distance.
+                $slantLen = [math]::Sqrt((1.0/30)*(1.0/30) + (1.0/20)*(1.0/20) + (1.0/10)*(1.0/10))
+
+                $probes = 0; $badId = 0; $badX = 0; $badY = 0; $badZ = 0
+                for ($z = 0; $z -lt $tnz; $z += 2) {
+                  $pz = $toz + $z * $tc
+                  for ($y = 0; $y -lt $tny; $y += 2) {
+                    $py = $toy + $y * $tc
+                    for ($x = 0; $x -lt $tnx; $x += 2) {
+                      $px = $tox + $x * $tc
+                      $dSlant = (1.0 - $px/30.0 - $py/20.0 - $pz/10.0) / $slantLen
+                      # Skip anything near a face — that is where quantization lives.
+                      if (([math]::Abs($px) -lt $guard) -or ([math]::Abs($py) -lt $guard) -or `
+                          ([math]::Abs($pz) -lt $guard) -or ([math]::Abs($dSlant) -lt $guard)) { continue }
+                      $truth = ($px -gt 0) -and ($py -gt 0) -and ($pz -gt 0) -and ($dSlant -gt 0)
+                      $probes++
+                      if ((([int]$tBytes[$x + $tnx * ($y + $tny * $z)]) -lt 128) -ne $truth) { $badId++ }
+                      if ((([int]$tBytes[($tnx-1-$x) + $tnx * ($y + $tny * $z)]) -lt 128) -ne $truth) { $badX++ }
+                      if ((([int]$tBytes[$x + $tnx * (($tny-1-$y) + $tny * $z)]) -lt 128) -ne $truth) { $badY++ }
+                      if ((([int]$tBytes[$x + $tnx * ($y + $tny * ($tnz-1-$z))]) -lt 128) -ne $truth) { $badZ++ }
+                    }
+                  }
+                }
+
+                Add-Result 'sdf matches the analytic tetra exactly (no mirror)' `
+                    (($probes -gt 2000) -and ($badId -eq 0)) `
+                    ("probes={0} mismatches={1}" -f $probes, $badId)
+
+                # A mirror of an asymmetric solid MUST be visibly wrong. Without
+                # this, "0 mismatches" could also be satisfied by a symmetric
+                # fixture that never had chirality to test in the first place.
+                $mirrorFloor = [int]($probes * 0.05)
+                Add-Result 'sdf chirality probe is mirror-SENSITIVE on all 3 axes' `
+                    (($badX -gt $mirrorFloor) -and ($badY -gt $mirrorFloor) -and ($badZ -gt $mirrorFloor)) `
+                    ("mirrored-read mismatches X={0} Y={1} Z={2} (floor {3} of {4} probes)" -f `
+                     $badX, $badY, $badZ, $mirrorFloor, $probes)
+            }
+        }
+
         # --- negatives -------------------------------------------------------
         $n9 = Http-PostJson "$Base/api/parts/p_does_not_exist/sdf" ([ordered]@{ resolution = 128 })
         Add-Result 'POST sdf unknown part -> 404' ($n9.status -eq 404) ("status={0} err={1}" -f $n9.status, $n9.obj.error)

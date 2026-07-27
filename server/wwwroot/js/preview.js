@@ -112,6 +112,30 @@ const DEPTH_PUSH_VOXELS = 0.75;
 const SDF_JOB_POLL_MS = 800;
 const SDF_RETRY_MS = 12000;
 
+// ── CHIRALITY GUARDS (dev only — see _verifyOrientation / verifyChirality) ──
+// A MIRRORED field is the one defect none of this app's other checks can see.
+// The bake's Monte-Carlo fidelity check compares VOLUME FRACTIONS, and a mirror
+// preserves volume exactly; every stock fixture (box, cylinder, sphere, and the
+// manifold cavity, which is symmetric in X) is its own mirror image; and the
+// TPMS patterns are chiral, so a single flipped axis turns a gyroid into its
+// enantiomer with an identical histogram. A real Y flip in the worker's slice
+// read (PicoGK image rows run top-down — worker/VoxelSlice.cs) therefore shipped
+// with every check green while the preview drew the part clip backwards.
+//
+// Guards run on localhost only: one is a golden-value check of the pattern
+// formulas, the other a one-shot check that a freshly fetched field actually
+// lands where its metadata claims. Neither costs anything in production.
+const DEV_CHECKS = typeof location !== 'undefined' &&
+  /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+
+// Centroid agreement (mm) demanded between a decoded field and the mesh it was
+// baked from. A one-axis mirror moves it by a large fraction of the part; the
+// honest disagreement is voxelisation, well under a cell.
+const ORIENT_TOL_CELLS = 1.5;
+// Below this the part is near enough symmetric on that axis for the centroid to
+// say nothing — reported as "not chiral enough to test", never as a pass.
+const ORIENT_MIN_SKEW_CELLS = 2.0;
+
 const VERT = /* glsl */`
 varying vec3 vWorld;
 void main() {
@@ -361,6 +385,89 @@ function makeDummy3D() {
   t.unpackAlignment = 1;
   t.needsUpdate = true;
   return t;
+}
+
+// ── chirality guard 1: the pattern formulas ────────────────────────────
+// An inline port of worker/TPMSWall.cs's raw f, term for term, kept beside the
+// GLSL twin in latticeF above. The probe points are ASYMMETRIC and the expected
+// values are GOLDEN CONSTANTS computed from the C# source — so swapping a term
+// pair (sin x cos y -> sin y cos x, the classic way to mirror a gyroid), negating
+// an argument, or transposing the yz pair moves the value and trips the assert.
+// A symmetric probe such as (1,1,1) would survive every one of those edits.
+const CHIRAL_PROBE = Object.freeze([0.7, 0.3, 1.1]);
+const CHIRAL_GOLDEN = Object.freeze({
+  // f(0.7, 0.3, 1.1) per pattern, and the gyroid at the three single-axis
+  // mirrors of that point — all four gyroid values differ, which IS the chirality.
+  gyroid: 1.431124470,
+  gyroidMirrorX: 0.200235143,   // f(-0.7,  0.3,  1.1)
+  gyroidMirrorY: 1.163030831,   // f( 0.7, -0.3,  1.1)
+  gyroidMirrorZ: 0.067858497,   // f( 0.7,  0.3, -1.1)
+  schwarzD: 1.202544312,
+  lidinoid: 0.966104942,
+});
+
+/** raw f for the chiral patterns — the JS twin of TPMSWall.fSignedDistance. */
+function rawPatternF(pattern, x, y, z) {
+  const sx = Math.sin(x), sy = Math.sin(y), sz = Math.sin(z);
+  const cx = Math.cos(x), cy = Math.cos(y), cz = Math.cos(z);
+  if (pattern === 'gyroid') return sx * cy + sy * cz + sz * cx;
+  if (pattern === 'schwarzD') return sx * sy * sz + sx * cy * cz + cx * sy * cz + cx * cy * sz;
+  if (pattern === 'lidinoid') {
+    const s2 = [Math.sin(2 * x), Math.sin(2 * y), Math.sin(2 * z)];
+    const c2 = [Math.cos(2 * x), Math.cos(2 * y), Math.cos(2 * z)];
+    return 0.5 * (s2[0] * cy * sz + s2[1] * cz * sx + s2[2] * cx * sy)
+         - 0.5 * (c2[0] * c2[1] + c2[1] * c2[2] + c2[2] * c2[0]) + 0.15;
+  }
+  return NaN;
+}
+
+/** Golden-value chirality check of the pattern formulas. Returns a failure list. */
+export function verifyChirality() {
+  const [a, b, c] = CHIRAL_PROBE;
+  const G = CHIRAL_GOLDEN;
+  const cases = [
+    ['gyroid', rawPatternF('gyroid', a, b, c), G.gyroid],
+    ['gyroid mirror X', rawPatternF('gyroid', -a, b, c), G.gyroidMirrorX],
+    ['gyroid mirror Y', rawPatternF('gyroid', a, -b, c), G.gyroidMirrorY],
+    ['gyroid mirror Z', rawPatternF('gyroid', a, b, -c), G.gyroidMirrorZ],
+    ['schwarzD', rawPatternF('schwarzD', a, b, c), G.schwarzD],
+    ['lidinoid', rawPatternF('lidinoid', a, b, c), G.lidinoid],
+  ];
+  const fails = [];
+  for (const [name, got, want] of cases) {
+    if (!(Math.abs(got - want) < 1e-6)) fails.push(`${name}: got ${got} want ${want}`);
+  }
+  // The point of the exercise: a gyroid is CHIRAL, so mirroring any one axis
+  // must change the value. If these ever tie, the field has lost its handedness
+  // and the golden values above are testing nothing.
+  for (const [name, got] of [['X', G.gyroidMirrorX], ['Y', G.gyroidMirrorY], ['Z', G.gyroidMirrorZ]]) {
+    if (Math.abs(got - G.gyroid) < 1e-3) fails.push(`gyroid is not chiral in ${name}`);
+  }
+  return fails;
+}
+
+/** Exact volume centroid of a BufferGeometry (divergence theorem), or null. */
+function meshVolumeCentroid(geo) {
+  const pos = geo.getAttribute('position');
+  if (!pos) return null;
+  const idx = geo.getIndex();
+  const nTri = Math.floor((idx ? idx.count : pos.count) / 3);
+  let vol = 0, mx = 0, my = 0, mz = 0;
+  for (let t = 0; t < nTri; t++) {
+    const i0 = idx ? idx.getX(t * 3) : t * 3;
+    const i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    const ax = pos.getX(i0), ay = pos.getY(i0), az = pos.getZ(i0);
+    const bx = pos.getX(i1), by = pos.getY(i1), bz = pos.getZ(i1);
+    const cx = pos.getX(i2), cy = pos.getY(i2), cz = pos.getZ(i2);
+    const v = (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+    vol += v;
+    mx += v * (ax + bx + cx) / 4;
+    my += v * (ay + by + cy) / 4;
+    mz += v * (az + bz + cz) / 4;
+  }
+  if (!(Math.abs(vol) > 1e-9)) return null;
+  return [mx / vol, my / vol, mz / vol];
 }
 
 export class LatticePreview {
@@ -799,7 +906,78 @@ export class LatticePreview {
     rec.tex = tex;
     rec.meta = meta;
     rec.state = 'ready';
+    this._verifyOrientation(id, meta, buf);
     this._note(null);
     this.sync();
+  }
+
+  // ── chirality guard 2: the field actually lands where its metadata says ──
+  // Decodes the field the SHADER's way — index = x + nx*(y + ny*z), voxel (0,0,0)
+  // centred on originMM — and compares the centroid of everything it calls INSIDE
+  // with the exact volume centroid of the mesh the bake was made from. Those are
+  // the same solid in the same part-local frame, so they must coincide to within
+  // voxelisation error. Mirror one axis anywhere between the worker's slice read
+  // and this decode and the centroid reflects about the grid centre, which on a
+  // chiral part is a gross, unmissable disagreement.
+  //
+  // Runs once per bake, on the user's REAL part, and needs no fixture. On an axis
+  // where the part is near-symmetric it says so rather than claiming a pass —
+  // that axis genuinely carries no evidence (which is exactly how a Y flip hid
+  // behind a box, a cylinder, and an X-symmetric manifold cavity).
+  _verifyOrientation(id, meta, buf) {
+    if (!DEV_CHECKS || !meta || !buf) return null;
+    const p = this.viewer.parts.get(id);
+    const geo = p && p.mesh && p.mesh.geometry;
+    if (!geo) return null;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const meshC = meshVolumeCentroid(geo);
+    if (!meshC) return null;
+
+    const { nx, ny, nz, cellMM } = meta;
+    const o = meta.originMM || {};
+    let n = 0, sx = 0, sy = 0, sz = 0;
+    for (let z = 0; z < nz; z++) {
+      for (let y = 0; y < ny; y++) {
+        const row = nx * (y + ny * z);
+        for (let x = 0; x < nx; x++) if (buf[row + x] < 128) { n++; sx += x; sy += y; sz += z; }
+      }
+    }
+    if (!n) return null;
+    const fieldC = [o.x + (sx / n) * cellMM, o.y + (sy / n) * cellMM, o.z + (sz / n) * cellMM];
+
+    const bb = geo.boundingBox;
+    const bbC = [(bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2];
+    const tol = ORIENT_TOL_CELLS * cellMM;
+    const report = { partId: id, meshCentroid: meshC, fieldCentroid: fieldC, cellMM, axes: {} };
+    let bad = false;
+    for (let a = 0; a < 3; a++) {
+      const key = 'xyz'[a];
+      const skew = Math.abs(meshC[a] - bbC[a]);
+      const err = Math.abs(fieldC[a] - meshC[a]);
+      if (skew < ORIENT_MIN_SKEW_CELLS * cellMM) {
+        report.axes[key] = `symmetric on this axis (skew ${skew.toFixed(3)} mm) - carries no chirality evidence`;
+      } else if (err > tol) {
+        report.axes[key] = `MIRRORED OR MISALIGNED: field ${fieldC[a].toFixed(3)} vs mesh ${meshC[a].toFixed(3)} mm (err ${err.toFixed(3)} mm > ${tol.toFixed(3)})`;
+        bad = true;
+      } else {
+        report.axes[key] = `ok (err ${err.toFixed(3)} mm)`;
+      }
+    }
+    if (bad) {
+      console.error('[anvil] SDF ORIENTATION CHECK FAILED — the preview clip does not match the part.', report);
+      console.assert(false, 'anvil: part SDF is mirrored/misaligned relative to its mesh');
+    }
+    return report;
+  }
+}
+
+// Golden-value pattern chirality, checked once at module load in dev. Cheap
+// (six evaluations) and it fails loudly rather than silently drawing the mirror
+// image of the lattice the bake will produce.
+if (DEV_CHECKS) {
+  const fails = verifyChirality();
+  if (fails.length) {
+    console.error('[anvil] TPMS CHIRALITY CHECK FAILED — the preview lattice no longer matches worker/TPMSWall.cs:', fails);
+    console.assert(false, 'anvil: TPMS pattern chirality regression');
   }
 }

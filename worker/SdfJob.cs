@@ -227,6 +227,12 @@ namespace Anvil.Worker
         /// convention FlowMetrics.AccumulateProfiles relies on). Anything outside
         /// the field's own index window is void, which is exactly what the pad
         /// border wants.
+        ///
+        /// PicoGK slice ROW ORDER IS TOP-DOWN (VoxelSlice.Row): an image's row 0
+        /// is its TOP row — the HIGHEST voxel-Y in the window, not the lowest —
+        /// so the row holding voxel-Y index `j` (from the window origin yo) is
+        /// `ys - 1 - j`, NOT `j`. Reading it as `j` mirrors the ENTIRE field in
+        /// Y, which no symmetric fixture and no volume-based check can see.
         /// </summary>
         static long ReadOccupancy(
             Voxels vox, int iBaseX, int iBaseY, int iBaseZ,
@@ -259,10 +265,12 @@ namespace Anvil.Worker
 
                     for (int y = 0; y < ny; y++)
                     {
-                        int fy = iBaseY + y - yo;
+                        int fy = iBaseY + y - yo;          // voxel-Y inside the window
                         if (fy < 0 || fy >= ys) continue;
 
-                        int iSrcRow = fy * xs;
+                        // Slice rows run TOP-DOWN (see the summary): voxel-Y `fy`
+                        // lives in image row ys-1-fy.
+                        int iSrcRow = VoxelSlice.Row(fy, ys) * xs;
                         int iDstRow = nx * (y + ny * z);
                         for (int x = xLo; x < xHi; x++)
                         {

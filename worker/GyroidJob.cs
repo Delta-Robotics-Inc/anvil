@@ -96,6 +96,7 @@ namespace Anvil.Worker
         public float filletMM { get; set; } = 1.0f;            // merge blend radius
         public string? shellDirection { get; set; }            // inside|outside|centered
         public float shellThicknessMM { get; set; }            // shell wall thickness
+        public OpenFaceDto[]? openFaces { get; set; }          // shell: faces to leave OPEN (no wall)
         public float offsetDistMM { get; set; }                // offset (signed mm)
         public bool bake { get; set; }                         // transform-bake marker (informational)
         public MirrorDto? mirror { get; set; }                 // mirror plane

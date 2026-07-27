@@ -16,6 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SHELL leaves picked faces OPEN.** The tool grows an `OPEN FACES` row: `PICK`
+  arms the flat faces of the bound part as clickable targets, and each one you
+  click is left out of the shell, so the hollow interior breaks out there instead
+  of being closed by a wall. Picked faces tint `--green` and stay tinted, which is
+  the same language a Negative cavity already uses: green is air. Clicking a green
+  face closes it again. Face detection is planar-cluster only, so curved surfaces
+  are not offered and the tooltip says so. The picks are keyed to each face's
+  plane in the part's own frame, so they survive a gizmo move and the op still
+  lands on the moved part; they clear when the bound part changes or the tool
+  closes. The op body gains an optional `openFaces` array of oriented in-plane
+  rectangles in the post-transform world frame, and the worker subtracts one
+  oriented slab cutter per face. Omitting it is byte-identical to the closed shell
+  that shipped before, which the suite asserts by hash.
 - **`Beams` - batch beam/strut lattices in one render.** `Beams(beams)` takes
   `(start, end, diameter at start, diameter at end)` tuples; `Beams(path, d,
   dEnd)` chains a polyline with an optional taper; `Spheres(points, d)` does the

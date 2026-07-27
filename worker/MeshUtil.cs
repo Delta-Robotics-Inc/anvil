@@ -251,6 +251,56 @@ namespace Anvil.Worker
         }
 
         /// <summary>
+        /// Oriented box (OBB): the axis-aligned <see cref="CreateBox"/> of
+        /// <paramref name="sizeMM"/> built at the ORIGIN and carried onto the frame
+        /// {u, v, n} centred on <paramref name="centerMM"/>. sizeMM.X spans u,
+        /// sizeMM.Y spans v and sizeMM.Z spans n.
+        ///
+        /// The frame MUST be orthonormal and RIGHT-HANDED (u × v = n). A
+        /// left-handed frame makes the matrix a reflection, which inverts triangle
+        /// winding exactly the way PicoGK's mshCreateMirrored does — the result
+        /// then voxelizes inside-out. Callers build v from n × u (see
+        /// <see cref="BuildFaceFrame"/>) so that can never happen.
+        /// </summary>
+        public static Mesh CreateOrientedBox(Vector3 sizeMM, Vector3 centerMM,
+                                             Vector3 u, Vector3 v, Vector3 n)
+        {
+            Mesh msh = CreateBox(sizeMM, Vector3.Zero);
+            // Row-vector form (Vector3.Transform(p, M) = p·M): rows 1..3 are the
+            // frame axes, row 4 the translation, so p ↦ p.X·u + p.Y·v + p.Z·n + c.
+            var mat = new Matrix4x4(
+                u.X, u.Y, u.Z, 0f,
+                v.X, v.Y, v.Z, 0f,
+                n.X, n.Y, n.Z, 0f,
+                centerMM.X, centerMM.Y, centerMM.Z, 1f);
+            return msh.mshCreateTransformed(mat);
+        }
+
+        /// <summary>
+        /// Orthonormal RIGHT-HANDED in-plane frame for a picked planar face. The
+        /// unit normal <paramref name="n"/> is AUTHORITATIVE; the caller's in-plane
+        /// axis is re-orthogonalised against it and v is derived as n × u, which
+        /// makes u × v = n identically.
+        ///
+        /// The caller's own v is therefore never used as a direction — only for its
+        /// HALF-EXTENT. That is safe because an oriented rectangle is symmetric in
+        /// v: v and −v describe the same cutter.
+        /// </summary>
+        public static void BuildFaceFrame(Vector3 n, Vector3 uIn, out Vector3 u, out Vector3 v)
+        {
+            Vector3 uu = uIn - n * Vector3.Dot(uIn, n);
+            if (uu.LengthSquared() < 1e-12f)
+            {
+                // The supplied axis was parallel to the normal (or absent): any
+                // perpendicular does, since halfU/halfV still bound the rectangle.
+                Vector3 seed = MathF.Abs(n.Z) < 0.9f ? new Vector3(0, 0, 1) : new Vector3(1, 0, 0);
+                uu = Vector3.Cross(seed, n);
+            }
+            u = Vector3.Normalize(uu);
+            v = Vector3.Normalize(Vector3.Cross(n, u));
+        }
+
+        /// <summary>
         /// Elliptical cylinder STANDING IN Y: <paramref name="diaX"/> and
         /// <paramref name="diaZ"/> are the full DIAMETERS spanning X and Z, and the
         /// height runs along Y centred on centerMM — the up axis of the Y-up

@@ -274,6 +274,10 @@ public sealed class JobManager : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(req.shellDirection))
             workerJob["shellDirection"] = req.shellDirection!.Trim().ToLowerInvariant();
         workerJob["shellThicknessMM"] = req.shellThicknessMM;
+        // Omitted entirely when nothing was picked, so a closed shell's job.json is
+        // byte-identical to the one this wrote before open faces existed.
+        if (req.openFaces is { Count: > 0 })
+            workerJob["openFaces"] = req.openFaces.Select(OpenFaceDict).ToList();
         workerJob["offsetDistMM"] = req.offsetDistMM;
         workerJob["bake"] = req.bake;
         if (req.mirror is MirrorDto m)
@@ -1037,6 +1041,20 @@ public sealed class JobManager : IAsyncDisposable
         if (t.scale is not null)       d["scale"]       = Vec(t.scale);
         return d.Count > 0 ? d : null;
     }
+
+    /// <summary>
+    /// Serialize one shell OPEN FACE to the worker's shape. Pure passthrough — the
+    /// frame is the client's (post-transform world) and the worker validates it.
+    /// </summary>
+    private static Dictionary<string, object?> OpenFaceDict(OpenFaceDto f) => new()
+    {
+        ["centerMM"]   = Vec(f.centerMM),
+        ["normalUnit"] = Vec(f.normalUnit),
+        ["axisUMM"]    = Vec(f.axisUMM),
+        ["axisVMM"]    = Vec(f.axisVMM),
+        ["halfUMM"]    = f.halfUMM,
+        ["halfVMM"]    = f.halfVMM,
+    };
 
     /// <summary>Serialize a resolved MeshRefPayload to {path, transform} for job.json.</summary>
     private static Dictionary<string, object?> MeshRefDict(MeshRefPayload r) => new()

@@ -45,6 +45,17 @@ and vendored under the PicoGK fork's `vendor\` directory.
   thermal estimates against the two-domain HX, using the flow metrics
   machinery as the starting point.
 - Role tinting for solid script parts (open UI question).
+- `openFaces` on the SHELL op: UI only for now. The tool palette can leave picked
+  flat faces out of a shell, but Forge's `Shell` stays closed-only, because a
+  script has no face picker and needs a way to name a face in code first.
+- **PINNED, not good yet (2026-07-27): face-selective shell needs iteration.**
+  The first pass works (pick flat faces, walls removed, watertight, 82/82 op
+  tests) but the result is not where it should be. Known gaps: the opening
+  cuts about 1 mm of relief past the face so neighboring walls end below the
+  original surface instead of flush (a flush rim needs the cavity swept along
+  the face normal); picking is flat-faces only (no bores or curved faces);
+  and the interaction itself deserves a review pass. Revisit before calling
+  the feature done.
 - A ShapeKernel-style object model for scripts (parts that build themselves
   and validate in their constructor) as a convention layer over Forge.
 

@@ -14,7 +14,8 @@
 //   VOXEL (± half voxel):
 //     boolean    — voxBoolAdd / voxBoolSubtract / voxBoolIntersect
 //     merge      — voxBoolAdd + voxFillet(filletMM)
-//     shell      — inside/outside/centered from voxOffset
+//     shell      — inside/outside/centered from voxOffset, minus one oriented
+//                  slab cutter per picked OPEN face (openFaces; omitted = closed)
 //     offset     — voxOffset(signed); errors if the result collapses
 //
 // Every op runs inside `using var lib = new Library(voxelSizeMM)`. Primitives no
@@ -36,6 +37,30 @@ namespace Anvil.Worker
     {
         public Vec3? planePoint  { get; set; }   // mm; defaults to origin
         public Vec3? planeNormal { get; set; }   // required, any length
+    }
+
+    /// <summary>
+    /// One picked planar face the shell op must leave OPEN (no wall there), as an
+    /// oriented in-plane RECTANGLE in the POST-TRANSFORM world frame — the frame
+    /// the worker sees after MeshUtil.LoadMesh bakes the input's TRS, which is the
+    /// same frame the viewer's face quads live in.
+    ///
+    ///   centerMM    the face centre
+    ///   normalUnit  UNIT normal pointing OUT of the part
+    ///   axisUMM     in-plane axis (unit); re-orthogonalised against the normal
+    ///   axisVMM     the other in-plane axis (unit); used for its EXTENT only,
+    ///               since the frame is rebuilt right-handed as v = n × u
+    ///   halfUMM     half extent along U
+    ///   halfVMM     half extent along V
+    /// </summary>
+    class OpenFaceDto
+    {
+        public Vec3? centerMM   { get; set; }
+        public Vec3? normalUnit { get; set; }
+        public Vec3? axisUMM    { get; set; }
+        public Vec3? axisVMM    { get; set; }
+        public float halfUMM    { get; set; }
+        public float halfVMM    { get; set; }
     }
 
     /// <summary>Primitive descriptor for the primitive op.</summary>
@@ -270,6 +295,10 @@ namespace Anvil.Worker
                 throw new ArgumentException("shell op requires shellThicknessMM > 0");
 
             string dir = (job.shellDirection ?? "inside").Trim().ToLowerInvariant();
+            OpenFaceDto[] openFaces = job.openFaces ?? Array.Empty<OpenFaceDto>();
+            if (openFaces.Length > MaxOpenFaces)
+                throw new ArgumentException(
+                    $"shell op accepts at most {MaxOpenFaces} openFaces (got {openFaces.Length})");
 
             Progress.Report("loadMesh", 0.1);
             Mesh mshA = MeshUtil.LoadMesh(a.path!, a.transform);
@@ -278,21 +307,47 @@ namespace Anvil.Worker
             Voxels vox = new Voxels(mshA);
 
             Progress.Report("op", 0.6);
-            Voxels shell = dir switch
+            // The shell is OUTER minus INNER. Naming the two fields (instead of
+            // chaining them in a switch expression) is what lets the open-face
+            // cutters be clipped to OUTER below; the call sequence per direction is
+            // unchanged, so a shell with no open faces is byte-identical to before.
+            Voxels outer, inner;
+            switch (dir)
             {
-                "inside"   => vox.voxBoolSubtract(vox.voxOffset(-t)),
-                "outside"  => vox.voxOffset(t).voxBoolSubtract(vox),
-                "centered" => vox.voxOffset(t * 0.5f).voxBoolSubtract(vox.voxOffset(-t * 0.5f)),
-                _ => throw new ArgumentException(
-                    $"unknown shellDirection: '{job.shellDirection}' (inside|outside|centered)"),
-            };
+                case "inside":   outer = vox;                     inner = vox.voxOffset(-t);        break;
+                case "outside":  outer = vox.voxOffset(t);        inner = vox;                      break;
+                case "centered": outer = vox.voxOffset(t * 0.5f); inner = vox.voxOffset(-t * 0.5f); break;
+                default:
+                    throw new ArgumentException(
+                        $"unknown shellDirection: '{job.shellDirection}' (inside|outside|centered)");
+            }
+            Voxels shell = outer.voxBoolSubtract(inner);
+
+            // ---- open faces: one oriented-slab cutter per picked face ----
+            if (openFaces.Length > 0)
+            {
+                Progress.Report("openFaces", 0.7);
+                Voxels? cutters = null;
+                for (int i = 0; i < openFaces.Length; i++)
+                {
+                    Voxels one = new Voxels(BuildOpenFaceCutter(openFaces[i], i, t, dir, voxel));
+                    cutters = cutters is null ? one : cutters.voxBoolAdd(one);
+                }
+                // Clip the union to the shell's OWN outer solid, so a cutter can
+                // never reach past the body the shell was built from, then ONE
+                // subtract for every face at once.
+                shell = shell.voxBoolSubtract(cutters!.voxBoolIntersect(outer));
+            }
 
             shell.CalculateProperties(out float fShellVol, out _);
             float fVoxelVol = voxel * voxel * voxel;
             if (fShellVol < fVoxelVol)
                 throw new Exception(
                     $"shell {t:0.###} mm ({dir}) collapsed the part (result volume {fShellVol:0.####} mm³ " +
-                    $"< one voxel-volume {fVoxelVol:0.######} mm³)");
+                    $"< one voxel-volume {fVoxelVol:0.######} mm³)" +
+                    (openFaces.Length > 0
+                        ? $" — all {openFaces.Length} faces opened? A shell with every face open has no walls left."
+                        : ""));
 
             // A wall thicker than the part itself is a silent NO-OP: the inward
             // offset vanishes, so `solid − nothing` returns the WHOLE solid rather
@@ -312,6 +367,80 @@ namespace Anvil.Worker
 
             FinishVoxelOp(job, shell, fShellVol);
         }
+
+        // ---- open-face cutters (shell) -------------------------------------
+
+        /// <summary>Hard cap on picked faces per shell op — a guard, not a UI limit.</summary>
+        const int MaxOpenFaces = 24;
+
+        /// <summary>
+        /// Over-run of an open-face cutter along the face normal, in and out (mm).
+        /// The OUTWARD 1 mm guarantees the cutter starts clear of the surface so no
+        /// skin of the wall survives; the INWARD 1 mm past the wall guarantees it
+        /// breaks all the way into the cavity at any voxel size.
+        /// </summary>
+        const float OpenFacePadMM = 1.0f;
+
+        /// <summary>
+        /// The oriented slab that removes ONE picked face's wall. Laterally it is
+        /// the face's own rectangle grown by a voxel on every side (so no sliver of
+        /// skin survives at the rim); along the normal it spans the wall for the
+        /// chosen direction, padded by <see cref="OpenFacePadMM"/> at both ends:
+        ///
+        ///   inside    n ∈ [−(t + pad), +pad]          (wall lies inside the surface)
+        ///   outside   n ∈ [−pad, +(t + pad)]          (wall lies outside it)
+        ///   centered  n ∈ [−(t/2 + pad), +(t/2 + pad)]
+        ///
+        /// which is a box of depth t + 2·pad centred at −t/2, +t/2 and 0 along the
+        /// normal respectively. Every entry is validated here rather than at the
+        /// API: a NaN or non-unit normal would silently produce a garbage OBB.
+        /// </summary>
+        static Mesh BuildOpenFaceCutter(OpenFaceDto f, int idx, float t, string dir, float voxel)
+        {
+            if (f is null)
+                throw new ArgumentException($"openFaces[{idx}] is null");
+            if (f.centerMM is null || f.normalUnit is null)
+                throw new ArgumentException($"openFaces[{idx}] requires centerMM and normalUnit");
+
+            Vector3 c = f.centerMM.ToVector3();
+            Vector3 n = f.normalUnit.ToVector3();
+            Vector3 uIn = f.axisUMM?.ToVector3() ?? Vector3.Zero;
+            float hU = f.halfUMM, hV = f.halfVMM;
+
+            if (!IsFinite(c) || !IsFinite(n) || !IsFinite(uIn) ||
+                !float.IsFinite(hU) || !float.IsFinite(hV))
+                throw new ArgumentException(
+                    $"openFaces[{idx}] carries a NaN or Infinity component — centerMM, normalUnit, " +
+                    $"axisUMM, halfUMM and halfVMM must all be finite numbers");
+
+            float len = n.Length();
+            if (!float.IsFinite(len) || MathF.Abs(len - 1f) > 1e-3f)
+                throw new ArgumentException(
+                    $"openFaces[{idx}].normalUnit must be a UNIT vector pointing out of the part " +
+                    $"(length {len:0.#####})");
+            if (hU <= 0f || hV <= 0f)
+                throw new ArgumentException(
+                    $"openFaces[{idx}] requires halfUMM and halfVMM > 0 (got {hU:0.###}, {hV:0.###})");
+
+            n /= len;   // exactly unit after the tolerance check above
+            MeshUtil.BuildFaceFrame(n, uIn, out Vector3 u, out Vector3 v);
+
+            float padLat = MathF.Max(voxel, 1e-3f);
+            float depth  = t + 2f * OpenFacePadMM;
+            float mid = dir switch
+            {
+                "inside"  => -t * 0.5f,
+                "outside" =>  t * 0.5f,
+                _         =>  0f,          // centered — symmetric about the surface
+            };
+
+            return MeshUtil.CreateOrientedBox(
+                new Vector3(2f * (hU + padLat), 2f * (hV + padLat), depth),
+                c + n * mid, u, v, n);
+        }
+
+        static bool IsFinite(Vector3 v)
+            => float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);
 
         static void RunOffset(JobRequest job, float voxel)
         {

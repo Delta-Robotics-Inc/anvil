@@ -1125,6 +1125,14 @@ body.layflat-armed .viewport canvas { cursor:crosshair; }
 .tool-actions .btn { flex:1 1 0; padding:8px 10px; }
 .tool-mini { --c:var(--dim); }
 .tool-mini:hover:not(:disabled) { --c:var(--primary); }
+/* An ARMED mini toggle (SHELL's OPEN FACES · PICK): --primary rim and text, and
+   deliberately NO solid fill. The one solid fill in an open tool panel belongs
+   to CONFIRM, and arming a pick must not take it away. */
+.tool-mini.active { --c:var(--primary); color:var(--primary); }
+/* PICK sits inline with its live count instead of stretching the row. */
+.tool-actions.tool-pick { align-items:center; gap:10px; margin-top:0; }
+.tool-actions.tool-pick .btn { flex:0 0 auto; padding:6px 14px; }
+.tool-actions.tool-pick .tool-hint { margin-top:0; }
 
 /* ── ZONES tile — legend + promise + V2 tag ───────────────────────────── */
 .zone-legend { display:flex; gap:14px; margin-bottom:10px; }

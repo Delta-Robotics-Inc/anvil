@@ -122,6 +122,23 @@ public sealed class MirrorDto
     public Vec3Dto? planeNormal { get; set; }   // required, any length
 }
 
+/// <summary>
+/// One picked planar face a shell op must leave OPEN (no wall there), as an
+/// oriented in-plane RECTANGLE in the POST-TRANSFORM world frame — the frame the
+/// worker sees once it bakes the input's TRS, which is exactly the frame the
+/// viewer's flat-face quads live in. Matches the worker OpenFaceDto field for
+/// field, so the job.json passthrough is verbatim.
+/// </summary>
+public sealed class OpenFaceDto
+{
+    public Vec3Dto? centerMM { get; set; }     // face centre (mm)
+    public Vec3Dto? normalUnit { get; set; }   // UNIT normal, pointing OUT of the part
+    public Vec3Dto? axisUMM { get; set; }      // in-plane axis (unit)
+    public Vec3Dto? axisVMM { get; set; }      // the other in-plane axis (unit)
+    public double halfUMM { get; set; }        // half extent along U (mm)
+    public double halfVMM { get; set; }        // half extent along V (mm)
+}
+
 /// <summary>Primitive descriptor for the primitive op (matches the worker PrimitiveDto).</summary>
 public sealed class PrimitiveDto
 {
@@ -142,6 +159,7 @@ public sealed class OpRequestDto
     public double filletMM { get; set; } = 1.0;                // merge blend radius
     public string? shellDirection { get; set; }                // inside|outside|centered
     public double shellThicknessMM { get; set; }
+    public List<OpenFaceDto>? openFaces { get; set; }          // shell: faces to leave OPEN (null/empty = closed)
     public double offsetDistMM { get; set; }                   // signed
     public bool bake { get; set; }                             // transform-bake marker
     public MirrorDto? mirror { get; set; }

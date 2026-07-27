@@ -475,6 +475,16 @@ const toolCtx = {
   },
   runOp: (body, onProgress) => runOpFlow(body, onProgress),
   consumeSources: (ids, resultId, kind) => consumeSources(ids, resultId, kind),
+  // SHELL · OPEN FACES. The VIEWER owns the picked set (it owns the face
+  // geometry the ids name); the tool reads the count and, on CONFIRM, the
+  // world-frame rectangles. Arming cancels SECTION / LAY FLAT inside the viewer,
+  // so only one thing can ever mean "click a face".
+  armOpenFaces: (id) => viewer.armOpenFacePick(id ? unitIdOf(id) : null),
+  cancelOpenFaces: () => viewer.cancelOpenFacePick(),
+  isOpenFacesArmed: () => viewer.isOpenFacePickArmed(),
+  openFaceIds: () => viewer.openFaceIds(),
+  clearOpenFaces: () => viewer.clearOpenFaces(),
+  faceQuadData: (quadId) => viewer.getFaceQuadData(quadId),
   onStateChange: () => updateAccents(),
   toast: (msg, kind, ms) => ui.toast(msg, kind, ms),
 };
@@ -2258,11 +2268,9 @@ function syncSectionChips(axis) {
   }
 }
 ui.els.vpSection?.addEventListener('click', () => {
-  const on = !ui.els.vpSection.classList.contains('active');
-  ui.els.vpSection.classList.toggle('active', on);
-  ui.els.vpSection.setAttribute('aria-pressed', on ? 'true' : 'false');
-  if (ui.els.vpSectionWrap) ui.els.vpSectionWrap.hidden = !on;
-  viewer.setSection(on);   // ON → triad pick mode (no plane preselected)
+  // ON → triad pick mode (no plane preselected). The button's own lit state is
+  // written by onSectionChange above, from the viewer, so the two cannot drift.
+  viewer.setSection(!viewer.getSectionState().enabled);
 });
 // X / Y / Z chips = the same pick the triad quads perform, through the anchor.
 secAxisChips?.addEventListener('click', (e) => {
@@ -2278,6 +2286,14 @@ secInvertBtn?.addEventListener('click', () => {
 // Single sync point: chips, invert state and the offset readout all derive from
 // whatever the viewer reports (chip / triad / face pick / arrow drag / Alt+wheel).
 viewer.onSectionChange = (s) => {
+  // The viewer can turn SECTION off on its own now (arming SHELL's OPEN FACES
+  // takes the face quads over), so the strip button mirrors the VIEWER's state
+  // rather than assuming its own click was the only way in or out.
+  if (ui.els.vpSection) {
+    ui.els.vpSection.classList.toggle('active', s.enabled);
+    ui.els.vpSection.setAttribute('aria-pressed', s.enabled ? 'true' : 'false');
+    if (ui.els.vpSectionWrap) ui.els.vpSectionWrap.hidden = !s.enabled;
+  }
   syncSectionChips(s.hasPlane ? s.axis : null);
   secInvertBtn?.classList.toggle('active', s.sign < 0);
   if (!secReadout) return;
@@ -2589,6 +2605,10 @@ function markSourceMoved(p) {
   state.resultFresh = false;
   updateAccents();
 }
+// SHELL · OPEN FACES — a quad click toggled the set, or another armer took the
+// quads. Either way the tool's row repaints from the viewer's own state.
+viewer.onOpenFacesChange = () => tools.onOpenFacesChanged();
+viewer.onQuadArmerCancel = () => tools.onOpenFacesChanged();
 viewer.onLayFlat = (id, trs) => {                           // one-shot face pick result
   state.layFlatArmed = false;
   document.body.classList.remove('layflat-armed');

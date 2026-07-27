@@ -12,6 +12,14 @@
       * primitive sphere d20     vol ~= 4189  (+/-2%)
       * boolean difference       box - cylinder (Y-axis through-hole, +/-2%)
       * shell inside t2          48000 - 56*36*16 (+/-2%)
+      * shell open faces         40mm cube, inside t2, MESH volumes (+/-2%):
+                                 closed 17344, top face open 13840, top + X open
+                                 10660 (the two cutter slabs unioned, so their
+                                 corner bar counts once), each watertight, each
+                                 probed point-in-mesh (opened wall EMPTY,
+                                 untouched wall SOLID);
+                                 openFaces:[] byte-identical to a closed shell;
+                                 a non-unit normal is rejected
       * offset -2                ~= 32256 (+/-2%)
       * transform bake +10 x     bbox shifted EXACTLY (mesh-exact)
       * rotate 90 deg Z          bbox X/Y extents swapped
@@ -135,14 +143,94 @@ public static class StlTool {
         long k = ((long)a << 32) | (uint)b;
         int c; edge.TryGetValue(k, out c); edge[k] = c + 1;
     }
+
+    // Closed-mesh volume by the divergence theorem: sum the signed tetrahedra
+    // (origin, A, B, C). This is the SAME figure MeshUtil.MeshMassProps computes
+    // and it is essentially exact (0.02% on a 400k-triangle voxel shell), unlike
+    // the voxel-truth volume the worker reports in its done stats. Use it when a
+    // test needs to compare against closed-form geometry.
+    public static double MeshVolume(string path) {
+        byte[] b = File.ReadAllBytes(path);
+        uint n = BitConverter.ToUInt32(b, 80);
+        double v = 0.0;
+        int off = 84;
+        for (uint i = 0; i < n; i++) {
+            int bp = off + (int)i*50 + 12; // skip the 3-float normal
+            double ax = BitConverter.ToSingle(b, bp),    ay = BitConverter.ToSingle(b, bp+4),  az = BitConverter.ToSingle(b, bp+8);
+            double bx = BitConverter.ToSingle(b, bp+12), by = BitConverter.ToSingle(b, bp+16), bz = BitConverter.ToSingle(b, bp+20);
+            double cx = BitConverter.ToSingle(b, bp+24), cy = BitConverter.ToSingle(b, bp+28), cz = BitConverter.ToSingle(b, bp+32);
+            v += (ax*(by*cz - bz*cy) + ay*(bz*cx - bx*cz) + az*(bx*cy - by*cx)) / 6.0;
+        }
+        return Math.Abs(v);
+    }
+
+    // Point-in-mesh by RAY PARITY: cast one ray from the probe point and count
+    // Moller-Trumbore triangle crossings. The meshes under test are watertight,
+    // so an ODD count means the point is INSIDE the solid. The direction is
+    // deliberately off-axis and irrational-ish so an axis-aligned box's faces,
+    // edges and vertices can never be grazed exactly.
+    // Returns 1.0 (inside/solid) or 0.0 (outside/empty).
+    public static double PointInside(string path, double px, double py, double pz) {
+        byte[] b = File.ReadAllBytes(path);
+        uint n = BitConverter.ToUInt32(b, 80);
+        double dx = 1.0, dy = 0.3341, dz = 0.7457;
+        double dl = Math.Sqrt(dx*dx + dy*dy + dz*dz);
+        dx /= dl; dy /= dl; dz /= dl;
+        const double EPS = 1e-9;
+        int hits = 0;
+        int off = 84;
+        double[] vx = new double[3], vy = new double[3], vz = new double[3];
+        for (uint i = 0; i < n; i++) {
+            int bp = off + (int)i*50 + 12; // skip the 3-float normal
+            for (int v = 0; v < 3; v++) {
+                int p = bp + v*12;
+                vx[v] = BitConverter.ToSingle(b, p);
+                vy[v] = BitConverter.ToSingle(b, p+4);
+                vz[v] = BitConverter.ToSingle(b, p+8);
+            }
+            double e1x = vx[1]-vx[0], e1y = vy[1]-vy[0], e1z = vz[1]-vz[0];
+            double e2x = vx[2]-vx[0], e2y = vy[2]-vy[0], e2z = vz[2]-vz[0];
+            double hx = dy*e2z - dz*e2y, hy = dz*e2x - dx*e2z, hz = dx*e2y - dy*e2x;
+            double a = e1x*hx + e1y*hy + e1z*hz;
+            if (a > -EPS && a < EPS) continue;                 // ray parallel to the tri
+            double f = 1.0 / a;
+            double sx = px-vx[0], sy = py-vy[0], sz = pz-vz[0];
+            double u = f * (sx*hx + sy*hy + sz*hz);
+            if (u < 0.0 || u > 1.0) continue;
+            double qx = sy*e1z - sz*e1y, qy = sz*e1x - sx*e1z, qz = sx*e1y - sy*e1x;
+            double vv = f * (dx*qx + dy*qy + dz*qz);
+            if (vv < 0.0 || u + vv > 1.0) continue;
+            double t = f * (e2x*qx + e2y*qy + e2z*qz);
+            if (t > EPS) hits++;
+        }
+        return (hits % 2) == 1 ? 1.0 : 0.0;
+    }
 }
 '@
+}
+
+# Probe one point against a watertight result: SOLID (inside) or EMPTY (outside).
+function Test-Probe([string]$name, [string]$path, [double[]]$pt, [bool]$wantSolid) {
+    $inside = ([StlTool]::PointInside($path, $pt[0], $pt[1], $pt[2]) -eq 1.0)
+    $ok = ($inside -eq $wantSolid)
+    $got = 'EMPTY'; if ($inside) { $got = 'SOLID' }
+    $exp = 'EMPTY'; if ($wantSolid) { $exp = 'SOLID' }
+    Add-Result $name $ok ('at ({0},{1},{2}) got={3} expected={4}' -f $pt[0], $pt[1], $pt[2], $got, $exp)
 }
 
 function Test-Watertight([string]$name, [string]$path) {
     $w = [StlTool]::Watertight($path)
     $ok = ([int]$w[0] -eq 1)
     Add-Result $name $ok ('openEdges={0} weldedVerts={1}' -f [int]$w[1], [int]$w[2])
+}
+
+# The SAME directed-edge check, but read off the worker's own done stats instead
+# of re-walking the file. The StlTool version welds vertices through a string-keyed
+# dictionary, which is fine for a 12-triangle primitive and far too slow for the
+# ~400k-triangle mesh a voxel shell produces; the worker already reports it.
+function Test-StatWatertight([string]$name, $r) {
+    Add-Result $name ([bool]$r.stats.watertight) `
+        ('watertight={0} openEdges={1}' -f [bool]$r.stats.watertight, [int]$r.stats.openEdges)
 }
 
 function Get-StlBBox([string]$path) {
@@ -386,6 +474,133 @@ $r = Invoke-Worker ([ordered]@{
 if (Test-Ok $r 'shell inside volume') {
     Assert-Close 'shell inside volume' ([double]$r.stats.volumeMM3) $expShell 0.02
 }
+
+Write-Host "`n== Shell OPEN FACES (picked flat faces leave no wall) ==" -ForegroundColor Cyan
+
+# A 40mm cube, shelled INSIDE at t=2. Every expectation below is closed form.
+# They are checked against the MESH volume of the result (StlTool::MeshVolume),
+# not the voxel-truth figure in the worker's done stats: on a shell the two
+# disagree by ~9% (voxel truth under-counts a thin wall), while the mesh volume
+# lands within 0.05% of the ideal — so the mesh figure is what can be compared
+# against geometry at all.
+#
+#   closed shell             40^3 - 36^3                       = 17344
+#   one open-face cutter     the face rectangle (+1 voxel laterally, clipped back
+#                            to the solid) swept along the normal from +1mm
+#                            OUTSIDE the surface to -(t+1mm) inside — the slab
+#                            z in [17,20] for the +Z face — intersected with the
+#                            shell:
+#                              z in [18,20]  full 40x40 wall     40*40*2 = 3200
+#                              z in [17,18]  side-wall ring  (40^2-36^2)*1 =  304
+#                                                                        -> 3504
+#   one face open            17344 - 3504                      = 13840
+#   two faces open (+Z,+X)   the two slabs UNIONED, so their corner bar counts
+#                            once: that bar is 324 mm3, hence
+#                            17344 - (3504 + 3504 - 324)       = 10660
+$Box40 = Join-Path $WorkDir 'box40.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='primitive'; voxelSizeMM=0.3; outputPath=$Box40
+    primitive=@{ kind='box'; sizeMM=@{x=40;y=40;z=40}; centerMM=@{x=0;y=0;z=0}; sides=0 }
+}) 'of_box40'
+[void](Test-Ok $r 'open-faces base box40')
+
+$expClosed = 17344.0
+$expTop    = 13840.0
+$expTwo    = 10660.0
+
+# (c) REGRESSION — no openFaces at all: the closed shell is exactly what it was
+#     before the feature existed, and an EMPTY openFaces array is byte-identical
+#     to the field being absent (no cutter path is entered).
+$ofClosed = Join-Path $WorkDir 'of_closed.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='shell'; shellDirection='inside'; shellThicknessMM=2.0; voxelSizeMM=0.3
+    outputPath=$ofClosed; inputs=@(@{ path=$Box40 })
+}) 'of_closed'
+$volClosed = 0.0
+if (Test-Ok $r 'shell closed (no openFaces)') {
+    $volClosed = [StlTool]::MeshVolume($ofClosed)
+    Assert-Close 'closed shell volume (40^3 - 36^3)' $volClosed $expClosed 0.02
+    Test-StatWatertight 'closed shell watertight' $r
+    # the wall IS there at the top face, which is what the open cases remove
+    Test-Probe 'closed shell top-centre at wall depth is SOLID' $ofClosed @(0.0, 0.0, 19.0) $true
+    Test-Probe 'closed shell side wall is SOLID' $ofClosed @(19.5, 0.0, 0.0) $true
+}
+
+$ofEmpty = Join-Path $WorkDir 'of_empty.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='shell'; shellDirection='inside'; shellThicknessMM=2.0; voxelSizeMM=0.3
+    outputPath=$ofEmpty; inputs=@(@{ path=$Box40 }); openFaces=@()
+}) 'of_empty'
+if (Test-Ok $r 'shell openFaces:[] regression') {
+    $hA = (Get-FileHash $ofClosed -Algorithm SHA256).Hash
+    $hB = (Get-FileHash $ofEmpty  -Algorithm SHA256).Hash
+    Add-Result 'openFaces:[] is byte-identical to a closed shell' ($hA -eq $hB) `
+        ('sha256 closed={0} empty={1}' -f $hA.Substring(0,12), $hB.Substring(0,12))
+}
+
+# (a) ONE face open: the +Z top. Volume drops by one wall slab, the top-centre at
+#     wall depth becomes air, and a side wall well clear of the cut stays solid.
+$ofTop = Join-Path $WorkDir 'of_top.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='shell'; shellDirection='inside'; shellThicknessMM=2.0; voxelSizeMM=0.3
+    outputPath=$ofTop; inputs=@(@{ path=$Box40 })
+    openFaces=@(
+        @{ centerMM=@{x=0;y=0;z=20}; normalUnit=@{x=0;y=0;z=1}
+           axisUMM=@{x=1;y=0;z=0}; axisVMM=@{x=0;y=1;z=0}; halfUMM=20; halfVMM=20 }
+    )
+}) 'of_top'
+$volTop = 0.0
+if (Test-Ok $r 'shell top face open') {
+    $volTop = [StlTool]::MeshVolume($ofTop)
+    Assert-Close 'one open face volume (17344 - 3504)' $volTop $expTop 0.02
+    $drop = $volClosed - $volTop
+    Add-Result 'one open face removes ~ one wall slab' `
+        (($drop -gt 3200.0*0.95) -and ($drop -lt 3200.0*1.2)) `
+        ('removed={0:0.##} mm3 (one 40x40x2 wall slab = 3200)' -f $drop)
+    Test-StatWatertight 'one open face watertight' $r
+    Test-Probe 'open top: top-centre at wall depth is EMPTY' $ofTop @(0.0, 0.0, 19.0) $false
+    Test-Probe 'open top: side wall is still SOLID'          $ofTop @(19.5, 0.0, 0.0) $true
+}
+
+# (b) TWO faces open: +Z and +X. Smaller still, still watertight, and the wall at
+#     BOTH picked faces is gone while the untouched -X wall survives.
+$ofTwo = Join-Path $WorkDir 'of_two.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='shell'; shellDirection='inside'; shellThicknessMM=2.0; voxelSizeMM=0.3
+    outputPath=$ofTwo; inputs=@(@{ path=$Box40 })
+    openFaces=@(
+        @{ centerMM=@{x=0;y=0;z=20}; normalUnit=@{x=0;y=0;z=1}
+           axisUMM=@{x=1;y=0;z=0}; axisVMM=@{x=0;y=1;z=0}; halfUMM=20; halfVMM=20 },
+        @{ centerMM=@{x=20;y=0;z=0}; normalUnit=@{x=1;y=0;z=0}
+           axisUMM=@{x=0;y=1;z=0}; axisVMM=@{x=0;y=0;z=1}; halfUMM=20; halfVMM=20 }
+    )
+}) 'of_two'
+if (Test-Ok $r 'shell two faces open') {
+    $volTwo = [StlTool]::MeshVolume($ofTwo)
+    Assert-Close 'two open faces volume (17344 - 6684)' $volTwo $expTwo 0.02
+    Add-Result 'two open faces < one open face < closed shell' `
+        (($volTwo -lt $volTop) -and ($volTop -lt $volClosed)) `
+        ('two={0:0.##} one={1:0.##} closed={2:0.##}' -f $volTwo, $volTop, $volClosed)
+    Test-StatWatertight 'two open faces watertight' $r
+    Test-Probe 'open two: top wall is EMPTY'      $ofTwo @(0.0, 0.0, 19.0) $false
+    Test-Probe 'open two: +X wall is EMPTY'       $ofTwo @(19.5, 0.0, 0.0) $false
+    Test-Probe 'open two: -X wall is still SOLID' $ofTwo @(-19.5, 0.0, 0.0) $true
+}
+
+# Validation: a non-unit normal is rejected with a clear message rather than
+# silently building a garbage cutter.
+$ofBad = Join-Path $WorkDir 'of_bad.stl'
+$r = Invoke-Worker ([ordered]@{
+    mode='op'; opKind='shell'; shellDirection='inside'; shellThicknessMM=2.0; voxelSizeMM=0.3
+    outputPath=$ofBad; inputs=@(@{ path=$Box40 })
+    openFaces=@(
+        @{ centerMM=@{x=0;y=0;z=20}; normalUnit=@{x=0;y=0;z=7}
+           axisUMM=@{x=1;y=0;z=0}; axisVMM=@{x=0;y=1;z=0}; halfUMM=20; halfVMM=20 }
+    )
+}) 'of_bad_normal'
+$badOk = ($r.exit -ne 0) -and ("$($r.err)" -match 'UNIT vector')
+Add-Result 'non-unit openFaces normal is rejected' $badOk `
+    ('exit={0} err={1}' -f $r.exit, (("$($r.err)" -replace '\s+', ' ').Trim()))
 
 # 5) offset -2 -> 56*36*16 = 32256 (+/-2%)
 $offStl = Join-Path $WorkDir 'off.stl'

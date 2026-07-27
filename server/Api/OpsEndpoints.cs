@@ -13,6 +13,7 @@
 // match the worker schema (worker\OpJob.cs / worker\MeshUtil.cs):
 //   mode:"op", opKind, inputs:[{path,transform:{translateMM,rotateDeg,scale}}],
 //   booleanKind, filletMM, shellDirection, shellThicknessMM, offsetDistMM, bake,
+//   openFaces:[{centerMM,normalUnit,axisUMM,axisVMM,halfUMM,halfVMM}],
 //   mirror:{planePoint,planeNormal}, primitive:{kind,sizeMM,centerMM,sides},
 //   outputPath, voxelSizeMM.
 //
@@ -204,6 +205,10 @@ public static class OpsEndpoints
                 if (req.shellThicknessMM <= minFeature)
                     return OpErr(400, $"shellThicknessMM ({req.shellThicknessMM}) must exceed 1.5×voxel ({minFeature:0.###} mm)");
                 label = $"SHELL · {dir.ToUpperInvariant()} {Fmt(req.shellThicknessMM)}mm";
+                // Picked flat faces are left OPEN (no wall). The count goes in the
+                // derived label so provenance reads the same as the tool did.
+                int nOpen = req.openFaces?.Count ?? 0;
+                if (nOpen > 0) label += $" · {nOpen} OPEN";
                 guard = true;
                 break;
             }

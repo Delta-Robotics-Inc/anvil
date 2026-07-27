@@ -26,6 +26,11 @@
 //     clearPartTransform(id)                      (APPLY bake → reset source TRS)
 //     runOp(body, onProgress) -> Promise<part|null>
 //     consumeSources(ids, resultId, kind)         (BOOL/SMOOTH: sources REMOVED)
+//     armOpenFaces(id) -> bool                    (SHELL: arm the flat-face quads)
+//     cancelOpenFaces() / clearOpenFaces()        (disarm / drop the picked set)
+//     isOpenFacesArmed() -> bool
+//     openFaceIds() -> [quadId]                   (the picked faces, stable ids)
+//     faceQuadData(quadId) -> openFace | null     (world-frame oriented rectangle)
 //     onStateChange()                             (→ main.updateAccents)
 //     toast(msg, kind, ms)
 //   }
@@ -459,6 +464,12 @@ const TOOLS = {
   },
 
   // ── SHELL ────────────────────────────────────────────────────────────
+  // Thickness + direction hollow the part; OPEN FACES decides which walls are
+  // left OUT, the way Fusion's Shell removes the faces you pick. PICK arms the
+  // viewer's flat-face quads as a multi-select — clicking one toggles it green
+  // ("open = air", the same language a Negative cavity uses), clicking again
+  // closes it. The set lives in the VIEWER, which owns the face geometry; the
+  // tool only reads its count and, at build time, its world-frame rectangles.
   shell: {
     title: 'SHELL', jp: '殻', confirm: 'CONFIRM',
     render(host) {
@@ -472,8 +483,22 @@ const TOOLS = {
       const hint = el('span', 'regmark tool-hint');
       host.append(
         paramBlock('Direction', seg.el, { tip: 'Grow the wall inward, outward, or centred on the surface.' }),
-        paramBlock('Thickness <em>mm</em>', th.el, { tip: 'Wall thickness of the shell.' }),
       );
+
+      // ── OPEN FACES ──
+      const pick = el('button', 'btn tool-mini has-tip');
+      pick.type = 'button'; pick.textContent = 'PICK';
+      pick.setAttribute('data-tip',
+        'Arm face picking, then click the highlighted faces on the part. A green face is left '
+        + 'OPEN: no wall there, so the hollow interior breaks out. Click it again to close it. '
+        + 'Flat faces only, curved surfaces are not detected.');
+      const count = el('span', 'regmark tool-hint');
+      const pickRow = el('div', 'tool-actions tool-pick');
+      pickRow.append(pick, count);
+      host.append(paramBlock('Open faces', pickRow,
+        { tip: 'Faces to leave out of the shell. None picked gives a fully closed hollow part.' }));
+
+      host.append(paramBlock('Thickness <em>mm</em>', th.el, { tip: 'Wall thickness of the shell.' }));
       host.lastChild.appendChild(hint);
       host.append(paramBlock('Resolution <em>voxel mm</em>', vox.el, { tip: 'Voxel size for this operation.' }));
       cur._hint = () => {
@@ -482,18 +507,56 @@ const TOOLS = {
         hint.textContent = `min wall ${(min).toFixed(2)} mm (1.5 × voxel)`;
       };
       cur._hint();
-      return () => ({ part: part(), dir: seg.get(), thickness: num(th.inp, 2), voxel: num(vox.inp, 0.3) });
+
+      // The open set belongs to ONE part. Rebinding to another drops it, so the
+      // op can never carry faces that were picked on a different body.
+      let boundFor = part();
+      const openSync = () => {
+        const id = part();
+        if (id !== boundFor) { boundFor = id; ctx.clearOpenFaces(); }
+        const armed = ctx.isOpenFacesArmed();
+        const n = ctx.openFaceIds().length;
+        pick.disabled = !id;
+        pick.classList.toggle('active', armed);
+        pick.setAttribute('aria-pressed', armed ? 'true' : 'false');
+        count.textContent = n
+          ? `${n} open`
+          : (armed ? 'click a flat face' : 'none - fully closed');
+      };
+      pick.addEventListener('click', () => {
+        if (ctx.isOpenFacesArmed()) ctx.cancelOpenFaces();
+        else if (!ctx.armOpenFaces(part())) return;
+        openSync();
+        onChange();
+      });
+      // bindPrimary installed the header repaint — chain the open-face row onto it
+      // so a selection change repaints both without re-rendering the parameters.
+      const bindSync = cur._sync;
+      cur._sync = (live) => { bindSync?.(live); openSync(); };
+      cur._openSync = openSync;
+      openSync();
+
+      return () => ({ part: part(), dir: seg.get(), thickness: num(th.inp, 2),
+        voxel: num(vox.inp, 0.3), openIds: ctx.openFaceIds() });
     },
     validate(v) {
       if (!v.part) return { ok: false, note: EMPTY_ONE, noteKind: '' };
       const min = 1.5 * v.voxel;
       if (v.thickness <= min) return { ok: false, note: `Thickness must exceed ${min.toFixed(2)} mm`, noteKind: 'warn' };
-      return { ok: true, note: '' };
+      const n = v.openIds.length;
+      return { ok: true, note: n ? `${n} face${n > 1 ? 's' : ''} left open` : '' };
     },
     build(v) {
-      return { op: 'shell', voxelSizeMM: v.voxel, shellDirection: v.dir,
+      const body = { op: 'shell', voxelSizeMM: v.voxel, shellDirection: v.dir,
         shellThicknessMM: v.thickness, inputs: [inputRef(v.part)] };
+      // World-frame rectangles read at BUILD time, so they reflect the part's
+      // current TRS — the same transform the request folds into inputs[0], which
+      // is the frame the worker sees once it bakes it.
+      const faces = v.openIds.map((id) => ctx.faceQuadData(id)).filter(Boolean);
+      if (faces.length) body.openFaces = faces;   // omitted entirely = closed shell
+      return body;
     },
+    afterConfirm() { resetOpenFaces(); },
   },
 
   // ── OFFSET ───────────────────────────────────────────────────────────
@@ -753,9 +816,17 @@ function revalidate() {
   ctx.onStateChange();                     // main.updateAccents (single-fill machine)
 }
 
+/** Drop the SHELL open-face pick AND its set. Any tool boundary resets it: the
+ *  set is a parameter of one open SHELL panel, never leftover app state. */
+function resetOpenFaces() {
+  ctx?.cancelOpenFaces?.();
+  ctx?.clearOpenFaces?.();
+}
+
 export function openTool(id) {
   const t = TOOLS[id];
   if (!t) return;
+  resetOpenFaces();               // a fresh panel starts with nothing picked
   cur = { id, read: null, valid: false, running: false };
   const body = els().toolBody;
   body.innerHTML = '';
@@ -776,6 +847,7 @@ export function openTool(id) {
 
 export function close() {
   if (!cur) return;
+  resetOpenFaces();
   cur = null;
   ui.setLeftView('lattice');   // back to the home view (LATTICE + GENERATE)
   syncToolbarActive(null);
@@ -803,6 +875,13 @@ function syncBound() {
 }
 /** The selection changed (or a TRS committed) — rebind and repaint. */
 export function onSelectionChanged() { syncBound(); }
+/** The viewer's OPEN FACES set (or its armed state) moved — repaint the row.
+ *  Fired by a quad click and by anything that takes the face quads away. */
+export function onOpenFacesChanged() {
+  if (!cur) return;
+  cur._openSync?.();
+  revalidate();
+}
 /** Mid-drag TRS frames, straight off the gizmo/plate drag. The bound part's
  *  in-flight pose is handed to the tool so its fields tick with the drag. */
 export function onTransformLive(entries) {

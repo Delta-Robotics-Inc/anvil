@@ -217,6 +217,18 @@ const FACE_MAX       = 12;      // top-N clusters by area
 const FACE_TRI_CAP   = 2000000; // skip face detection above this triangle count
 const FACE_LIFT_MM   = 0.3;     // face quads float this far off the surface
 
+// OPEN FACES (the SHELL tool's multi-select). A picked face reads --green, the
+// same language the Negative role uses for a cavity: green means AIR. Unpicked
+// quads keep the neutral hover-only look, so the two states never blur.
+const COL_GREEN      = 0x47c86e;   // --green
+const FACE_OPEN_A    = 0.30;       // picked-face fill alpha (neutral quads: 0.13)
+// A face's STABLE identity: its plane, quantised, expressed in the part's OWN
+// frame rather than the world. That survives any gizmo move, so an open set
+// picked before a drag still names the same faces after it — and after the
+// re-detect that follows, the world-frame data the op sends is the new pose's.
+const FACE_ID_N      = 50;      // normal quantisation (1/50 = 0.02, matches FACE_NORMAL_Q)
+const FACE_ID_D      = 4;       // plane-offset quantisation (1/4 mm, matches FACE_OFFSET_Q)
+
 // Render-order lanes. Stencil writers and caps MUST interleave strictly
 // (writers → cap → clearStencil → next mesh), so every section object is forced
 // transparent: three.js sorts the transparent list by renderOrder first, which
@@ -341,6 +353,8 @@ export class Viewer {
     this.onDragChange = null;      // (bool)         → freeze refreshParts while dragging
     this.onLayFlat = null;         // (id, trs|null) → lay-flat one-shot result
     this.onSectionChange = null;   // (sectionState) → HUD readout + chip sync
+    this.onOpenFacesChange = null; // (ids[])        → the SHELL tool's open-face count
+    this.onQuadArmerCancel = null; // ()             → something else took the face quads
 
     // Wave-6 · selection is an ORDERED MULTI-SET. `_selection` is the whole set
     // (order = the order the user picked them, which drives boolean A/B later);
@@ -351,6 +365,13 @@ export class Viewer {
     this._selectedId = null;
     this._gizmoActive = false;
     this._layFlatArmed = false;
+    // OPEN FACES pick (SHELL). A THIRD quad-armer beside SECTION and LAY FLAT,
+    // and only ever one of the three is live: each arms by cancelling the others.
+    // Unlike those two it is a MULTI-select that persists — `_openFaces` holds the
+    // stable face ids the tool will turn into the op's `openFaces` payload.
+    this._openPick = false;
+    this._openPickId = null;
+    this._openFaces = new Set();
     this._raycaster = new THREE.Raycaster();
     this._cubeAnim = null;
     this._cubeCursor = false;   // body.cube-pick state, so the class is written once per crossing
@@ -1079,6 +1100,7 @@ export class Viewer {
   /** Turn the SECTION tool on/off. ON with no plane chosen shows the pick triad. */
   setSection(enabled, axis) {
     const on = !!enabled;
+    if (on) this._yieldOpenPick();   // SECTION takes the face quads over
     this._section.enabled = on;
     if (!on) {
       this._section.hasPlane = false;
@@ -1343,15 +1365,19 @@ export class Viewer {
     this._triad.visible = true;
   }
 
-  _makeOverlayQuad(opacity) {
+  // `color` defaults to the neutral rim; an OPEN face quad passes --green and the
+  // hover restore reads it back off userData, so a tinted quad never reverts to
+  // neutral just because the pointer crossed it.
+  _makeOverlayQuad(opacity, color = COL_LINE) {
     const m = new THREE.Mesh(this._quadGeo, new THREE.MeshBasicMaterial({
-      color: COL_LINE, transparent: true, opacity, side: THREE.DoubleSide,
+      color, transparent: true, opacity, side: THREE.DoubleSide,
       depthWrite: false, depthTest: false,
     }));
     m.matrixAutoUpdate = false;
     m.frustumCulled = false;
     m.renderOrder = RO_RECT;
     m.userData.baseOpacity = opacity;
+    m.userData.baseColor = color;
     return m;
   }
 
@@ -1407,11 +1433,13 @@ export class Viewer {
     g.visible = true;
   }
 
-  // Face quads: shown on the SELECTED part when SECTION is on (pick a plane) or
-  // LAY FLAT is armed (pick a resting face). Same objects, different verb.
+  // Face quads: shown on the SELECTED part when SECTION is on (pick a plane),
+  // LAY FLAT is armed (pick a resting face) or OPEN FACES is armed (pick the
+  // walls a shell leaves out). Same objects, three different verbs — and only one
+  // verb at a time, so a click is never ambiguous.
   _faceQuadsWanted() {
     if (!this._selectedId || this._secQuadsFrozen) return false;
-    return this._layFlatArmed || this._section.enabled;
+    return this._openPick || this._layFlatArmed || this._section.enabled;
   }
   _syncFaceQuads() {
     const want = this._faceQuadsWanted();
@@ -1426,13 +1454,18 @@ export class Viewer {
     const faces = this._facesFor(this._selectedId);
     const Z = new THREE.Vector3(0, 0, 1);
     for (const f of faces) {
-      const quad = this._makeOverlayQuad(0.13);
+      // The tint is PERSISTENT state, not hover: an open face stays green while
+      // the pick is armed. Only in pick mode — SECTION and LAY FLAT get the plain
+      // neutral quads even if the SHELL tool is still holding a set.
+      const open = this._openPick && this._openFaces.has(f.id);
+      const tint = open ? COL_GREEN : COL_LINE;
+      const quad = this._makeOverlayQuad(open ? FACE_OPEN_A : 0.13, tint);
       quad.userData.secFace = f;
       const q = new THREE.Quaternion().setFromUnitVectors(Z, f.normal);
       const c = f.center.clone().addScaledVector(f.normal, FACE_LIFT_MM);
       quad.matrix.compose(c, q, new THREE.Vector3(f.w, f.h, 1));
       const edge = new THREE.LineSegments(this._edgeGeo, new THREE.LineBasicMaterial({
-        color: COL_LINE, transparent: true, opacity: 0.85, depthWrite: false, depthTest: false,
+        color: tint, transparent: true, opacity: 0.85, depthWrite: false, depthTest: false,
       }));
       edge.matrixAutoUpdate = false;
       edge.matrix.copy(quad.matrix);
@@ -1443,13 +1476,26 @@ export class Viewer {
     }
   }
 
-  /** Planar face clusters of a part in WORLD space (cached per matrixWorld). */
+  /** Planar face clusters of a part in WORLD space (cached per matrixWorld), each
+   *  stamped with a TRS-stable `id` (its plane in the part's own frame). */
   _facesFor(id) {
     const p = id ? this.parts.get(id) : null;
     if (!p || !p.mesh) return [];
     const key = p.mesh.matrixWorld.elements.join(',');
     if (p._faceCache && p._faceCache.key === key) return p._faceCache.faces;
     const faces = detectPlanarFaces(p.mesh);
+    // Pull each cluster's plane back into the part's OWN frame and quantise it —
+    // the one thing about a face that a move, a rotation or a re-detect cannot
+    // change. Detection order is by area and would otherwise shuffle.
+    const inv = new THREE.Matrix4().copy(p.mesh.matrixWorld).invert();
+    const nMat = new THREE.Matrix3().getNormalMatrix(inv);
+    const lc = new THREE.Vector3(), ln = new THREE.Vector3();
+    for (const f of faces) {
+      lc.copy(f.center).applyMatrix4(inv);
+      ln.copy(f.normal).applyMatrix3(nMat).normalize();
+      f.id = [Math.round(ln.x * FACE_ID_N), Math.round(ln.y * FACE_ID_N),
+        Math.round(ln.z * FACE_ID_N), Math.round(ln.dot(lc) * FACE_ID_D)].join(',');
+    }
     p._faceCache = { key, faces };
     return faces;
   }
@@ -1459,7 +1505,7 @@ export class Viewer {
   // face is a deliberate pick and must beat the big generic triad quads, which
   // span the anchor and would otherwise swallow every click near the part.
   _secPick(cx, cy) {
-    if (!this._section.enabled && !this._layFlatArmed) return null;
+    if (!this._section.enabled && !this._layFlatArmed && !this._openPick) return null;
     this._raycaster.setFromCamera(this._ndcFromClient(cx, cy), this.camera);
     if (this._manip && this._manip.visible) {
       const hit = this._raycaster.intersectObject(this._manip.userData.picker, false);
@@ -1481,7 +1527,7 @@ export class Viewer {
     if (this._secHover === obj) return;
     if (this._secHover) {
       const m = this._secHover.material;
-      m.color.setHex(COL_LINE);
+      m.color.setHex(this._secHover.userData.baseColor ?? COL_LINE);
       m.opacity = this._secHover.userData.baseOpacity;
     }
     this._secHover = obj || null;
@@ -1772,6 +1818,15 @@ export class Viewer {
     }
     if (!next.length) this.stopGizmo();
     else if (this._gizmoActive) this._syncProxy();   // gizmo re-seats on the new combined pivot
+    // An open-face set names faces OF ONE BODY, so a new primary drops it. The
+    // pick itself follows the selection (it binds the way the tool does) and only
+    // disarms when there is nothing left to pick on.
+    if (this._openPick && this._selectedId !== this._openPickId) {
+      this._openFaces.clear();
+      this._openPickId = this._selectedId;
+      if (!this._openPickId) this._openPick = false;
+      this.onQuadArmerCancel?.();
+    }
     this._secQuadsFrozen = false;   // a cancelled live transform must not strand the freeze
     this._syncFaceQuads();          // face quads belong to the PRIMARY part only
     if (this._section.enabled && !this._section.hasPlane) this._buildTriad();   // re-anchor
@@ -2025,11 +2080,76 @@ export class Viewer {
   armLayFlat() {
     if (!this._selectedId) return;
     this.stopGizmo();          // gizmo off during the one-shot face pick
+    this._yieldOpenPick();     // …and OPEN FACES gives the quads up
     this._layFlatArmed = true;
     this._syncFaceQuads();     // detected flat faces become clickable targets
   }
   cancelLayFlat() { this._layFlatArmed = false; this._syncFaceQuads(); }
   isLayFlatArmed() { return this._layFlatArmed; }
+
+  // ══ SHELL · OPEN FACES ═══════════════════════════════════════════════
+  // A multi-select over the SAME flat-face quads SECTION and LAY FLAT pick from.
+  // Exactly one of the three may be armed, so arming here cancels the other two
+  // (and they cancel this, through _yieldOpenPick) — a click on a quad then has
+  // exactly one meaning. The SET outlives the arm: toggling PICK off and on again
+  // brings the same faces back, which is what makes it a parameter of the tool
+  // rather than a gesture.
+
+  /** Arm the pick on `id` (defaults to the primary). Returns whether it armed. */
+  armOpenFacePick(id) {
+    const want = id || this._selectedId;
+    if (!want) return false;
+    if (this._layFlatArmed) {                    // LAY FLAT gives up the quads
+      this._layFlatArmed = false;
+      this.onLayFlat?.(this._selectedId, null);  // null trs = "cancelled", not a move
+    }
+    if (this._section.enabled) this.setSection(false);   // → onSectionChange un-toggles the chip
+    if (want !== this._openPickId) this._openFaces.clear();
+    this._openPickId = want;
+    this._openPick = true;
+    this._secQuadsFrozen = false;
+    this._syncFaceQuads();
+    return true;
+  }
+  cancelOpenFacePick() {
+    if (!this._openPick) return;
+    this._openPick = false;
+    this._syncFaceQuads();
+  }
+  isOpenFacePickArmed() { return this._openPick; }
+  /** The picked faces, as stable ids (a copy). */
+  openFaceIds() { return [...this._openFaces]; }
+  clearOpenFaces() {
+    if (!this._openFaces.size) return;
+    this._openFaces.clear();
+    this._syncFaceQuads();
+  }
+  /** Hand the quads to SECTION / LAY FLAT / the gizmo, keeping the SET intact. */
+  _yieldOpenPick() {
+    if (!this._openPick) return;
+    this._openPick = false;
+    this.onQuadArmerCancel?.();
+  }
+
+  /**
+   * The op payload for ONE picked face, read off the CURRENT pose: centre,
+   * outward unit normal, orthonormal in-plane axes and half-extents, all in the
+   * world frame — which is the frame the worker sees after it bakes the part's
+   * TRS, so no conversion is needed on either side. Null if that face is no
+   * longer detected (the part changed under the pick).
+   */
+  getFaceQuadData(quadId) {
+    const f = this._facesFor(this._openPickId || this._selectedId).find((x) => x.id === quadId);
+    if (!f) return null;
+    return {
+      centerMM:   { x: f.center.x, y: f.center.y, z: f.center.z },
+      normalUnit: { x: f.normal.x, y: f.normal.y, z: f.normal.z },
+      axisUMM:    { x: f.u.x, y: f.u.y, z: f.u.z },
+      axisVMM:    { x: f.v.x, y: f.v.y, z: f.v.z },
+      halfUMM: f.w / 2,
+      halfVMM: f.h / 2,
+    };
+  }
   // Raycast the selected mesh AND its linked ghosts (they are ONE body — a face
   // picked on a ghost lays the whole unit down), then hand the hit's world face
   // normal to the shared solver. Returns a TRS for the HOST (or null on a miss).
@@ -2601,7 +2721,14 @@ export class Viewer {
         if (pending.kind === 'triad') { this.pickAxisPlane(pending.axis); return; }
         const f = pending.face;
         if (!f) return;
-        if (this._layFlatArmed) {                       // LAY FLAT owns the click
+        if (this._openPick) {                           // OPEN FACES owns the click
+          // A multi-select, so the click TOGGLES rather than consuming the arm:
+          // the mode stays live until the tool (or another armer) takes it back.
+          if (this._openFaces.has(f.id)) this._openFaces.delete(f.id);
+          else this._openFaces.add(f.id);
+          this._syncFaceQuads();
+          this.onOpenFacesChange?.(this.openFaceIds());
+        } else if (this._layFlatArmed) {                // LAY FLAT owns the click
           const trs = this.computeLayFlatFromNormal(this._selectedId, f.normal);
           this._layFlatArmed = false;
           this.onLayFlat?.(this._selectedId, trs);
@@ -2646,7 +2773,7 @@ export class Viewer {
   // "You can grab this" affordance over the selected unit. LAY FLAT owns the
   // cursor while armed (crosshair), and a hovered gizmo handle owns it too.
   _syncGrabCursor(cx, cy) {
-    const want = !!this._selectedId && !this._layFlatArmed
+    const want = !!this._selectedId && !this._layFlatArmed && !this._openPick
       && !(this.gizmo && this.gizmo.axis) && !!this._unitHit(cx, cy);
     document.body.classList.toggle('plate-grab', want);
   }

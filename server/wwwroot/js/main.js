@@ -55,6 +55,9 @@ function storedUpAxis() {
   try { v = localStorage.getItem(UP_KEY); } catch { /* private mode */ }
   return UP_AXIS_KEYS.includes(v) ? v : UP_AXIS_DEFAULT;
 }
+// BANANA FOR SCALE: the toggle state persists like the up axis, so a shop that
+// keeps the reference on gets it back on the next load. Display only, never a part.
+const BANANA_KEY = 'anvil.banana';
 
 const viewer = new Viewer(ui.els.viewport, { upAxis: storedUpAxis() });
 viewer.setTheme(ui.isDarkTheme());
@@ -2251,6 +2254,25 @@ ui.els.vpGhosts?.addEventListener('click', () => {
   ui.els.vpGhosts.setAttribute('aria-pressed', hidden ? 'true' : 'false');
   updateDims();
 });
+// BANANA FOR SCALE: a life-size scan on the plate beside the parts. Pure view
+// chrome (never a part, never selected, ignored by fit and dims, never exported),
+// so it touches no scene state: it just lazy-loads on the first enable and flips
+// visibility after. A load failure leaves the button unpressed.
+ui.els.vpBanana?.addEventListener('click', async () => {
+  let on;
+  try {
+    on = await viewer.toggleBanana();
+  } catch (err) {
+    ui.toast(`Banana for scale could not load: ${err.message}`, 'error', 6000);
+    ui.els.vpBanana.classList.remove('active');
+    ui.els.vpBanana.setAttribute('aria-pressed', 'false');
+    return;
+  }
+  ui.els.vpBanana.classList.toggle('active', on);
+  ui.els.vpBanana.setAttribute('aria-pressed', on ? 'true' : 'false');
+  try { localStorage.setItem(BANANA_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+  if (on) ui.toast('banana for scale - display only, never exported', 'info', 3000);
+});
 // SECTION (Wave-3) — the slider is gone. Turning the tool on shows an in-canvas
 // pick triad; a plane comes from a triad quad, an X/Y/Z chip, or a flat face on
 // the selected part. Push/pull the orange arrow to offset it; click the arrow
@@ -2335,6 +2357,18 @@ upChips?.addEventListener('click', (e) => {
   ui.toast('display convention only - exports unchanged', 'info', 3500);
 });
 syncUpChips(viewer.upAxis());
+
+// BANANA FOR SCALE: restore the persisted toggle. It is lazy-loaded chrome, so
+// this kicks off the fetch and only lights the button once the mesh resolves; a
+// missing asset just leaves the reference off, silently, on a boot restore.
+let bananaStored = null;
+try { bananaStored = localStorage.getItem(BANANA_KEY); } catch { /* private mode */ }
+if (bananaStored === '1') {
+  viewer.setBanana(true).then((on) => {
+    ui.els.vpBanana?.classList.toggle('active', on);
+    ui.els.vpBanana?.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }).catch(() => { /* asset unavailable: leave the reference off */ });
+}
 
 // Changing the FLOW axis re-aligns an axis-picked section (a face-picked plane
 // is the user's own choice — leave it alone).

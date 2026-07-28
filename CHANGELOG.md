@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Banana for scale.** A new toggle in the viewport view strip rests a life-size
+  scanned banana (about 165 mm) on the build plate beside the loaded parts, as a
+  size reference. It is pure viewport chrome, like the grid and the nav cube: it is
+  added straight to the scene and never registered as a part, so it stays out of the
+  objects list, selection, raycast, mode derivation, fit, the dimensions readout,
+  section clipping and every export. It is drawn at true millimetre scale (never
+  rescaled), lies flat under any `UP` axis, rides every plate refresh, and its on/off
+  state persists across sessions. The asset ships baked and re-centred at
+  `server/wwwroot/assets/banana.stl` (about 13k triangles) and is lazy-loaded on the
+  first enable.
 - **SHELL leaves picked faces OPEN.** The tool grows an `OPEN FACES` row: `PICK`
   arms the flat faces of the bound part as clickable targets, and each one you
   click is left out of the shell, so the hollow interior breaks out there instead

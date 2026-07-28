@@ -157,6 +157,18 @@ const CUBE_FACES = Object.freeze([
 // Empty-scene plate: the grid + camera framing shown before the first import, so
 // the viewport reads as a build plate instead of a void (mm).
 const EMPTY_PLATE_MM = 120;
+
+// BANANA FOR SCALE: a life-size scanned banana laid on the plate as a size
+// reference. It is viewport chrome, exactly like the grid and the nav cube: it
+// is added straight to the scene, never registered as a part, so it stays out of
+// selection, raycast, mode derivation, fit, dims, sections and export. The asset
+// is authored Z-up (min Z = 0, XY-centred) so a single unit-vector rotation lays
+// it flat under any up axis, and it is drawn at true millimetre scale (never
+// rescaled) because being life-size is the whole point.
+const BANANA_URL       = 'assets/banana.stl';
+const BANANA_CLEAR_MM  = 25;        // gap between the content bbox and the banana
+const BANANA_HALF_MM   = 85;        // the banana's own half-footprint (mm)
+const BANANA_COLOR     = 0xf0d24a;  // banana yellow, reads warm on the 0x1a1a1a bg
 // TRANSFORM-GIZMO axis colours: X --primary, Y --green, Z --cyan. The HUD's
 // "no red" rule still governs here and everywhere else in the app.
 const AX_X = 0xff5c00, AX_Y = 0x47c86e, AX_Z = 0x5bc8e8;
@@ -270,6 +282,11 @@ export class Viewer {
     this.result = null;       // THREE.Mesh | null
     this._volumeHint = null;  // { partId -> volumeMM3 } published by main.js (COM weights)
     this._loader = new STLLoader();
+
+    // BANANA FOR SCALE: scene chrome, lazy-loaded on first enable. Never a part.
+    this._banana = null;        // THREE.Mesh | null (added to scene, not this.parts)
+    this._bananaOn = false;     // desired visibility of the reference
+    this._bananaLoading = false; // guard against a second load while one is in flight
 
     // Display frame FIRST — the camera, the grid and the view cube are all built
     // from it, and main.js hands in the persisted choice so the very first frame
@@ -1600,6 +1617,85 @@ export class Viewer {
     return box ? box.getCenter(new THREE.Vector3()) : null;
   }
 
+  // ── Banana for scale ────────────────────────────────────────────────
+  // View chrome, not geometry. The mesh lives on the scene next to the grid, so
+  // nothing that walks this.parts (selection, raycast, fit, dims, mode
+  // derivation, sections, export) ever sees it. Its material is deliberately
+  // given NO clippingPlanes, which is what keeps the section plane from cutting
+  // it, and it is never scaled (1:1 mm is the entire point of the feature).
+
+  /** Toggle the scale reference. First enable lazy-loads the asset; later calls
+   *  just flip visibility. Returns a Promise resolving to the applied boolean. */
+  setBanana(on) {
+    const want = !!on;
+    if (want && !this._banana) {
+      if (this._bananaLoading) { this._bananaOn = true; return Promise.resolve(true); }
+      this._bananaLoading = true;
+      // _bananaOn is the DESIRED state from here: a toggle landing while the
+      // asset is still in flight flips it, and the load callback applies
+      // whatever it says then, so the button and the mesh can never disagree.
+      this._bananaOn = true;
+      return new Promise((resolve, reject) => {
+        this._loader.load(BANANA_URL, (geometry) => {
+          geometry.computeVertexNormals();
+          const mat = new THREE.MeshStandardMaterial({
+            color: BANANA_COLOR,
+            metalness: 0.05,
+            roughness: 0.75,
+            side: THREE.FrontSide,   // the scan is a closed solid, so front faces suffice
+          });
+          const mesh = new THREE.Mesh(geometry, mat);   // no transform, placed by _placeBanana
+          mesh.renderOrder = 1;
+          mesh.visible = this._bananaOn;   // a toggle during the load wins
+          this._banana = mesh;
+          this.scene.add(mesh);        // straight to the scene, NEVER this.parts
+          this._placeBanana();
+          this._bananaLoading = false;
+          resolve(this._bananaOn);
+        }, undefined, (err) => {
+          this._bananaLoading = false;
+          this._bananaOn = false;
+          reject(err instanceof Error ? err : new Error('banana asset failed to load'));
+        });
+      });
+    }
+    this._bananaOn = want;
+    if (this._banana) {
+      this._banana.visible = want;
+      if (want) this._placeBanana();
+    }
+    return Promise.resolve(want);
+  }
+
+  toggleBanana() { return this.setBanana(!this._bananaOn); }
+  bananaOn() { return this._bananaOn; }
+
+  /** Lay the banana flat on the plate beside the content (or centred on the empty
+   *  plate). Driven off every plate refresh so it rides imports, part moves,
+   *  deletes, up-axis changes and the return to the empty scene. */
+  _placeBanana() {
+    if (!this._banana) return;
+    // Authored Z-up, so one unit-vector rotation lays it on the plate in every up
+    // mode (identity in the default +Z mode).
+    this._banana.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this._up);
+    const box = this._visibleBox();   // parts + result only, never the banana itself
+    let p;
+    if (!box) {
+      // Empty scene: rest centred on the empty plate.
+      p = this._up.clone().multiplyScalar(this._plateH);
+    } else {
+      const c = box.getCenter(new THREE.Vector3());
+      const s = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(s.x, s.y, s.z);
+      // Off to the display-right of the content, clear of it by its own half-extent
+      // plus the gap plus the banana's half-footprint…
+      p = c.clone().addScaledVector(this._right, maxDim / 2 + BANANA_CLEAR_MM + BANANA_HALF_MM);
+      // …then dropped along UP so its base rests on the plate as currently drawn.
+      p.addScaledVector(this._up, this._plateH - this._upCoord(p));
+    }
+    this._banana.position.copy(p);
+  }
+
   // ── Orbit pivot (selection-aware) ───────────────────────────────────
   // main.js owns "what should the pivot be" (selection vs. everything); the
   // viewer only supplies the three primitives it needs to answer that.
@@ -1767,6 +1863,7 @@ export class Viewer {
     if (this.grid && Math.abs(this._gridMeta.size - size) < size * 0.01) {
       this.grid.position.copy(pos);
       this.grid.quaternion.copy(quat);
+      this._placeBanana();   // the banana rides every plate refresh (null-guarded)
       return;
     }
     if (this.grid) { this.scene.remove(this.grid); this.grid.geometry.dispose(); this.grid.material.dispose(); }
@@ -1780,6 +1877,7 @@ export class Viewer {
     this.scene.add(grid);
     this.grid = grid;
     this._gridMeta.size = size;
+    this._placeBanana();   // the banana rides every plate refresh (null-guarded)
   }
 
   // ── Theme ───────────────────────────────────────────────────────────

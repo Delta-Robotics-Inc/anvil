@@ -631,6 +631,14 @@
             <button type="button" class="sec-chip sec-invert" id="sec-invert" title="Flip which side of the plane is kept" aria-label="Flip which side of the plane is kept">⇄</button>
           </div>
         </div>
+        <!-- BANANA FOR SCALE: a life-size scan resting on the plate as a size
+             reference. Viewport chrome like the plate and nav cube, never a part:
+             it stays out of selection, fit, dims, sections and export. Icon-only,
+             so by the tooltip convention it carries a verb-first native title and
+             no HUD data-tip. -->
+        <button type="button" class="vstrip-btn" id="vp-banana" title="Toggle the banana for scale" aria-label="Toggle the banana for scale" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5c-.4 7.6 4.6 13.9 12.2 14.6 1 .1 2-.1 2.8-.4-1.6 2.6-4.9 4.3-8.5 3.8C6.6 20.7 3.3 15.6 4.1 10c.3-2.4 1-4.6 1.4-6.5Z"/><path d="M5.5 3.5 5 2"/></svg>
+        </button>
         <!-- MODEL UP — which world direction reads screen-up. Display only:
              no geometry is moved and exports are identical in every mode. -->
         <div class="vstrip-up has-tip" id="vp-up" role="group" aria-label="Model up axis"

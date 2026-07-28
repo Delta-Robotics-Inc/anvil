@@ -176,6 +176,7 @@ export const els = {
 
   vpFit:           document.getElementById('vp-fit'),
   vpGhosts:        document.getElementById('vp-ghosts'),
+  vpBanana:        document.getElementById('vp-banana'),
   vpSection:       document.getElementById('vp-section'),
   vpSectionWrap:   document.getElementById('vp-section-wrap'),
   vpDims:          document.getElementById('vp-dims'),

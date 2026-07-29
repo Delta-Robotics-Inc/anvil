@@ -55,9 +55,6 @@ function storedUpAxis() {
   try { v = localStorage.getItem(UP_KEY); } catch { /* private mode */ }
   return UP_AXIS_KEYS.includes(v) ? v : UP_AXIS_DEFAULT;
 }
-// BANANA FOR SCALE: the toggle state persists like the up axis, so a shop that
-// keeps the reference on gets it back on the next load. Display only, never a part.
-const BANANA_KEY = 'anvil.banana';
 
 const viewer = new Viewer(ui.els.viewport, { upAxis: storedUpAxis() });
 viewer.setTheme(ui.isDarkTheme());
@@ -123,7 +120,18 @@ window.addEventListener('drop', (e) => {
   if (files.length) handleFiles(files);
 });
 
-async function handleFiles(files) {
+// The ONE import path: the file picker, a drag-drop anywhere on the window, and
+// the BANANA button all land here, so a banana is built by exactly the code that
+// builds an imported CAD part.
+//
+// opts.spawn - this file was authored BY ANVIL (the BANANA button), not handed
+// in by a user, so it is SET DOWN rather than left where its own frame puts it:
+// rotated onto the display up axis and stood beside whatever is already on the
+// plate (viewer.spawnBeside). Everything else is byte-identical to an import.
+// Without it, `handleFiles` behaves exactly as it always has and an imported CAD
+// part still arrives with an IDENTITY transform. That is the coordinate
+// preservation guarantee and it has no exceptions.
+async function handleFiles(files, opts = {}) {
   const accepted = files.filter((f) => /\.(stl|step|stp)$/i.test(f.name));
   const rejected = files.filter((f) => !/\.(stl|step|stp)$/i.test(f.name));
   for (const f of rejected) ui.toast(`Skipped "${f.name}" — only STL / STEP are supported.`, 'warn');
@@ -166,11 +174,24 @@ async function handleFiles(files) {
     refreshParts();
     ui.flashPartRow(rec.id);
 
+    // Read the spawn pose BEFORE the mesh joins the scene, so "beside the
+    // existing content" measures the OTHER content and not this part itself.
+    const spawnTrs = opts.spawn ? viewer.spawnBeside(rec.bbox) : null;
+
     try {
       await viewer.addPart(part.id, rec.stlUrl, rec.role);
       // Nothing is added to the part here. The plate is ADAPTIVE (it draws at
       // the scene's resting height along the display up axis), so an import
       // lands untouched and still reads as sitting on the bed.
+      //
+      // opts.spawn is the one exception, and only for a part ANVIL authored
+      // itself: it gets a normal, visible, clearable XFORM pose, exactly like
+      // the convention rotation a new cylinder is given. Written straight into
+      // rec.trs here, BEFORE the transaction below snapshots the rec, so the one
+      // Ctrl+Z that removes the part takes its pose with it. No history command
+      // of its own: the create snapshot already carries it, and a second entry
+      // would mean two undos for one click.
+      if (spawnTrs) applyPanelTrs(rec.id, spawnTrs);
       // Roles may have changed via applyAutoRoles — sync viewer colors.
       syncViewerRoles();
       updateDims();
@@ -2096,6 +2117,52 @@ ui.initPanels();
 // HOME view's ✕ collapses, because there is nothing behind it).
 ui.els.tbImport?.addEventListener('click', () => ui.els.fileInput.click());
 
+// ── BANANA ────────────────────────────────────────────────────────────
+// A banana for scale, as a REAL part. The asset is fetched, wrapped in a File
+// and pushed through handleFiles, so it is uploaded, registered, rowed, roled,
+// coloured, transformed, latticed, exported, saved and undone by exactly the
+// code an STL drag-drop uses. There is no banana branch anywhere downstream, and
+// there must never be one: the moment something needs to know it is a banana,
+// the integration is wrong.
+//
+// Like ADD PART this button ACTS on the click and owns no left-panel view, so it
+// never joins TOOL_BUTTONS and never lights.
+const BANANA_URL = 'assets/banana.stl';
+// Clicks SERIALISE. Each banana is placed beside what is already on the plate,
+// so it has to see the previous one land, and two concurrent adds would read the
+// same scene and stack. The button is deliberately never disabled: spamming it
+// is the point, the chain just queues.
+let bananaQueue = Promise.resolve();
+/** `Banana.stl`, then `Banana 2.stl`, `Banana 3.stl`… Derived from the rows on
+ *  the plate (highest index + 1), so deletes do not restart the count at a name
+ *  that is still in use. */
+function nextBananaName() {
+  let hi = 0;
+  for (const p of state.parts) {
+    const m = /^banana(?: (\d+))?\.stl$/i.exec(p.name || '');
+    if (m) hi = Math.max(hi, m[1] ? Number(m[1]) : 1);
+  }
+  return hi ? `Banana ${hi + 1}.stl` : 'Banana.stl';
+}
+ui.els.tbBanana?.addEventListener('click', () => {
+  bananaQueue = bananaQueue.then(async () => {
+    const name = nextBananaName();
+    let file;
+    try {
+      const res = await fetch(BANANA_URL);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      file = new File([await res.blob()], name, { type: 'model/stl' });
+    } catch (err) {
+      ui.toast(`Banana could not load: ${err.message}`, 'error', 6000);
+      return;
+    }
+    // handleFiles owns the upload leg, including its own failure toast.
+    await handleFiles([file], { spawn: true });
+  }).catch((err) => {
+    ui.toast(`Banana failed: ${err?.message || err}`, 'error', 6000);
+  });
+});
+
 // Which tool is on screen. tools.js owns the open/close lifecycle and lights the
 // matching toolbar button on every switch, so the lit button IS the answer — no
 // second copy of that state lives here.
@@ -2254,25 +2321,6 @@ ui.els.vpGhosts?.addEventListener('click', () => {
   ui.els.vpGhosts.setAttribute('aria-pressed', hidden ? 'true' : 'false');
   updateDims();
 });
-// BANANA FOR SCALE: a life-size scan on the plate beside the parts. Pure view
-// chrome (never a part, never selected, ignored by fit and dims, never exported),
-// so it touches no scene state: it just lazy-loads on the first enable and flips
-// visibility after. A load failure leaves the button unpressed.
-ui.els.vpBanana?.addEventListener('click', async () => {
-  let on;
-  try {
-    on = await viewer.toggleBanana();
-  } catch (err) {
-    ui.toast(`Banana for scale could not load: ${err.message}`, 'error', 6000);
-    ui.els.vpBanana.classList.remove('active');
-    ui.els.vpBanana.setAttribute('aria-pressed', 'false');
-    return;
-  }
-  ui.els.vpBanana.classList.toggle('active', on);
-  ui.els.vpBanana.setAttribute('aria-pressed', on ? 'true' : 'false');
-  try { localStorage.setItem(BANANA_KEY, on ? '1' : '0'); } catch { /* private mode */ }
-  if (on) ui.toast('banana for scale - display only, never exported', 'info', 3000);
-});
 // SECTION (Wave-3) — the slider is gone. Turning the tool on shows an in-canvas
 // pick triad; a plane comes from a triad quad, an X/Y/Z chip, or a flat face on
 // the selected part. Push/pull the orange arrow to offset it; click the arrow
@@ -2357,18 +2405,6 @@ upChips?.addEventListener('click', (e) => {
   ui.toast('display convention only - exports unchanged', 'info', 3500);
 });
 syncUpChips(viewer.upAxis());
-
-// BANANA FOR SCALE: restore the persisted toggle. It is lazy-loaded chrome, so
-// this kicks off the fetch and only lights the button once the mesh resolves; a
-// missing asset just leaves the reference off, silently, on a boot restore.
-let bananaStored = null;
-try { bananaStored = localStorage.getItem(BANANA_KEY); } catch { /* private mode */ }
-if (bananaStored === '1') {
-  viewer.setBanana(true).then((on) => {
-    ui.els.vpBanana?.classList.toggle('active', on);
-    ui.els.vpBanana?.setAttribute('aria-pressed', on ? 'true' : 'false');
-  }).catch(() => { /* asset unavailable: leave the reference off */ });
-}
 
 // Changing the FLOW axis re-aligns an axis-picked section (a face-picked plane
 // is the user's own choice — leave it alone).

@@ -16,16 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Banana for scale.** A new toggle in the viewport view strip rests a life-size
-  scanned banana (about 165 mm) on the build plate beside the loaded parts, as a
-  size reference. It is pure viewport chrome, like the grid and the nav cube: it is
-  added straight to the scene and never registered as a part, so it stays out of the
-  objects list, selection, raycast, mode derivation, fit, the dimensions readout,
-  section clipping and every export. It is drawn at true millimetre scale (never
-  rescaled), lies flat under any `UP` axis, rides every plate refresh, and its on/off
-  state persists across sessions. The asset ships baked and re-centred at
-  `server/wwwroot/assets/banana.stl` (about 13k triangles) and is lazy-loaded on the
-  first enable.
+- **Banana for scale, as a real part.** A `BANANA` button beside `ADD PART` in the
+  toolbar sets a life-size scanned banana (about 165 mm) on the build plate, and
+  one more on every click. It rides the ordinary import path (fetch the asset,
+  wrap it in a `File`, `POST /api/parts`), so it arrives as a genuine part with no
+  special case anywhere downstream: it takes a row and a role select, selects and
+  moves with the gizmo, takes a colour, feeds `BOOL` / `SHELL` / `OFFSET` /
+  `XFORM` / `MIRROR` / `DUPE`, is latticed by `GENERATE`, exports to STL and STEP,
+  saves and reopens in a `.anvil` project, and undoes in one `Ctrl+Z`. Each one is
+  rotated onto the display up axis and set down beside the existing content
+  (25 mm clear along the display right), as a normal visible, clearable `XFORM`
+  pose that export bakes - the same latitude a new cylinder gets, because a banana
+  is authored in ANVIL and has no external frame to preserve. Clicks serialise, so
+  holding the button down lines bananas up instead of stacking them. Never scaled:
+  being life-size is the point. The asset ships baked and re-centred at
+  `server/wwwroot/assets/banana.stl` (about 13k triangles).
 - **SHELL leaves picked faces OPEN.** The tool grows an `OPEN FACES` row: `PICK`
   arms the flat faces of the bound part as clickable targets, and each one you
   click is left out of the shell, so the hollow interior breaks out there instead

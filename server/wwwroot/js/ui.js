@@ -125,6 +125,7 @@ export const els = {
 
   // ── CAD workspace shell (toolbar · panels · viewport chrome) ──────────
   tbImport:   document.getElementById('tb-import'),
+  tbBanana:   document.getElementById('tb-banana'),   // adds a banana as a real part
   tbPrim:     document.getElementById('tb-prim'),
   tbBool:     document.getElementById('tb-bool'),
   tbShell:    document.getElementById('tb-shell'),
@@ -176,7 +177,6 @@ export const els = {
 
   vpFit:           document.getElementById('vp-fit'),
   vpGhosts:        document.getElementById('vp-ghosts'),
-  vpBanana:        document.getElementById('vp-banana'),
   vpSection:       document.getElementById('vp-section'),
   vpSectionWrap:   document.getElementById('vp-section-wrap'),
   vpDims:          document.getElementById('vp-dims'),

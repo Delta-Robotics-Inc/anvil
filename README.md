@@ -196,6 +196,7 @@ ANVIL is an object workspace, not just a converter. Seven tools, each **taking o
 
 - The **LATTICE** view holds the TPMS parameters (pattern, sheet/skeletal, cell, wall or bias, resolution, overlap, smoothing, cleanup, flow axis), the **ZONES** tile once any zone role exists, a collapsible **POSITION** section (rotation, phase offset, per-axis cell size, reference flow) and the pinned **GENERATE** button.
 - `GENERATE` exists **only** in the LATTICE view. While a tool is open the panel is that tool's, and its `CONFIRM` is the one filled action on screen.
+- **`ADD PART` and `BANANA` are not tools.** They act on the click and open no view: `ADD PART` is the file picker, and `BANANA` sets a life-size scanned banana (about 165 mm) on the plate as a **real part**, clear of whatever is already there, with one more on every click. It is a part in every sense - it takes a role, selects and moves with the gizmo, takes a colour, feeds every tool, is latticed by `GENERATE`, exports to STL or STEP, saves into a project and undoes in one `Ctrl+Z`. It arrives with a visible, clearable `XFORM` pose that sets it down, the same latitude a new cylinder gets: a banana is authored in ANVIL, so there is no external frame to preserve.
 
 | Tool | What it does | Notes |
 | --- | --- | --- |
@@ -226,7 +227,6 @@ The part store is **in memory**: uploaded and derived parts do not survive a ser
 - **Undo and redo**, 50 deep: `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y`. Imports, tool ops, deletes, moves, role changes, colour changes, visibility toggles and lattice reverts are all reversible.
 - **A lattice IS the part.** Generating does not add a second row: the source object absorbs its lattice and keeps its own name, now carrying a `LATTICE · <PATTERN>` badge where the role select was, and the lattice's triangle count and volume. The source stays on screen as a translucent ghost behind it, and the two move, export and delete as **one object**. The row's eye toggles the lattice mesh, the ghost icon toggles the shell behind it, and `REVERT` drops the lattice and gives the plain part back. Regenerating replaces the lattice in place.
 - **The plate is always there.** With nothing loaded the viewport still shows the build plate framed from HOME, and `ADD PART` carries the one accent fill on screen. Deleting the last part returns to exactly that state, so the scene never reads as broken.
-- **A banana for scale.** The banana icon in the view strip rests a life-size scanned banana (about 165 mm) on the build plate, beside the parts, as a size reference. It is display chrome, like the plate and the nav cube, and never a part: it is not in the objects list, cannot be selected or clicked, is ignored by fit and by the dimensions readout, is never cut by a section, and is never exported. It lies flat under whichever `UP` axis you pick, follows the plate as parts come and go, and its on/off choice is remembered between sessions.
 
 ## Export
 

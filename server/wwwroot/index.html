@@ -105,6 +105,13 @@
         <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/></svg>
         <span class="tb-label">ADD PART</span>
       </button>
+      <!-- BANANA FOR SCALE: adds a life-size scanned banana as a REAL part, on
+           the same import path as ADD PART. Like ADD PART it acts on the click
+           and opens no left-panel view, so it never lights as a tool. -->
+      <button type="button" class="tb-btn has-tip" id="tb-banana" data-tip="Banana: add a life-size banana (about 165 mm) as a real part, set down beside whatever is already on the plate. Click again for another one.">
+        <svg class="tb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5c-.4 7.6 4.6 13.9 12.2 14.6 1 .1 2-.1 2.8-.4-1.6 2.6-4.9 4.3-8.5 3.8C6.6 20.7 3.3 15.6 4.1 10c.3-2.4 1-4.6 1.4-6.5Z"/><path d="M5.5 3.5 5 2"/></svg>
+        <span class="tb-label">BANANA</span>
+      </button>
     </div>
     <span class="tb-sep" aria-hidden="true"></span>
     <div class="tb-group" data-group="primitive">
@@ -631,14 +638,6 @@
             <button type="button" class="sec-chip sec-invert" id="sec-invert" title="Flip which side of the plane is kept" aria-label="Flip which side of the plane is kept">⇄</button>
           </div>
         </div>
-        <!-- BANANA FOR SCALE: a life-size scan resting on the plate as a size
-             reference. Viewport chrome like the plate and nav cube, never a part:
-             it stays out of selection, fit, dims, sections and export. Icon-only,
-             so by the tooltip convention it carries a verb-first native title and
-             no HUD data-tip. -->
-        <button type="button" class="vstrip-btn" id="vp-banana" title="Toggle the banana for scale" aria-label="Toggle the banana for scale" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5c-.4 7.6 4.6 13.9 12.2 14.6 1 .1 2-.1 2.8-.4-1.6 2.6-4.9 4.3-8.5 3.8C6.6 20.7 3.3 15.6 4.1 10c.3-2.4 1-4.6 1.4-6.5Z"/><path d="M5.5 3.5 5 2"/></svg>
-        </button>
         <!-- MODEL UP — which world direction reads screen-up. Display only:
              no geometry is moved and exports are identical in every mode. -->
         <div class="vstrip-up has-tip" id="vp-up" role="group" aria-label="Model up axis"

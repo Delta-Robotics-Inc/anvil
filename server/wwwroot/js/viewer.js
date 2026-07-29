@@ -143,6 +143,13 @@ const PRIM_ROT = Object.freeze({
   '-z': Object.freeze({ x: -90, y: 0, z: 0 }),
 });
 
+// The same convention rotation for an asset authored +Z UP (the banana scan)
+// rather than +Y. THREE's rotateX(a) maps +Z → (0, −sin a, cos a), so:
+//   0° → +Z      −90° → +Y      +90° → −Y      180° → −Z
+// which is PRIM_ROT turned a further quarter turn, as it must be. Degrees, X
+// only, so it composes trivially under scale → rotX → rotY → rotZ → translate.
+const SPAWN_ROT = Object.freeze({ '+y': -90, '-y': 90, '+z': 0, '-z': 180 });
+
 // BoxGeometry material-index order, and per face the WORLD directions its
 // texture-right (r) / texture-up (u) map to. Fixed properties of BoxGeometry's
 // authored UVs (a Y-up box), independent of which up axis ANVIL displays.
@@ -158,17 +165,10 @@ const CUBE_FACES = Object.freeze([
 // the viewport reads as a build plate instead of a void (mm).
 const EMPTY_PLATE_MM = 120;
 
-// BANANA FOR SCALE: a life-size scanned banana laid on the plate as a size
-// reference. It is viewport chrome, exactly like the grid and the nav cube: it
-// is added straight to the scene, never registered as a part, so it stays out of
-// selection, raycast, mode derivation, fit, dims, sections and export. The asset
-// is authored Z-up (min Z = 0, XY-centred) so a single unit-vector rotation lays
-// it flat under any up axis, and it is drawn at true millimetre scale (never
-// rescaled) because being life-size is the whole point.
-const BANANA_URL       = 'assets/banana.stl';
-const BANANA_CLEAR_MM  = 25;        // gap between the content bbox and the banana
-const BANANA_HALF_MM   = 85;        // the banana's own half-footprint (mm)
-const BANANA_COLOR     = 0xf0d24a;  // banana yellow, reads warm on the 0x1a1a1a bg
+// SPAWN PLACEMENT: where a part ANVIL authors itself (the BANANA button) is set
+// down. It stands clear of whatever is already visible by this gap, measured
+// along the display RIGHT between the two boxes. See spawnBeside.
+const SPAWN_GAP_MM = 25;
 // TRANSFORM-GIZMO axis colours: X --primary, Y --green, Z --cyan. The HUD's
 // "no red" rule still governs here and everywhere else in the app.
 const AX_X = 0xff5c00, AX_Y = 0x47c86e, AX_Z = 0x5bc8e8;
@@ -282,11 +282,6 @@ export class Viewer {
     this.result = null;       // THREE.Mesh | null
     this._volumeHint = null;  // { partId -> volumeMM3 } published by main.js (COM weights)
     this._loader = new STLLoader();
-
-    // BANANA FOR SCALE: scene chrome, lazy-loaded on first enable. Never a part.
-    this._banana = null;        // THREE.Mesh | null (added to scene, not this.parts)
-    this._bananaOn = false;     // desired visibility of the reference
-    this._bananaLoading = false; // guard against a second load while one is in flight
 
     // Display frame FIRST — the camera, the grid and the view cube are all built
     // from it, and main.js hands in the persisted choice so the very first frame
@@ -1617,83 +1612,56 @@ export class Viewer {
     return box ? box.getCenter(new THREE.Vector3()) : null;
   }
 
-  // ── Banana for scale ────────────────────────────────────────────────
-  // View chrome, not geometry. The mesh lives on the scene next to the grid, so
-  // nothing that walks this.parts (selection, raycast, fit, dims, mode
-  // derivation, sections, export) ever sees it. Its material is deliberately
-  // given NO clippingPlanes, which is what keeps the section plane from cutting
-  // it, and it is never scaled (1:1 mm is the entire point of the feature).
+  // ── Spawn placement (a part ANVIL authored itself) ──────────────────
+  /** Where to SET DOWN a part ANVIL adds on its own (the BANANA button), given
+   *  that part's own file-frame bbox `{ min:[x,y,z], max:[x,y,z] }`. Returns a
+   *  plain TRS - a normal, visible, clearable XFORM pose that export bakes, on
+   *  the same latitude a primitive's stand-up rotation gets: a part authored in
+   *  ANVIL has no external CAD frame to preserve. An IMPORT never comes here.
+   *
+   *  Two moves, both in the DISPLAY frame:
+   *    · rotate - one X rotation maps the asset's authored +Z onto the current
+   *      UP (identity in the default +Z mode), so it lies on the plate in every
+   *      mode exactly as the plate itself re-presents;
+   *    · translate - rest the ROTATED box on the plate as currently drawn, and
+   *      stand it off to the display RIGHT of everything already visible, clear
+   *      by SPAWN_GAP_MM between the two boxes. An empty scene puts it on the
+   *      plate at the origin instead.
+   *  Never scales: a life-size reference that is not life-size is not one.
+   *
+   *  Call BEFORE addPart, while _visibleBox() still describes the OTHER content
+   *  only - otherwise the new part would be measuring itself. */
+  spawnBeside(bboxMM) {
+    const rotX = SPAWN_ROT[this._upKey] || 0;
+    const drawn = boxFromBbox(bboxMM)
+      .applyMatrix4(new THREE.Matrix4().makeRotationX(rotX * Math.PI / 180));
+    const size = drawn.getSize(new THREE.Vector3());
+    const centre = drawn.getCenter(new THREE.Vector3());
+    // UP / FRONT / RIGHT are an orthonormal axis-aligned basis, so an extent
+    // along one of them is just the matching component of the size vector.
+    const along = (v, axis) => Math.abs(v.dot(axis));
 
-  /** Toggle the scale reference. First enable lazy-loads the asset; later calls
-   *  just flip visibility. Returns a Promise resolving to the applied boolean. */
-  setBanana(on) {
-    const want = !!on;
-    if (want && !this._banana) {
-      if (this._bananaLoading) { this._bananaOn = true; return Promise.resolve(true); }
-      this._bananaLoading = true;
-      // _bananaOn is the DESIRED state from here: a toggle landing while the
-      // asset is still in flight flips it, and the load callback applies
-      // whatever it says then, so the button and the mesh can never disagree.
-      this._bananaOn = true;
-      return new Promise((resolve, reject) => {
-        this._loader.load(BANANA_URL, (geometry) => {
-          geometry.computeVertexNormals();
-          const mat = new THREE.MeshStandardMaterial({
-            color: BANANA_COLOR,
-            metalness: 0.05,
-            roughness: 0.75,
-            side: THREE.FrontSide,   // the scan is a closed solid, so front faces suffice
-          });
-          const mesh = new THREE.Mesh(geometry, mat);   // no transform, placed by _placeBanana
-          mesh.renderOrder = 1;
-          mesh.visible = this._bananaOn;   // a toggle during the load wins
-          this._banana = mesh;
-          this.scene.add(mesh);        // straight to the scene, NEVER this.parts
-          this._placeBanana();
-          this._bananaLoading = false;
-          resolve(this._bananaOn);
-        }, undefined, (err) => {
-          this._bananaLoading = false;
-          this._bananaOn = false;
-          reject(err instanceof Error ? err : new Error('banana asset failed to load'));
-        });
-      });
-    }
-    this._bananaOn = want;
-    if (this._banana) {
-      this._banana.visible = want;
-      if (want) this._placeBanana();
-    }
-    return Promise.resolve(want);
-  }
-
-  toggleBanana() { return this.setBanana(!this._bananaOn); }
-  bananaOn() { return this._bananaOn; }
-
-  /** Lay the banana flat on the plate beside the content (or centred on the empty
-   *  plate). Driven off every plate refresh so it rides imports, part moves,
-   *  deletes, up-axis changes and the return to the empty scene. */
-  _placeBanana() {
-    if (!this._banana) return;
-    // Authored Z-up, so one unit-vector rotation lays it on the plate in every up
-    // mode (identity in the default +Z mode).
-    this._banana.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this._up);
-    const box = this._visibleBox();   // parts + result only, never the banana itself
-    let p;
-    if (!box) {
-      // Empty scene: rest centred on the empty plate.
-      p = this._up.clone().multiplyScalar(this._plateH);
+    const t = new THREE.Vector3();
+    const content = this._visibleBox();
+    if (content) {
+      const cc = content.getCenter(new THREE.Vector3());
+      const gap = along(content.getSize(new THREE.Vector3()), this._right) / 2
+        + SPAWN_GAP_MM + along(size, this._right) / 2;
+      t.addScaledVector(this._right, cc.dot(this._right) + gap - centre.dot(this._right));
+      t.addScaledVector(this._front, cc.dot(this._front) - centre.dot(this._front));
     } else {
-      const c = box.getCenter(new THREE.Vector3());
-      const s = box.getSize(new THREE.Vector3());
-      const maxDim = Math.max(s.x, s.y, s.z);
-      // Off to the display-right of the content, clear of it by its own half-extent
-      // plus the gap plus the banana's half-footprint…
-      p = c.clone().addScaledVector(this._right, maxDim / 2 + BANANA_CLEAR_MM + BANANA_HALF_MM);
-      // …then dropped along UP so its base rests on the plate as currently drawn.
-      p.addScaledVector(this._up, this._plateH - this._upCoord(p));
+      t.addScaledVector(this._right, -centre.dot(this._right));
+      t.addScaledVector(this._front, -centre.dot(this._front));
     }
-    this._banana.position.copy(p);
+    // RIGHT and FRONT are perpendicular to UP, so this lands the box floor on
+    // the plate whatever the two offsets above did.
+    t.addScaledVector(this._up, this._plateH - this._boxFloor(drawn));
+
+    return {
+      translateMM: xyzOf(t),
+      rotateDeg: { x: rotX, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    };
   }
 
   // ── Orbit pivot (selection-aware) ───────────────────────────────────
@@ -1863,7 +1831,6 @@ export class Viewer {
     if (this.grid && Math.abs(this._gridMeta.size - size) < size * 0.01) {
       this.grid.position.copy(pos);
       this.grid.quaternion.copy(quat);
-      this._placeBanana();   // the banana rides every plate refresh (null-guarded)
       return;
     }
     if (this.grid) { this.scene.remove(this.grid); this.grid.geometry.dispose(); this.grid.material.dispose(); }
@@ -1877,7 +1844,6 @@ export class Viewer {
     this.scene.add(grid);
     this.grid = grid;
     this._gridMeta.size = size;
-    this._placeBanana();   // the banana rides every plate refresh (null-guarded)
   }
 
   // ── Theme ───────────────────────────────────────────────────────────
@@ -3002,6 +2968,19 @@ function disposeMesh(mesh) {
 function xyzOf(v) {
   const r = (n) => (Math.abs(n) < 1e-9 ? 0 : Math.round(n * 1e6) / 1e6);
   return { x: r(v.x), y: r(v.y), z: r(v.z) };
+}
+
+// The server's bbox DTO ({ min:[x,y,z], max:[x,y,z] }, file frame) as a Box3.
+// A missing or malformed bbox degrades to a point at the origin rather than to
+// three.js' empty box, whose ±Infinity corners would poison every extent below.
+function boxFromBbox(b) {
+  const lo = b && b.min, hi = b && b.max;
+  if (!Array.isArray(lo) || !Array.isArray(hi) || lo.length < 3 || hi.length < 3)
+    return new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
+  return new THREE.Box3(
+    new THREE.Vector3().fromArray(lo),
+    new THREE.Vector3().fromArray(hi),
+  );
 }
 
 // ══ Wave-3 · SECTION helpers ═══════════════════════════════════════════

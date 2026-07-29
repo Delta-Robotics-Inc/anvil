@@ -8,7 +8,7 @@ import * as tools from './tools.js';
 import * as scriptsView from './scripts.js';
 import * as history from './history.js';
 import { Viewer, UP_AXIS_DEFAULT, UP_AXIS_KEYS } from './viewer.js';
-import { isBaseRole, isZoneRole, effectiveColorHex } from './roles.js';
+import { isBaseRole, isZoneRole, effectiveColorHex, normalizeHex } from './roles.js';
 
 // ── State ─────────────────────────────────────────────────────────────
 const state = {
@@ -164,6 +164,12 @@ async function handleFiles(files, opts = {}) {
       id: part.id, name: part.name, triangles: part.triangles,
       sourceFormat: part.sourceFormat, role: 'part', visible: true,
       volumeMM3: part.volumeMM3, bbox: part.bbox, derived: null, trs: null,
+      // An ordinary import has no colour of its own and draws in its role's.
+      // opts.colorHex is the starting override a part ANVIL authors can ask for
+      // (the banana comes in gold), and it behaves like any hand-picked colour
+      // from there: it survives a role change, and RESET drops it back to the
+      // role colour.
+      colorHex: normalizeHex(opts.colorHex),
       stlUrl: part.stlUrl || api.partMeshUrl(part.id),   // undo re-adds from here
     };
     // Swap placeholder → real row the instant conversion returns, then flash.
@@ -179,7 +185,7 @@ async function handleFiles(files, opts = {}) {
     const spawnTrs = opts.spawn ? viewer.spawnBeside(rec.bbox) : null;
 
     try {
-      await viewer.addPart(part.id, rec.stlUrl, rec.role);
+      await viewer.addPart(part.id, rec.stlUrl, rec.role, { colorHex: rec.colorHex });
       // Nothing is added to the part here. The plate is ADAPTIVE (it draws at
       // the scene's resting height along the display up axis), so an import
       // lands untouched and still reads as sitting on the bed.
@@ -2128,6 +2134,11 @@ ui.els.tbImport?.addEventListener('click', () => ui.els.fileInput.click());
 // Like ADD PART this button ACTS on the click and owns no left-panel view, so it
 // never joins TOOL_BUTTONS and never lights.
 const BANANA_URL = 'assets/banana.stl';
+// It arrives GOLD rather than in Part orange, because a banana that is not
+// yellow is a joke that does not land. This is the ordinary per-part colour
+// override, not a special case: it is PART_SWATCHES' gold, the picker shows it
+// selected, and RESET puts the banana back to its role colour like any other.
+const BANANA_COLOR = '#f2c14e';
 // Clicks SERIALISE. Each banana is placed beside what is already on the plate,
 // so it has to see the previous one land, and two concurrent adds would read the
 // same scene and stack. The button is deliberately never disabled: spamming it
@@ -2157,7 +2168,7 @@ ui.els.tbBanana?.addEventListener('click', () => {
       return;
     }
     // handleFiles owns the upload leg, including its own failure toast.
-    await handleFiles([file], { spawn: true });
+    await handleFiles([file], { spawn: true, colorHex: BANANA_COLOR });
   }).catch((err) => {
     ui.toast(`Banana failed: ${err?.message || err}`, 'error', 6000);
   });

@@ -12,12 +12,12 @@
 
 ## Quickstart
 
-ANVIL builds against a patched fork of [PicoGK](https://github.com/leap71/PicoGK), consumed by project reference. It must be cloned as a **sibling directory**, not inside this repo.
+ANVIL builds against a [patched fork](https://github.com/Kevofehr/PicoGK) of [PicoGK](https://github.com/leap71/PicoGK), consumed by project reference. It must be cloned as a **sibling directory**, not inside this repo.
 
 ```powershell
 cd C:\Users\you\Repos
 git clone https://github.com/Delta-Robotics-Inc/anvil.git
-git clone <picogk-remote> PicoGK        # see Requirements: a sibling checkout is mandatory
+git clone https://github.com/Kevofehr/PicoGK.git PicoGK   # a sibling checkout is mandatory
 
 C:\Python314\python.exe -m pip install build123d cadquery-ocp
 

@@ -64,7 +64,7 @@ Repos\
 ```powershell
 cd C:\Users\you\Repos
 git clone https://github.com/Delta-Robotics-Inc/anvil.git
-git clone <picogk-remote> PicoGK
+git clone https://github.com/Kevofehr/PicoGK.git PicoGK
 ```
 
 > [!IMPORTANT]

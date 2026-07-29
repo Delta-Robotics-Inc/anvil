@@ -79,15 +79,16 @@ jobs:
   #     ${{ github.workspace }}/anvil/    <- this repo
   #     ${{ github.workspace }}/PicoGK/   <- the PicoGK fork ANVIL builds against
   #
-  # KNOWN LIMITATION (why continue-on-error is set):
-  # The PicoGK build dependency currently lives in a PRIVATE repository, so this
-  # job cannot check it out with the default GITHUB_TOKEN and will be skipped
-  # with a notice. Two ways to make it green:
-  #   1. Publish the PicoGK fork (preferred - it also unblocks contributors,
-  #      who otherwise cannot build ANVIL at all), then delete the
-  #      `continue-on-error` line and the `token:` line below; or
-  #   2. Add a repo secret PICOGK_TOKEN (a fine-grained PAT with read access to
-  #      the fork) and delete only the `continue-on-error` line.
+  # The PicoGK fork is PUBLIC, so the default GITHUB_TOKEN checks it out and this
+  # job is a real gate rather than an advisory one. That also means a fork PR and
+  # a Dependabot PR build exactly like a push to main, since neither of those is
+  # handed repo secrets and neither needs any.
+  #
+  # `ref` MUST be the full 40-character commit SHA. actions/checkout only treats
+  # a ref as a commit when it is full length; anything shorter is resolved as a
+  # branch or tag name, so a short SHA fetches `refs/heads/<short>*`, matches
+  # nothing and fails the step with a bare "exit code 1".
+  #
   # Upstream leap71/PicoGK is NOT a drop-in substitute: it keeps its sources at
   # the repository root rather than under src/, and ships no prebuilt win-x64
   # native DLLs, so the ProjectReference path above does not resolve against it.
@@ -99,7 +100,6 @@ jobs:
   build:
     name: build (windows, .NET 9)
     runs-on: windows-latest
-    continue-on-error: true # remove once the PicoGK dependency is reachable (see above)
     steps:
       - name: Checkout ANVIL
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -113,14 +113,14 @@ jobs:
         with:
           repository: Kevofehr/PicoGK
           # Pinned to the exact commit the ANVIL worker is developed against.
-          ref: 3725be3
+          # Full SHA, never a short one - see the note above.
+          ref: 3725be3aa88af97b12a4a531a4a93be0d8e1eeb6
           path: PicoGK
-          token: ${{ secrets.PICOGK_TOKEN || github.token }}
 
       - name: Report a missing PicoGK checkout
         if: steps.picogk.outcome != 'success'
         run: |
-          echo "::notice title=PicoGK unavailable::The PicoGK build dependency could not be checked out (the repository is private). Publish the fork or set the PICOGK_TOKEN secret. Skipping the build."
+          echo "::error title=PicoGK unavailable::Could not check out Kevofehr/PicoGK at the pinned commit. Confirm the repository is still public and that the pinned ref is a full 40-character SHA that exists there."
           exit 1
 
       - name: Setup .NET 9

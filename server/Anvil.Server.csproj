@@ -22,7 +22,7 @@
     <!-- Model Context Protocol server (official C# SDK) — in-process HTTP MCP
          at /mcp. The server still references NEITHER PicoGK NOR the worker: MCP
          tools shell out to AnvilWorker.exe exactly like the HTTP API does. -->
-    <PackageReference Include="ModelContextProtocol" Version="1.4.1" />
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.1" />
   </ItemGroup>
 

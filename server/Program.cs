@@ -6,9 +6,10 @@
 // AnvilWorker.exe (spawned per job) and STEP<->STL to the Python sidecar; this
 // process references neither PicoGK nor the worker assembly.
 //
-// Paths (DataDir, WorkerPath) resolve relative to the REPO ROOT (the folder
-// containing Anvil.sln), discovered by walking up from the executable —
-// never relative to the current working directory.
+// Paths (DataDir, WorkerPath) resolve relative to the application root. That is
+// the repository root during development, or the release package root when the
+// .anvil-release marker is present. Neither layout depends on the current
+// working directory.
 //
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -17,7 +18,7 @@ using Anvil.Server.Jobs;
 using Anvil.Server.Sidecar;
 using Microsoft.AspNetCore.Http.Features;
 
-string repoRoot = FindRepoRoot(AppContext.BaseDirectory);
+string repoRoot = FindAppRoot(AppContext.BaseDirectory);
 string serverDir = Path.Combine(repoRoot, "server");
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -26,7 +27,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     ContentRootPath = serverDir,   // so default wwwroot (serverDir/wwwroot) resolves
 });
 
-// appsettings.json lives at the repo root, not next to the server project.
+// appsettings.json lives at the application root, not next to the server project.
 builder.Configuration.AddJsonFile(Path.Combine(repoRoot, "appsettings.json"),
     optional: true, reloadOnChange: false);
 
@@ -166,15 +167,17 @@ static bool IsNoCacheAsset(string fileName)
     return false;
 }
 
-static string FindRepoRoot(string start)
+static string FindAppRoot(string start)
 {
     var dir = new DirectoryInfo(start);
     while (dir != null)
     {
-        if (File.Exists(Path.Combine(dir.FullName, "Anvil.sln")))
+        if (File.Exists(Path.Combine(dir.FullName, "Anvil.sln")) ||
+            File.Exists(Path.Combine(dir.FullName, ".anvil-release")))
             return dir.FullName;
         dir = dir.Parent;
     }
-    // Fallback: two levels above the server project if the sln wasn't found.
+    // Fall back to the working directory only when neither supported layout is
+    // present. The launch scripts verify the expected package before starting.
     return Directory.GetCurrentDirectory();
 }

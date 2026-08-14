@@ -27,6 +27,25 @@ scripts\run.ps1
 
 `run.ps1` builds the solution, verifies the worker exe, Python and sidecar are present, starts the server on `http://127.0.0.1:5238`, waits for `/api/health`, and opens your browser. Add `-NoBrowser` to stay headless.
 
+### Production desktop shortcut
+
+After the development prerequisites above are installed, create a self-contained
+Windows Release package and a shortcut for this clone:
+
+```powershell
+scripts\install-desktop-shortcut.ps1
+```
+
+It publishes the server and worker as self-contained .NET executables in the
+gitignored `publish\Anvil` folder, copies the sidecar and script library, and
+creates `ANVIL (Production).lnk` on your desktop. The configured Python
+interpreter and its sidecar packages are still required. Opening the shortcut
+starts the packaged server, checks `/api/health`, then opens ANVIL in your
+browser. Keep its PowerShell window open while using the app; Ctrl+C or closing
+the window stops the local server cleanly.
+Run the installer again after pulling updates. Use
+`scripts\publish-release.ps1` when you only need to refresh the package.
+
 Then: drag `samples\hollow_bracket.step` onto the drop zone, leave the role as **Part**, and click **GENERATE**. You get a watertight gyroid-filled solid in about a second, ready to export as STL or STEP.
 
 > [!WARNING]
